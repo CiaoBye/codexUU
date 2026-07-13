@@ -6,7 +6,7 @@ specs:
 plans:
   - ../plans/2026-07-13-settings-system.md
 branch: master
-commits: 5b20b29..8778720
+commits: 5b20b29..0e8191a
 ---
 
 # Settings System — Final Report

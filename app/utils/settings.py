@@ -5,12 +5,32 @@ from typing import Callable
 
 DEFAULT_LANGUAGE = "zh"
 DEFAULT_THEME = "dark"
+DEFAULT_STATISTICS_TIMEZONE = "system"
+DEFAULT_STATISTICS_TIMEZONE_ID = "Asia/Shanghai"
+DEFAULT_AUTO_UPDATE = True
+DEFAULT_INCLUDE_BETA = True
+DEFAULT_ACTIVE_RUNTIME = "codex"
+DEFAULT_QUOTA_DISPLAY = "remaining"
+DEFAULT_SHORTCUT = "Ctrl+U"
+DEFAULT_REDUCE_MOTION = False
+DEFAULT_ALWAYS_ON_TOP = False
+DEFAULT_CLOSE_BEHAVIOR = "tray"
 
 class SettingsManager:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.language = DEFAULT_LANGUAGE
         self.theme = DEFAULT_THEME
+        self.statistics_timezone = DEFAULT_STATISTICS_TIMEZONE
+        self.statistics_timezone_id = DEFAULT_STATISTICS_TIMEZONE_ID
+        self.auto_update = DEFAULT_AUTO_UPDATE
+        self.include_beta = DEFAULT_INCLUDE_BETA
+        self.active_runtime = DEFAULT_ACTIVE_RUNTIME
+        self.quota_display = DEFAULT_QUOTA_DISPLAY
+        self.shortcut = DEFAULT_SHORTCUT
+        self.reduce_motion = DEFAULT_REDUCE_MOTION
+        self.always_on_top = DEFAULT_ALWAYS_ON_TOP
+        self.close_behavior = DEFAULT_CLOSE_BEHAVIOR
         self.listeners: list[Callable] = []
     
     def get_language(self) -> str:
@@ -18,6 +38,63 @@ class SettingsManager:
     
     def get_theme(self) -> str:
         return self.theme
+
+    def get_statistics_timezone(self) -> tuple[str, str]:
+        return self.statistics_timezone, self.statistics_timezone_id
+
+    def get_update_preferences(self) -> tuple[bool, bool]:
+        return self.auto_update, self.include_beta
+
+    def get_active_runtime(self) -> str:
+        return self.active_runtime
+
+    def get_quota_display(self) -> str:
+        return self.quota_display
+
+    def get_shortcut(self) -> str:
+        return self.shortcut
+
+    def get_reduce_motion(self) -> bool:
+        return self.reduce_motion
+
+    def get_window_preferences(self) -> tuple[bool, str]:
+        return self.always_on_top, self.close_behavior
+
+    def set_active_runtime(self, runtime: str):
+        if runtime in ("codex", "claudeCode"):
+            self.active_runtime = runtime
+            self._notify_listeners()
+
+    def set_quota_display(self, mode: str):
+        if mode in ("remaining", "used"):
+            self.quota_display = mode
+            self._notify_listeners()
+
+    def set_shortcut(self, shortcut: str):
+        value = str(shortcut or "").strip()
+        if value:
+            self.shortcut = value
+            self._notify_listeners()
+
+    def set_reduce_motion(self, enabled: bool):
+        self.reduce_motion = bool(enabled)
+        self._notify_listeners()
+
+    def set_window_preferences(self, always_on_top: bool, close_behavior: str):
+        self.always_on_top = bool(always_on_top)
+        self.close_behavior = close_behavior if close_behavior in ("tray", "minimize", "quit") else DEFAULT_CLOSE_BEHAVIOR
+        self._notify_listeners()
+
+    def set_update_preferences(self, auto_update: bool, include_beta: bool):
+        self.auto_update = bool(auto_update)
+        self.include_beta = bool(include_beta)
+        self._notify_listeners()
+
+    def set_statistics_timezone(self, mode: str, identifier: str = DEFAULT_STATISTICS_TIMEZONE_ID):
+        if mode in ("system", "utc", "fixed"):
+            self.statistics_timezone = mode
+            self.statistics_timezone_id = identifier or DEFAULT_STATISTICS_TIMEZONE_ID
+            self._notify_listeners()
     
     def set_language(self, lang: str):
         if lang in ("zh", "en"):
@@ -34,17 +111,59 @@ class SettingsManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self.language = data.get("language", DEFAULT_LANGUAGE)
-                self.theme = data.get("theme", DEFAULT_THEME)
-            except (json.JSONDecodeError, KeyError):
+                language = data.get("language", DEFAULT_LANGUAGE)
+                theme = data.get("theme", DEFAULT_THEME)
+                timezone_mode = data.get("statistics_timezone", DEFAULT_STATISTICS_TIMEZONE)
+                timezone_id = data.get("statistics_timezone_id", DEFAULT_STATISTICS_TIMEZONE_ID)
+                auto_update = data.get("auto_update", DEFAULT_AUTO_UPDATE)
+                include_beta = data.get("include_beta", DEFAULT_INCLUDE_BETA)
+                active_runtime = data.get("active_runtime", DEFAULT_ACTIVE_RUNTIME)
+                quota_display = data.get("quota_display", DEFAULT_QUOTA_DISPLAY)
+                shortcut = data.get("shortcut", DEFAULT_SHORTCUT)
+                reduce_motion = data.get("reduce_motion", DEFAULT_REDUCE_MOTION)
+                always_on_top = data.get("always_on_top", DEFAULT_ALWAYS_ON_TOP)
+                close_behavior = data.get("close_behavior", DEFAULT_CLOSE_BEHAVIOR)
+                self.language = language if language in ("zh", "en") else DEFAULT_LANGUAGE
+                self.theme = theme if theme in ("auto", "light", "dark") else DEFAULT_THEME
+                self.statistics_timezone = timezone_mode if timezone_mode in ("system", "utc", "fixed") else DEFAULT_STATISTICS_TIMEZONE
+                self.statistics_timezone_id = str(timezone_id or DEFAULT_STATISTICS_TIMEZONE_ID)
+                self.auto_update = bool(auto_update)
+                self.include_beta = bool(include_beta)
+                self.active_runtime = active_runtime if active_runtime in ("codex", "claudeCode") else DEFAULT_ACTIVE_RUNTIME
+                self.quota_display = quota_display if quota_display in ("remaining", "used") else DEFAULT_QUOTA_DISPLAY
+                self.shortcut = str(shortcut or DEFAULT_SHORTCUT)
+                self.reduce_motion = bool(reduce_motion)
+                self.always_on_top = bool(always_on_top)
+                self.close_behavior = close_behavior if close_behavior in ("tray", "minimize", "quit") else DEFAULT_CLOSE_BEHAVIOR
+            except (OSError, json.JSONDecodeError, TypeError):
                 self.language = DEFAULT_LANGUAGE
                 self.theme = DEFAULT_THEME
+                self.statistics_timezone = DEFAULT_STATISTICS_TIMEZONE
+                self.statistics_timezone_id = DEFAULT_STATISTICS_TIMEZONE_ID
+                self.auto_update = DEFAULT_AUTO_UPDATE
+                self.include_beta = DEFAULT_INCLUDE_BETA
+                self.active_runtime = DEFAULT_ACTIVE_RUNTIME
+                self.quota_display = DEFAULT_QUOTA_DISPLAY
+                self.shortcut = DEFAULT_SHORTCUT
+                self.reduce_motion = DEFAULT_REDUCE_MOTION
+                self.always_on_top = DEFAULT_ALWAYS_ON_TOP
+                self.close_behavior = DEFAULT_CLOSE_BEHAVIOR
     
     def save(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "language": self.language,
-            "theme": self.theme
+            "theme": self.theme,
+            "statistics_timezone": self.statistics_timezone,
+            "statistics_timezone_id": self.statistics_timezone_id,
+            "auto_update": self.auto_update,
+            "include_beta": self.include_beta,
+            "active_runtime": self.active_runtime,
+            "quota_display": self.quota_display,
+            "shortcut": self.shortcut,
+            "reduce_motion": self.reduce_motion,
+            "always_on_top": self.always_on_top,
+            "close_behavior": self.close_behavior,
         }
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

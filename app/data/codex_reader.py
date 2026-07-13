@@ -1,21 +1,50 @@
 from __future__ import annotations
+
 import json
 import os
+import re
+import shutil
 import sqlite3
-from datetime import datetime, timezone, timedelta
+import subprocess
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from app.data.models import (
-    QuotaInfo, TokenBreakdown, TokenStats, UsageSnapshot,
-    DailyToken, ProjectStats, ToolUsage, SkillUsage, TaskItem,
-    RuntimeScope, estimate_api_value, parse_jsonl_line,
-    CODEX_PROMPT_PRICES,
+    DailyToken,
+    ProjectStats,
+    QuotaInfo,
+    RuntimeScope,
+    SkillUsage,
+    TaskItem,
+    TokenBreakdown,
+    TokenStats,
+    ToolUsage,
+    UsageSnapshot,
+    estimate_model_api_value,
+    parse_jsonl_line,
 )
+from app.utils.statistics_timezone import get_statistics_timezone
+from app.constants import APP_VERSION
 
-# Cache for expensive operations
-_cache = {}
-_cache_timeout = 60  # seconds
+
+_cache: dict[str, tuple[float, object]] = {}
+_CACHE_TTL = 60
+_rollout_file_cache: dict[Path, tuple[int, int, datetime, list[dict]]] = {}
+
+
+def _cached(key: str):
+    item = _cache.get(key)
+    if item and time.time() - item[0] < _CACHE_TTL:
+        return item[1]
+    return None
+
+
+def _store(key: str, value):
+    _cache[key] = (time.time(), value)
+    return value
 
 
 def _codex_dir() -> Path:
@@ -23,15 +52,15 @@ def _codex_dir() -> Path:
 
 
 def _state_db_path() -> Optional[Path]:
-    p = _codex_dir() / "state_5.sqlite"
-    return p if p.exists() else None
+    path = _codex_dir() / "state_5.sqlite"
+    return path if path.exists() else None
 
 
 def _sessions_dir() -> Path:
     return _codex_dir() / "sessions"
 
 
-def _archived_sessions_dir() -> Path:
+def _archived_dir() -> Path:
     return _codex_dir() / "archived_sessions"
 
 
@@ -39,61 +68,233 @@ def _automations_dir() -> Path:
     return _codex_dir() / "automations"
 
 
-def read_quota_from_appserver() -> Optional[tuple[QuotaInfo, QuotaInfo]]:
-    import subprocess
-    import shutil
-    # Skip if codex command not found
-    if not shutil.which("codex"):
+def _parse_reset(value) -> Optional[datetime]:
+    if value is None:
         return None
     try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc).astimezone()
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def read_quota_from_appserver() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
+    """Read rolling rate limits when the local Codex CLI is available."""
+    executable = shutil.which("codex")
+    if not executable:
+        return None
+    # The Microsoft Store desktop app exposes an execution alias under
+    # WindowsApps, but that alias cannot be used as a stdio app-server.
+    # Returning immediately avoids an eight-second timeout on every refresh.
+    if os.name == "nt" and "windowsapps" in executable.lower():
+        return None
+    try:
+        # app-server is a JSON-RPC stdio service.  Sending one request batch
+        # avoids relying on the CLI's human-oriented output format.
+        request = "\n".join([
+            json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"clientInfo": {"name": "CodexUU", "version": APP_VERSION.lstrip("v")}},
+            }),
+            json.dumps({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}}),
+        ]) + "\n"
         result = subprocess.run(
-            ["codex", "app-server", "--json"],
-            capture_output=True, text=True, timeout=5,
+            ["codex", "app-server"],
+            input=request,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
         )
         if result.returncode != 0:
             return None
-        data = json.loads(result.stdout)
-        rate_limits = data.get("account", {}).get("rateLimits", {})
-        limits_5h = rate_limits.get("5h", {})
-        limits_7d = rate_limits.get("7d", {})
-
-        quota_5h = None
-        if "used" in limits_5h and "max" in limits_5h:
-            used = limits_5h["used"]
-            max_v = limits_5h["max"]
-            if max_v > 0:
-                used_pct = used / max_v * 100
-                quota_5h = QuotaInfo(
-                    used_pct=used_pct,
-                    remaining_pct=100 - used_pct,
-                    reset_time=_parse_reset(limits_5h.get("resetsAt")),
-                )
-
-        quota_7d = None
-        if "used" in limits_7d and "max" in limits_7d:
-            used = limits_7d["used"]
-            max_v = limits_7d["max"]
-            if max_v > 0:
-                used_pct = used / max_v * 100
-                quota_7d = QuotaInfo(
-                    used_pct=used_pct,
-                    remaining_pct=100 - used_pct,
-                    reset_time=_parse_reset(limits_7d.get("resetsAt")),
-                )
-
-        return (quota_5h, quota_7d)
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError):
+        payload = None
+        for line in result.stdout.splitlines():
+            try:
+                candidate = json.loads(line)
+                if candidate.get("id") == 2:
+                    payload = candidate.get("result", candidate)
+                    break
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(payload, dict):
+            return None
+        limits = payload.get("rateLimits", {})
+        if not limits:
+            limits = payload.get("account", {}).get("rateLimits", {})
+        return _quota_pair_from_rate_limits(limits)
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
         return None
 
 
-def _parse_reset(ts: Optional[str]) -> Optional[datetime]:
-    if not ts:
+def _quota_pair_from_rate_limits(limits: dict) -> tuple[Optional[QuotaInfo], Optional[QuotaInfo]]:
+    if not isinstance(limits, dict):
+        return None, None
+
+    def make_quota(item) -> tuple[Optional[int], Optional[QuotaInfo]]:
+        if not isinstance(item, dict):
+            return None, None
+        used = item.get("used_percent", item.get("usedPercent", item.get("used")))
+        maximum = item.get("max", item.get("limit"))
+        if maximum not in (None, 0):
+            used_pct = float(used or 0) / float(maximum) * 100
+        elif used is not None:
+            used_pct = float(used)
+        else:
+            return None, None
+        window = item.get("window_minutes", item.get("windowDurationMins"))
+        used_pct = max(0.0, min(100.0, used_pct))
+        return int(window) if window is not None else None, QuotaInfo(
+            used_pct=used_pct,
+            remaining_pct=100.0 - used_pct,
+            reset_time=_parse_reset(item.get("resets_at", item.get("resetsAt", item.get("resetAt")))),
+        )
+
+    q5 = q7 = None
+    candidates = []
+    for key in ("5h", "7d", "primary", "secondary"):
+        if key in limits:
+            window, quota = make_quota(limits.get(key))
+            if quota is not None:
+                candidates.append((key, window, quota))
+    for key, window, quota in candidates:
+        if key == "5h" or window == 300:
+            q5 = quota
+        elif key == "7d" or window == 10080:
+            q7 = quota
+    return q5, q7
+
+
+def read_quota_from_session_events() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
+    """Use the newest official rate-limit snapshot embedded in token_count events."""
+    newest_timestamp = ""
+    newest_limits = None
+    for _, _, event in _iter_rollout_events(days=14):
+        payload = event.get("payload")
+        limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+        timestamp = str(event.get("timestamp") or "")
+        if isinstance(limits, dict) and timestamp >= newest_timestamp:
+            newest_timestamp = timestamp
+            newest_limits = limits
+    if not newest_limits:
         return None
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt.astimezone()
-    except (ValueError, AttributeError):
+    result = _quota_pair_from_rate_limits(newest_limits)
+    return result if any(result) else None
+
+
+def _read_token_event(event: dict) -> Optional[tuple[str, TokenBreakdown, bool]]:
+    timestamp = event.get("timestamp") or event.get("created_at") or ""
+    usage = None
+    cumulative = False
+    if event.get("type") == "event_msg":
+        payload = event.get("payload", {})
+        if isinstance(payload, dict) and payload.get("type") == "token_count":
+            info = payload.get("info", {}) or {}
+            usage = info.get("total_token_usage", info)
+            cumulative = "total_token_usage" in info
+    if usage is None:
+        usage = event.get("token_count")
+    if not isinstance(usage, dict):
         return None
+
+    cached = int(usage.get("cached_input_tokens", usage.get("cached_input", 0)) or 0)
+    input_tokens = int(usage.get("input_tokens", usage.get("input", 0)) or 0)
+    uncached = usage.get("uncached_input")
+    if uncached is None:
+        uncached = max(0, input_tokens - cached)
+    output = int(usage.get("output_tokens", usage.get("output", 0)) or 0)
+    return str(timestamp), TokenBreakdown(
+        cached_input=max(0, cached),
+        uncached_input=max(0, int(uncached or 0)),
+        output=max(0, output),
+    ), cumulative
+
+
+def _delta_breakdown(previous: Optional[TokenBreakdown], current: TokenBreakdown) -> TokenBreakdown:
+    if previous is None:
+        return current
+
+    def delta(old: int, new: int) -> int:
+        # A reset or a restarted session starts a new counter at `new`.
+        return new - old if new >= old else new
+
+    return TokenBreakdown(
+        cached_input=max(0, delta(previous.cached_input, current.cached_input)),
+        uncached_input=max(0, delta(previous.uncached_input, current.uncached_input)),
+        output=max(0, delta(previous.output, current.output)),
+    )
+
+
+def _event_date(timestamp: str, fallback: datetime) -> datetime:
+    if timestamp:
+        try:
+            return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(get_statistics_timezone().tzinfo())
+        except (TypeError, ValueError):
+            pass
+    return fallback.astimezone(get_statistics_timezone().tzinfo())
+
+
+def _iter_token_deltas(days: int = 180) -> Iterator[tuple[Path, datetime, str, TokenBreakdown, dict]]:
+    previous: dict[Path, TokenBreakdown] = {}
+    active_models: dict[Path, str] = {}
+    for path, mtime, event in _iter_rollout_events(days=days):
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            model = payload.get("model")
+            if isinstance(model, str) and model.strip():
+                active_models[path] = model.strip()
+        parsed = _read_token_event(event)
+        if not parsed:
+            continue
+        timestamp, current, cumulative = parsed
+        delta = _delta_breakdown(previous.get(path), current) if cumulative else current
+        if cumulative:
+            previous[path] = current
+        if delta.total > 0:
+            event["_codexu_model"] = active_models.get(path, "")
+            yield path, mtime, timestamp, delta, event
+
+
+def _iter_rollout_events(days: int = 180) -> Iterator[tuple[Path, datetime, dict]]:
+    cache_key = f"rollout_events:{days}"
+    cached = _cached(cache_key)
+    if cached is not None:
+        yield from cached
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    records: list[tuple[Path, datetime, dict]] = []
+    seen_files: set[Path] = set()
+    for root in (_sessions_dir(), _archived_dir()):
+        if not root.exists():
+            continue
+        for path in root.rglob("rollout-*.jsonl"):
+            try:
+                stat = path.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+                if mtime < cutoff:
+                    continue
+                seen_files.add(path)
+                cached_file = _rollout_file_cache.get(path)
+                if cached_file and cached_file[0] == stat.st_mtime_ns and cached_file[1] == stat.st_size:
+                    events = cached_file[3]
+                else:
+                    events = []
+                    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                        for line in handle:
+                            event = parse_jsonl_line(line)
+                            if event:
+                                events.append(event)
+                    _rollout_file_cache[path] = (stat.st_mtime_ns, stat.st_size, mtime, events)
+                records.extend((path, mtime, event) for event in events)
+            except (OSError, UnicodeError):
+                continue
+    for stale_path in set(_rollout_file_cache) - seen_files:
+        _rollout_file_cache.pop(stale_path, None)
+    _store(cache_key, records)
+    yield from records
 
 
 def read_token_totals_from_db() -> Optional[TokenStats]:
@@ -101,352 +302,584 @@ def read_token_totals_from_db() -> Optional[TokenStats]:
     if not db_path:
         return None
     try:
-        conn = sqlite3.connect(str(db_path))
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT date, input_tokens, cached_input_tokens, output_tokens "
-            "FROM daily_token_usage ORDER BY date"
-        )
-        rows = cursor.fetchall()
-        conn.close()
-
-        today = datetime.now(timezone.utc).date()
-        seven_days_ago = today - timedelta(days=7)
-
-        today_bd = TokenBreakdown()
-        week_bd = TokenBreakdown()
-        cumulative = TokenBreakdown()
-
-        for row in rows:
-            date_str, inp, cached, out = row
-            try:
-                d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
-                continue
-            inp = inp or 0
-            cached = cached or 0
-            out = out or 0
-            uncached = inp - cached
-
-            cumulative.uncached_input += uncached
-            cumulative.cached_input += cached
-            cumulative.output += out
-
-            if d == today:
-                today_bd.uncached_input += uncached
-                today_bd.cached_input += cached
-                today_bd.output += out
-
-            if d >= seven_days_ago:
-                week_bd.uncached_input += uncached
-                week_bd.cached_input += cached
-                week_bd.output += out
-
-        return TokenStats(today=today_bd, last_7d=week_bd, cumulative=cumulative)
-    except (sqlite3.Error, ValueError):
+        with sqlite3.connect(str(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT date, input_tokens, cached_input_tokens, output_tokens "
+                "FROM daily_token_usage ORDER BY date"
+            ).fetchall()
+    except sqlite3.Error:
         return None
+
+    today = get_statistics_timezone().now_date()
+    rolling_start = today - timedelta(days=6)
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    today_bd, rolling_bd, week_bd = TokenBreakdown(), TokenBreakdown(), TokenBreakdown()
+    month_bd, cumulative = TokenBreakdown(), TokenBreakdown()
+    for date_value, input_tokens, cached, output in rows:
+        try:
+            day = datetime.strptime(str(date_value)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        cached = max(0, int(cached or 0))
+        uncached = max(0, int(input_tokens or 0) - cached)
+        breakdown = TokenBreakdown(cached_input=cached, uncached_input=uncached, output=int(output or 0))
+        cumulative.cached_input += breakdown.cached_input
+        cumulative.uncached_input += breakdown.uncached_input
+        cumulative.output += breakdown.output
+        if day == today:
+            today_bd.cached_input += breakdown.cached_input
+            today_bd.uncached_input += breakdown.uncached_input
+            today_bd.output += breakdown.output
+        if rolling_start <= day <= today:
+            rolling_bd.cached_input += breakdown.cached_input
+            rolling_bd.uncached_input += breakdown.uncached_input
+            rolling_bd.output += breakdown.output
+        if week_start <= day <= today:
+            week_bd.cached_input += breakdown.cached_input
+            week_bd.uncached_input += breakdown.uncached_input
+            week_bd.output += breakdown.output
+        if month_start <= day <= today:
+            month_bd.cached_input += breakdown.cached_input
+            month_bd.uncached_input += breakdown.uncached_input
+            month_bd.output += breakdown.output
+    return TokenStats(
+        today=today_bd,
+        last_7d=rolling_bd,
+        current_week=week_bd,
+        cumulative=cumulative,
+        current_month=month_bd,
+    )
+
+
+def read_thread_index_token_total() -> Optional[int]:
+    """Return Codex's own per-thread token index total when the column exists."""
+    db_path = _state_db_path()
+    if not db_path:
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_used), 0) FROM threads "
+                "WHERE tokens_used IS NOT NULL"
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    value = int(row[0] or 0) if row else 0
+    return value or None
 
 
 def read_session_tokens() -> TokenBreakdown:
-    import time
-    cache_key = "session_tokens"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
-
+    cached = _cached("session_tokens")
+    if cached is not None:
+        return cached
     total = TokenBreakdown()
-    for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
-        if not session_dir.exists():
-            continue
-        for rollout_file in session_dir.rglob("rollout-*.jsonl"):
-            try:
-                with open(rollout_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        event = parse_jsonl_line(line)
-                        if not event:
-                            continue
-                        tc = event.get("token_count")
-                        if tc and isinstance(tc, dict):
-                            total.uncached_input += tc.get("uncached_input", 0)
-                            total.cached_input += tc.get("cached_input", 0)
-                            total.output += tc.get("output", 0)
-            except (OSError, json.JSONDecodeError):
-                continue
-
-    _cache[cache_key] = (time.time(), total)
-    return total
+    for _, _, _, breakdown, _ in _iter_token_deltas(days=180):
+        total.cached_input += breakdown.cached_input
+        total.uncached_input += breakdown.uncached_input
+        total.output += breakdown.output
+    return _store("session_tokens", total)
 
 
 def read_daily_tokens() -> list[DailyToken]:
-    import time
-    cache_key = "daily_tokens"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
+    cached = _cached("daily_tokens")
+    if cached is not None:
+        return cached
+    daily: dict[str, DailyToken] = {}
+    for _, mtime, timestamp, breakdown, _ in _iter_token_deltas(days=180):
+        day = _event_date(timestamp, mtime)
+        key = day.strftime("%Y-%m-%d")
+        item = daily.setdefault(key, DailyToken(date=day, runtime=RuntimeScope.CODEX))
+        item.cached_input += breakdown.cached_input
+        item.uncached_input += breakdown.uncached_input
+        item.output += breakdown.output
+        item.total = item.cached_input + item.uncached_input + item.output
+    result = sorted(daily.values(), key=lambda item: item.date, reverse=True)[:180]
+    return _store("daily_tokens", result)
 
-    from collections import defaultdict
-    daily: dict[str, DailyToken] = defaultdict(
-        lambda: DailyToken(date=datetime.now(timezone.utc), total=0)
-    )
 
-    for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
-        if not session_dir.exists():
+def read_model_priced_values() -> dict[str, float | int]:
+    cached = _cached("model_priced_values")
+    if cached is not None:
+        return cached
+    today = get_statistics_timezone().now_date()
+    rolling_start = today - timedelta(days=6)
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    periods = ("today", "rolling_week", "week", "month", "cumulative")
+    grouped = {period: defaultdict(TokenBreakdown) for period in periods}
+    priced_tokens = 0
+    unpriced_tokens = 0
+    for _, mtime, timestamp, breakdown, event in _iter_token_deltas(days=180):
+        model = str(event.get("_codexu_model") or "")
+        if estimate_model_api_value(TokenBreakdown(), model) is None:
+            unpriced_tokens += breakdown.total
             continue
-        for rollout_file in session_dir.rglob("rollout-*.jsonl"):
-            try:
-                mtime = datetime.fromtimestamp(
-                    rollout_file.stat().st_mtime, tz=timezone.utc
-                )
-                date_key = mtime.strftime("%Y-%m-%d")
-                if date_key not in daily:
-                    daily[date_key] = DailyToken(date=mtime)
-                with open(rollout_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        event = parse_jsonl_line(line)
-                        if not event:
-                            continue
-                        tc = event.get("token_count")
-                        if tc and isinstance(tc, dict):
-                            d = daily[date_key]
-                            ci = tc.get("cached_input", 0)
-                            ui = tc.get("uncached_input", 0)
-                            o = tc.get("output", 0)
-                            d.cached_input += ci
-                            d.uncached_input += ui
-                            d.output += o
-                            d.total = d.cached_input + d.uncached_input + d.output
-            except (OSError, json.JSONDecodeError):
-                continue
+        priced_tokens += breakdown.total
+        day = _event_date(timestamp, mtime).date()
+        active_periods = ["cumulative"]
+        if day == today:
+            active_periods.append("today")
+        if rolling_start <= day <= today:
+            active_periods.append("rolling_week")
+        if week_start <= day <= today:
+            active_periods.append("week")
+        if month_start <= day <= today:
+            active_periods.append("month")
+        for period in active_periods:
+            item = grouped[period][model]
+            item.cached_input += breakdown.cached_input
+            item.uncached_input += breakdown.uncached_input
+            item.output += breakdown.output
+    values = {
+        period: round(sum(
+            estimate_model_api_value(tokens, model) or 0.0
+            for model, tokens in grouped[period].items()
+        ), 2)
+        for period in periods
+    }
+    total = priced_tokens + unpriced_tokens
+    values.update({
+        "priced_tokens": priced_tokens,
+        "unpriced_tokens": unpriced_tokens,
+        "coverage_pct": priced_tokens / total * 100 if total else 0.0,
+    })
+    return _store("model_priced_values", values)
 
-    result = sorted(daily.values(), key=lambda x: x.date, reverse=True)
-    result = result[:180]
-    _cache[cache_key] = (time.time(), result)
-    return result
+
+def _parse_updated(value) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def read_task_board() -> list[TaskItem]:
-    import time
-    cache_key = "task_board"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
-
+    cached = _cached("task_board")
+    if cached is not None:
+        return cached
     tasks: list[TaskItem] = []
     db_path = _state_db_path()
     if db_path:
         try:
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, title, status, updated_at, project "
-                "FROM threads WHERE status IS NOT NULL "
-                "ORDER BY updated_at DESC LIMIT 50"
-            )
-            for row in cursor.fetchall():
-                tid, title, status, updated_at, project = row
-                status_map = {
-                    "running": "running",
-                    "pending": "pending",
-                    "scheduled": "scheduled",
-                    "completed": "completed",
-                }
-                s = status_map.get(status, "pending")
-                updated = None
-                if updated_at:
-                    try:
-                        updated = datetime.fromisoformat(
-                            str(updated_at).replace("Z", "+00:00")
-                        )
-                    except (ValueError, AttributeError):
-                        pass
-                tasks.append(TaskItem(
-                    id=str(tid), title=title or "Untitled",
-                    status=s, runtime=RuntimeScope.CODEX,
-                    updated_at=updated, project=project or "",
-                ))
-            conn.close()
+            with sqlite3.connect(str(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT id, title, updated_at, cwd, archived "
+                    "FROM threads ORDER BY updated_at DESC LIMIT 100"
+                ).fetchall()
+                now = datetime.now(timezone.utc)
+                for tid, title, updated, cwd, archived in rows:
+                    updated_at = _parse_updated(updated)
+                    if archived:
+                        status = "completed"
+                    elif updated_at and now - updated_at <= timedelta(minutes=15):
+                        status = "running"
+                    else:
+                        status = "pending"
+                    project = Path(str(cwd).replace("\\\\?\\", "")).name if cwd else ""
+                    tasks.append(TaskItem(
+                        id=str(tid),
+                        title=title or "未命名任务",
+                        status=status,
+                        runtime=RuntimeScope.CODEX,
+                        updated_at=updated_at,
+                        project=project,
+                    ))
         except sqlite3.Error:
             pass
 
-    # Read automations
     auto_dir = _automations_dir()
     if auto_dir.exists():
-        for toml_file in auto_dir.rglob("automation.toml"):
+        for path in auto_dir.rglob("automation.toml"):
             try:
-                with open(toml_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                import re
-                name_match = re.search(r'name\s*=\s*"([^"]+)"', content)
-                enabled = "enabled = true" in content
-                if enabled:
-                    tasks.append(TaskItem(
-                        id=toml_file.stem,
-                        title=name_match.group(1) if name_match else toml_file.stem,
-                        status="scheduled",
-                        runtime=RuntimeScope.CODEX,
-                    ))
-            except (OSError, UnicodeDecodeError):
+                content = path.read_text(encoding="utf-8")
+                if re.search(r"enabled\s*=\s*true", content, re.IGNORECASE) is None:
+                    continue
+                match = re.search(r'name\s*=\s*["\']([^"\']+)', content)
+                tasks.append(TaskItem(
+                    id=str(path),
+                    title=match.group(1) if match else path.parent.name,
+                    status="scheduled",
+                    runtime=RuntimeScope.CODEX,
+                ))
+            except (OSError, UnicodeError):
                 continue
-
-    _cache[cache_key] = (time.time(), tasks)
-    return tasks
+    today = get_statistics_timezone().now_date()
+    tasks = [
+        task for task in tasks
+        if task.status == "scheduled"
+        or task.updated_at is None
+        or get_statistics_timezone().date_for(task.updated_at) == today
+    ]
+    return _store("task_board", tasks)
 
 
 def read_projects() -> list[ProjectStats]:
-    import time
-    cache_key = "projects"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
+    cached = _cached("projects")
+    if cached is not None:
+        return cached
+    data = defaultdict(lambda: {
+        "tokens": 0, "threads": 0, "last": None,
+        "breakdown": TokenBreakdown(), "recent": TokenBreakdown(),
+        "week": TokenBreakdown(), "month": TokenBreakdown(),
+        "models": defaultdict(TokenBreakdown),
+        "recent_models": defaultdict(TokenBreakdown),
+        "week_models": defaultdict(TokenBreakdown),
+        "month_models": defaultdict(TokenBreakdown),
+        "priced_tokens": 0,
+        "week_priced_tokens": 0,
+        "month_priced_tokens": 0,
+    })
+    seen_paths: set[Path] = set()
+    path_projects = _thread_project_map()
+    today = get_statistics_timezone().now_date()
+    recent_start = today - timedelta(days=6)
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
 
-    from collections import defaultdict
-    project_tokens: dict[str, int] = defaultdict(int)
-    project_threads: dict[str, int] = defaultdict(int)
-    project_last: dict[str, Optional[datetime]] = {}
+    def add(target: TokenBreakdown, value: TokenBreakdown):
+        target.cached_input += value.cached_input
+        target.uncached_input += value.uncached_input
+        target.output += value.output
 
-    for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
-        if not session_dir.exists():
+    def priced_value(by_model) -> float:
+        return round(sum(
+            estimate_model_api_value(tokens, model) or 0.0
+            for model, tokens in by_model.items()
+        ), 2)
+
+    for path, mtime, timestamp, breakdown, event in _iter_token_deltas(days=180):
+        name = _project_name(path, event, path_projects)
+        if not name:
             continue
-        for rollout_file in session_dir.rglob("rollout-*.jsonl"):
-            try:
-                mtime = datetime.fromtimestamp(
-                    rollout_file.stat().st_mtime, tz=timezone.utc
-                )
-                parts = rollout_file.relative_to(session_dir).parts
-                project_name = parts[0] if len(parts) > 1 else "default"
-                project_threads[project_name] += 1
-                if project_name not in project_last or mtime > project_last[project_name]:
-                    project_last[project_name] = mtime
-
-                with open(rollout_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        event = parse_jsonl_line(line)
-                        if not event:
-                            continue
-                        tc = event.get("token_count")
-                        if tc and isinstance(tc, dict):
-                            project_tokens[project_name] += (
-                                tc.get("cached_input", 0)
-                                + tc.get("uncached_input", 0)
-                                + tc.get("output", 0)
-                            )
-            except (OSError, json.JSONDecodeError):
-                continue
-
-    results = []
-    for name, tokens in sorted(
-        project_tokens.items(), key=lambda x: x[1], reverse=True
-    ):
-        results.append(ProjectStats(
+        item = data[name]
+        if path not in seen_paths:
+            item["threads"] += 1
+            seen_paths.add(path)
+        if item["last"] is None or mtime > item["last"]:
+            item["last"] = mtime
+        item["tokens"] += breakdown.total
+        model = str(event.get("_codexu_model") or "")
+        day = _event_date(timestamp, mtime).date()
+        add(item["breakdown"], breakdown)
+        add(item["models"][model], breakdown)
+        if estimate_model_api_value(TokenBreakdown(), model) is not None:
+            item["priced_tokens"] += breakdown.total
+        if recent_start <= day <= today:
+            add(item["recent"], breakdown)
+            add(item["recent_models"][model], breakdown)
+        if week_start <= day <= today:
+            add(item["week"], breakdown)
+            add(item["week_models"][model], breakdown)
+            if estimate_model_api_value(TokenBreakdown(), model) is not None:
+                item["week_priced_tokens"] += breakdown.total
+        if month_start <= day <= today:
+            add(item["month"], breakdown)
+            add(item["month_models"][model], breakdown)
+            if estimate_model_api_value(TokenBreakdown(), model) is not None:
+                item["month_priced_tokens"] += breakdown.total
+    result = [
+        ProjectStats(
             name=name,
-            token_total=tokens,
-            estimated_value=estimate_api_value(
-                TokenBreakdown(
-                    uncached_input=tokens,
-                )
+            token_total=int(item["tokens"]),
+            estimated_value=priced_value(item["models"]),
+            thread_count=int(item["threads"]),
+            last_active=item["last"],
+            runtime=RuntimeScope.CODEX,
+            last_7d_token_total=item["recent"].total,
+            last_7d_estimated_value=priced_value(item["recent_models"]),
+            current_week_token_total=item["week"].total,
+            current_week_estimated_value=priced_value(item["week_models"]),
+            current_week_pricing_coverage_pct=(
+                item["week_priced_tokens"] / item["week"].total * 100 if item["week"].total else 0.0
             ),
-            thread_count=project_threads.get(name, 0),
-            last_active=project_last.get(name),
-        ))
+            current_month_token_total=item["month"].total,
+            current_month_estimated_value=priced_value(item["month_models"]),
+            current_month_pricing_coverage_pct=(
+                item["month_priced_tokens"] / item["month"].total * 100 if item["month"].total else 0.0
+            ),
+            pricing_coverage_pct=item["priced_tokens"] / item["tokens"] * 100 if item["tokens"] else 0.0,
+            source_label="精细统计",
+        )
+        for name, item in data.items()
+    ]
+    result.sort(key=lambda item: item.token_total, reverse=True)
+    return _store("projects", result[:20])
 
-    _cache[cache_key] = (time.time(), results)
-    return results
+
+def _normalized_path(value: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(str(value).replace("\\\\?\\", "")))
+
+
+_DATE_DIRECTORY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PROJECT_MARKERS = (
+    ".git", "AGENTS.md", "package.json", "pyproject.toml", "requirements.txt",
+    "Cargo.toml", "go.mod", ".openai", ".codex",
+)
+
+
+def _project_directory(value: str | Path) -> Optional[Path]:
+    raw = str(value or "").replace("\\\\?\\", "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    try:
+        if not path.is_absolute() or not path.is_dir():
+            return None
+        resolved = path.resolve()
+        if resolved == Path.home().resolve():
+            return None
+        if _DATE_DIRECTORY.match(resolved.name) or _DATE_DIRECTORY.match(resolved.parent.name):
+            return None
+        lowered_parts = {part.lower() for part in resolved.parts}
+        if ".codex" in lowered_parts or "appdata" in lowered_parts or "temp" in lowered_parts:
+            return None
+        if any((resolved / marker).exists() for marker in _PROJECT_MARKERS):
+            return resolved
+        # Creative projects may not have a code manifest. Keep an existing,
+        # non-empty directory, but exclude the date-scoped chat workspaces above.
+        if any(resolved.iterdir()):
+            return resolved
+    except (OSError, RuntimeError):
+        return None
+    return None
+
+
+def _thread_project_map() -> dict[str, Optional[str]]:
+    db_path = _state_db_path()
+    if not db_path:
+        return {}
+    result = {}
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT rollout_path, cwd FROM threads "
+                "WHERE rollout_path IS NOT NULL AND cwd IS NOT NULL"
+            ).fetchall()
+        for rollout_path, cwd in rows:
+            directory = _project_directory(cwd)
+            result[_normalized_path(rollout_path)] = directory.name if directory else None
+    except sqlite3.Error:
+        return {}
+    return result
+
+
+def _project_name(
+    path: Path,
+    event: dict,
+    path_projects: Optional[dict[str, Optional[str]]] = None,
+) -> Optional[str]:
+    """Return only an existing project directory, never a chat/session label."""
+    normalized = _normalized_path(path)
+    if path_projects is not None and normalized in path_projects:
+        return path_projects[normalized]
+    candidates = [event.get("cwd"), event.get("directory")]
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        candidates.extend([payload.get("cwd"), payload.get("directory")])
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            directory = _project_directory(value)
+            if directory:
+                return directory.name
+    return None
+
+
+def _names_from_event(event: dict, key: str) -> list[str]:
+    values = event.get(key)
+    if isinstance(values, str):
+        return [values]
+    if isinstance(values, dict):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    result = []
+    for value in values:
+        if isinstance(value, str):
+            result.append(value)
+        elif isinstance(value, dict):
+            name = value.get("name") or value.get("tool") or value.get("skill")
+            if isinstance(name, str):
+                result.append(name)
+    return result
+
+
+def _tool_category(name: str) -> str:
+    lowered = name.lower()
+    if any(token in lowered for token in ("git", "commit", "branch", "diff")):
+        return "版本控制"
+    if any(token in lowered for token in ("file", "read", "write", "patch", "edit")):
+        return "文件操作"
+    if any(token in lowered for token in ("terminal", "shell", "exec", "command")):
+        return "命令执行"
+    if any(token in lowered for token in ("web", "http", "search", "browser")):
+        return "网络访问"
+    return "其他"
 
 
 def read_tool_usage() -> list[ToolUsage]:
-    import time
-    cache_key = "tool_usage"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
-
-    from collections import defaultdict
-    tools: dict[str, int] = defaultdict(int)
-    for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
-        if not session_dir.exists():
+    cached = _cached("tool_usage")
+    if cached is not None:
+        return cached
+    counts: defaultdict[str, int] = defaultdict(int)
+    for _, _, event in _iter_rollout_events(days=180):
+        payload = event.get("payload")
+        if isinstance(payload, dict) and payload.get("type") in ("function_call", "custom_tool_call"):
+            name = payload.get("name")
+            if isinstance(name, str) and name.strip():
+                counts[name.strip()] += 1
             continue
-        for rollout_file in session_dir.rglob("rollout-*.jsonl"):
-            try:
-                with open(rollout_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        event = parse_jsonl_line(line)
-                        if not event:
-                            continue
-                        tool_calls = event.get("tool_calls", [])
-                        if isinstance(tool_calls, list):
-                            for tc in tool_calls:
-                                name = tc.get("name", "unknown") if isinstance(tc, dict) else str(tc)
-                                tools[name] += 1
-            except (OSError, json.JSONDecodeError):
-                continue
-
+        for key in ("tool_calls", "tools", "tool_use"):
+            for name in _names_from_event(event, key):
+                counts[name] += 1
+        if isinstance(payload, dict):
+            for key in ("tool_calls", "tools", "tool_use"):
+                for name in _names_from_event(payload, key):
+                    counts[name] += 1
     result = sorted(
-        [ToolUsage(name=n, call_count=c) for n, c in tools.items()],
-        key=lambda x: x.call_count, reverse=True,
-    )[:20]
-    _cache[cache_key] = (time.time(), result)
-    return result
+        [ToolUsage(
+            name=name,
+            call_count=count,
+            runtime=RuntimeScope.CODEX,
+            category=_tool_category(name),
+        ) for name, count in counts.items()],
+        key=lambda item: item.call_count,
+        reverse=True,
+    )
+    return _store("tool_usage", result)
 
 
 def read_skill_usage() -> list[SkillUsage]:
-    import time
-    cache_key = "skill_usage"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
+    cached = _cached("skill_usage")
+    if cached is not None:
+        return cached
+    counts: defaultdict[str, int] = defaultdict(int)
+    skill_paths = (
+        re.compile(r"skill://[A-Za-z0-9_./:@+-]+", re.IGNORECASE),
+        re.compile(
+            r"(?:[A-Za-z]:)?(?:[/\\][A-Za-z0-9_.$@:+~-]+){2,}[/\\]SKILL\.md",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:[A-Za-z0-9_.$@:+~-]+[/\\]){1,8}SKILL\.md",
+            re.IGNORECASE,
+        ),
+    )
 
-    from collections import defaultdict
-    skills: dict[str, int] = defaultdict(int)
-    for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
-        if not session_dir.exists():
-            continue
-        for rollout_file in session_dir.rglob("rollout-*.jsonl"):
-            try:
-                with open(rollout_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        event = parse_jsonl_line(line)
-                        if not event:
-                            continue
-                        skill = event.get("skill")
-                        if skill and isinstance(skill, str):
-                            skills[skill] += 1
-            except (OSError, json.JSONDecodeError):
-                continue
+    def skill_name(value: str) -> Optional[str]:
+        normalized = value.replace("\\", "/").rstrip("/.,;)")
+        if normalized.lower().startswith("skill://"):
+            parts = [part for part in normalized[8:].split("/") if part]
+            candidate = parts[-2] if parts and parts[-1].lower() == "skill.md" else parts[-1]
+        else:
+            parts = [part for part in normalized.split("/") if part]
+            candidate = parts[-2] if len(parts) >= 2 else ""
+        if not candidate or candidate.lower() in {"skills", "skill", "$n"} or "$" in candidate:
+            return None
+        return candidate
 
+    for _, _, event in _iter_rollout_events(days=180):
+        for key in ("skill", "skills"):
+            for name in _names_from_event(event, key):
+                counts[name] += 1
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            for key in ("skill", "skills"):
+                for name in _names_from_event(payload, key):
+                    counts[name] += 1
+            if payload.get("type") in ("function_call", "custom_tool_call"):
+                tool_name = str(payload.get("name") or "")
+                raw = payload.get("arguments") or payload.get("input") or ""
+                if isinstance(raw, (dict, list)):
+                    raw = json.dumps(raw, ensure_ascii=False)
+                if isinstance(raw, str) and tool_name in {
+                    "shell_command", "exec", "read_mcp_resource", "read_mcp_resources",
+                }:
+                    raw = raw.replace("\\\\", "\\")
+                    read_markers = (
+                        "get-content", "read_mcp_resource", "skills.read", "cat ",
+                        "type ", "more ", "less ", "read_text", ".open(", "rg ",
+                    )
+                    if tool_name in {"shell_command", "exec"} and not any(
+                        marker in raw.lower() for marker in read_markers
+                    ):
+                        continue
+                    # A Skill is counted only when an actual tool invocation addresses
+                    # its SKILL.md. Merely listing installed skills is not usage.
+                    names = set()
+                    for pattern in skill_paths:
+                        for match in pattern.finditer(raw):
+                            if name := skill_name(match.group(0)):
+                                names.add(name)
+                    for name in names:
+                        counts[name] += 1
     result = sorted(
-        [SkillUsage(name=n, use_count=c) for n, c in skills.items()],
-        key=lambda x: x.use_count, reverse=True,
-    )[:20]
-    _cache[cache_key] = (time.time(), result)
-    return result
+        [SkillUsage(name=name, use_count=count, runtime=RuntimeScope.CODEX) for name, count in counts.items()],
+        key=lambda item: item.use_count,
+        reverse=True,
+    )
+    return _store("skill_usage", result)
 
 
 def read_codex_snapshot() -> UsageSnapshot:
-    quota = read_quota_from_appserver()
-    tokens = read_token_totals_from_db()
+    quota = read_quota_from_appserver() or read_quota_from_session_events()
+    db_tokens = read_token_totals_from_db()
     session_tokens = read_session_tokens()
-
-    if tokens:
-        if session_tokens.total > 0 and tokens.cumulative.total == 0:
-            tokens.cumulative = session_tokens
-    else:
+    daily = read_daily_tokens()
+    if daily:
+        today = get_statistics_timezone().now_date()
+        rolling_start = today - timedelta(days=6)
+        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
+        today_tokens = TokenBreakdown()
+        rolling_tokens = TokenBreakdown()
+        week_tokens = TokenBreakdown()
+        month_tokens = TokenBreakdown()
+        for item in daily:
+            item_date = item.date.date() if hasattr(item.date, "date") else item.date
+            if item_date == today:
+                today_tokens.cached_input += item.cached_input
+                today_tokens.uncached_input += item.uncached_input
+                today_tokens.output += item.output
+            if rolling_start <= item_date <= today:
+                rolling_tokens.cached_input += item.cached_input
+                rolling_tokens.uncached_input += item.uncached_input
+                rolling_tokens.output += item.output
+            if week_start <= item_date <= today:
+                week_tokens.cached_input += item.cached_input
+                week_tokens.uncached_input += item.uncached_input
+                week_tokens.output += item.output
+            if month_start <= item_date <= today:
+                month_tokens.cached_input += item.cached_input
+                month_tokens.uncached_input += item.uncached_input
+                month_tokens.output += item.output
         tokens = TokenStats(
-            today=TokenBreakdown(),
-            last_7d=TokenBreakdown(),
+            today=today_tokens,
+            last_7d=rolling_tokens,
+            current_week=week_tokens,
             cumulative=session_tokens,
+            current_month=month_tokens,
         )
-
-    api_value = estimate_api_value(tokens.cumulative, CODEX_PROMPT_PRICES)
-
+    else:
+        tokens = db_tokens or TokenStats(cumulative=session_tokens)
+    priced = read_model_priced_values()
     return UsageSnapshot(
         quota_5h=quota[0] if quota else None,
         quota_7d=quota[1] if quota else None,
         tokens=tokens,
-        api_equivalent_value=api_value,
+        api_equivalent_value=float(priced["cumulative"]),
+        today_api_equivalent_value=float(priced["today"]),
+        last_7d_api_equivalent_value=float(priced["rolling_week"]),
+        current_week_api_equivalent_value=float(priced["week"]),
+        monthly_api_equivalent_value=float(priced["month"]),
+        pricing_coverage_pct=float(priced["coverage_pct"]),
+        unpriced_token_total=int(priced["unpriced_tokens"]),
+        cumulative_index_total=read_thread_index_token_total(),
     )

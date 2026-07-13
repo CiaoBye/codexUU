@@ -36,7 +36,7 @@ TRANSLATIONS = {
         "羊毛进度": "羊毛进度",
         "today_tasks": "今日任务",
         "usage_trend": "用量趋势",
-        "project_ranking": "机削排行",
+        "project_ranking": "项目排行",
         "skill": "Skill",
     },
     "en": {

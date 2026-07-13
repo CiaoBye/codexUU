@@ -1,72 +1,108 @@
 from __future__ import annotations
+
+from datetime import timedelta
+
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QPainter, QColor, QFont, QBrush
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PySide6.QtGui import QPainter, QColor, QFont
+from PySide6.QtWidgets import QWidget, QToolTip
 
-from app.data.models import DailyToken, format_tokens
-
-FONT = "Microsoft YaHei"
+from app.utils.statistics_timezone import get_statistics_timezone
 
 
 class TokenHeatmap(QWidget):
-    CELL_SIZE = 14
-    CELL_GAP = 3
+    CELL_SIZE = 13
+    CELL_GAP_X = 4
+    CELL_GAP_Y = 7
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.daily_tokens = []
-        self.setMinimumHeight(150)
+        self._cells = []
+        self.setMinimumHeight(160)
+        self.setMinimumWidth(485)
+        self.setMouseTracking(True)
 
     def set_data(self, daily_tokens):
-        self.daily_tokens = daily_tokens
+        self.daily_tokens = list(daily_tokens or [])
         self.update()
 
+    def mouseMoveEvent(self, event):
+        for rect, item in self._cells:
+            if rect.contains(event.position()):
+                item_date = item.date.date() if hasattr(item.date, "date") else item.date
+                QToolTip.showText(
+                    event.globalPosition().toPoint(),
+                    f"{item_date.isoformat()}\n总量 {item.total:,}\n"
+                    f"缓存 {item.cached_input:,} · 未缓存 {item.uncached_input:,} · 输出 {item.output:,}",
+                    self,
+                )
+                return
+        QToolTip.hideText()
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
     def paintEvent(self, event):
-        if not self.daily_tokens:
-            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        data = sorted(self.daily_tokens, key=lambda x: x.date)[-180:]
-        max_val = max(d.total for d in data) if data else 1
-        if max_val == 0:
-            max_val = 1
-        cs, cg, cols = self.CELL_SIZE, self.CELL_GAP, 7
+        end = get_statistics_timezone().now_date()
+        start = end - timedelta(days=179)
+        start -= timedelta(days=(start.weekday() + 1) % 7)
+        values = {}
+        for item in self.daily_tokens:
+            item_date = item.date.date() if hasattr(item.date, "date") else item.date
+            values[item_date] = item
+        active_values = sorted(item.total for item in self.daily_tokens if item.total > 0)
 
-        for i, day in enumerate(data):
-            col, row = i % cols, i // cols
-            x, y = col * (cs + cg) + 20, row * (cs + cg) + 20
-            intensity = day.total / max_val if max_val > 0 else 0
-            if day.total == 0:
-                color = QColor("#1a1a2e")
-            else:
-                color = QColor(
-                    min(255, 99 + int(156 * intensity)),
-                    min(255, 102 + int(139 * (1 - intensity))),
-                    241,
+        def quantile(value: float) -> int:
+            if not active_values:
+                return 0
+            return active_values[round((len(active_values) - 1) * value)]
+
+        thresholds = (quantile(0.25), quantile(0.50), quantile(0.75))
+        light_levels = ("#dceeff", "#b8dcff", "#78bdff", "#329fff")
+        dark_levels = ("#173653", "#1d527c", "#2677ad", "#329fff")
+        levels = light_levels if self._is_light() else dark_levels
+        weeks = 27
+        self._cells = []
+        left = 32
+        grid_height = 7 * self.CELL_SIZE + 6 * self.CELL_GAP_Y
+        top = max(28, self.height() - 28 - grid_height)
+        for column in range(weeks):
+            for row in range(7):
+                item_date = start + timedelta(days=column * 7 + row)
+                item = values.get(item_date)
+                total = item.total if item else 0
+                if not item:
+                    color = QColor("#f1f3f5") if self._is_light() else QColor("#202733")
+                else:
+                    level = sum(total > threshold for threshold in thresholds)
+                    color = QColor(levels[min(3, level)])
+                x = left + column * (self.CELL_SIZE + self.CELL_GAP_X)
+                y = top + row * (self.CELL_SIZE + self.CELL_GAP_Y)
+                rect = QRectF(x, y, self.CELL_SIZE, self.CELL_SIZE)
+                painter.setBrush(color)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(rect, 3, 3)
+                if item:
+                    self._cells.append((rect, item))
+
+        painter.setFont(QFont("Segoe UI", 8))
+        painter.setPen(QColor("#8a94a6"))
+        for row, label in enumerate(("日", "一", "二", "三", "四", "五", "六")):
+            painter.drawText(QRectF(0, top + row * (self.CELL_SIZE + self.CELL_GAP_Y) - 1, 22, 16), Qt.AlignmentFlag.AlignCenter, label)
+        last_month = None
+        for column in range(weeks):
+            month_date = start + timedelta(days=column * 7)
+            if month_date.month != last_month:
+                painter.drawText(
+                    left + column * (self.CELL_SIZE + self.CELL_GAP_X),
+                    top - 11,
+                    month_date.strftime("%Y/%m"),
                 )
-            painter.setBrush(QBrush(color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(QRectF(x, y, cs, cs), 3, 3)
-            if day.total > 0:
-                painter.setPen(QColor(255, 255, 255, 180))
-                painter.setFont(QFont(FONT, 5))
-                label = f"{day.total // 1000}k" if day.total >= 1000 else str(day.total)
-                painter.drawText(QRectF(x, y, cs, cs), Qt.AlignmentFlag.AlignCenter, label[:3])
+                last_month = month_date.month
 
-        self.setMinimumHeight((len(data) // cols + 1) * (cs + cg) + 40)
-
-
-class HeatmapWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("Token \u70ed\u529b\u56fe (\u8fd16\u4e2a\u6708)")
-        title.setFont(QFont(FONT, 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #e0e0e0; padding: 8px 0;")
-        layout.addWidget(title)
-        self.heatmap = TokenHeatmap()
-        layout.addWidget(self.heatmap)
-
-    def set_data(self, daily_tokens):
-        self.heatmap.set_data(daily_tokens)
+    def _is_light(self) -> bool:
+        color = self.palette().window().color()
+        return color.lightness() > 150

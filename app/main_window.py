@@ -1,36 +1,60 @@
 from __future__ import annotations
 import ctypes
+from pathlib import Path
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut, QCloseEvent
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout
+from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
 
 from app.ui.dashboard import DashboardWidget
+from app.utils.settings import SettingsManager
+from app.utils.translation import TranslationManager
+from app.utils.theme import ThemeManager
+from app.utils.global_hotkey import GlobalHotkey
 
 
 class MainAppWindow(QMainWindow):
-    def __init__(self, parent=None, settings_manager=None, 
-                 translation_manager=None, theme_manager=None):
+    def __init__(self, parent=None, settings_manager=None,
+                 translation_manager: TranslationManager = None,
+                 theme_manager: ThemeManager = None):
         super().__init__(parent)
         self.settings_manager = settings_manager
         self.translation_manager = translation_manager
         self.theme_manager = theme_manager
-        
-        self.setWindowTitle("codexU")
-        self.setMinimumSize(960, 680)
-        self.resize(1060, 740)
-
-        self.setStyleSheet("QMainWindow { background: #12122a; }")
+        self.setWindowTitle("CodexUU")
+        self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "icons" / "codexu-logo.svg")))
+        self.setMinimumSize(1060, 720)
+        self.resize(1180, 800)
+        self.setObjectName("mainWindow")
 
         central = QWidget()
+        central.setObjectName("centralWidget")
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.dashboard = DashboardWidget(translation_manager=self.translation_manager)
+        self.dashboard = DashboardWidget(
+            settings_manager=settings_manager,
+            translation_manager=translation_manager,
+            theme_manager=theme_manager,
+        )
         layout.addWidget(self.dashboard)
+        self.dashboard.request_close.connect(self._handle_close_request)
 
-        QShortcut(QKeySequence("Ctrl+U"), self).activated.connect(self.toggle_visibility)
+        self.global_hotkey = GlobalHotkey(QApplication.instance(), self, self)
+        self.global_hotkey.activated.connect(self.toggle_visibility)
+        self.hotkey_registered = False
+        self._applied_shortcut = ""
+        self._always_on_top = False
+        if self.theme_manager:
+            self.theme_manager.add_listener(self._apply_manager_theme)
+        if self.settings_manager:
+            self.settings_manager.add_listener(self._apply_window_settings)
+        self._apply_window_settings()
         self._apply_dark_titlebar()
+
+    def _apply_manager_theme(self):
+        if self.theme_manager:
+            self.setStyleSheet(self.theme_manager.get_stylesheet())
 
     def toggle_visibility(self):
         if self.isVisible():
@@ -39,6 +63,32 @@ class MainAppWindow(QMainWindow):
             self.show()
             self.raise_()
             self.activateWindow()
+
+    def _apply_window_settings(self):
+        if not self.settings_manager:
+            return
+        always_on_top, _ = self.settings_manager.get_window_preferences()
+        if always_on_top != self._always_on_top:
+            was_visible = self.isVisible()
+            flags = self.windowFlags()
+            flags = flags | Qt.WindowType.WindowStaysOnTopHint if always_on_top else flags & ~Qt.WindowType.WindowStaysOnTopHint
+            self.setWindowFlags(flags)
+            self._always_on_top = always_on_top
+            if was_visible:
+                self.show()
+        shortcut = self.settings_manager.get_shortcut()
+        if shortcut != self._applied_shortcut:
+            self.hotkey_registered = self.global_hotkey.register(shortcut)
+            self._applied_shortcut = shortcut
+
+    def _handle_close_request(self):
+        behavior = self.settings_manager.get_window_preferences()[1] if self.settings_manager else "tray"
+        if behavior == "quit":
+            QApplication.instance().quit()
+        elif behavior == "minimize":
+            self.showMinimized()
+        else:
+            self.hide()
 
     def _apply_dark_titlebar(self):
         try:
@@ -51,4 +101,4 @@ class MainAppWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         event.ignore()
-        self.hide()
+        self._handle_close_request()

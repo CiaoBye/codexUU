@@ -16,8 +16,15 @@ def test_theme_manager_get_stylesheet():
     manager = ThemeManager()
     manager.set_theme("dark")
     style = manager.get_stylesheet()
-    assert "#1e1e3a" in style or "#12122a" in style
+    assert "#0f1117" in style or "#171b24" in style
     
     manager.set_theme("light")
     style = manager.get_stylesheet()
     assert "#ffffff" in style or "#f5f5f5" in style
+
+
+def test_theme_manager_keeps_auto_selection():
+    manager = ThemeManager()
+    manager.set_theme("auto")
+    assert manager.get_theme() == "auto"
+    assert manager.get_effective_theme() in ("light", "dark")

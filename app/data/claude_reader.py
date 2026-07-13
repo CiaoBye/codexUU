@@ -1,21 +1,45 @@
 from __future__ import annotations
+
 import json
 import os
+import time
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from app.data.models import (
-    QuotaInfo, TokenBreakdown, TokenStats, UsageSnapshot,
-    DailyToken, ProjectStats, ToolUsage, SkillUsage, TaskItem,
-    RuntimeScope, estimate_api_value, parse_jsonl_line,
     CLAUDE_PROMPT_PRICES,
+    DailyToken,
+    ProjectStats,
+    QuotaInfo,
+    RuntimeScope,
+    SkillUsage,
+    TaskItem,
+    TokenBreakdown,
+    TokenStats,
+    ToolUsage,
+    UsageSnapshot,
+    estimate_api_value,
+    parse_jsonl_line,
 )
+from app.utils.statistics_timezone import get_statistics_timezone
 
-# Cache for expensive operations
-_cache = {}
-_cache_timeout = 60  # seconds
+
+_cache: dict[str, tuple[float, object]] = {}
+_CACHE_TTL = 60
+
+
+def _cached(key: str):
+    item = _cache.get(key)
+    if item and time.time() - item[0] < _CACHE_TTL:
+        return item[1]
+    return None
+
+
+def _store(key: str, value):
+    _cache[key] = (time.time(), value)
+    return value
 
 
 def _claude_dir() -> Path:
@@ -31,298 +55,362 @@ def _tasks_dir() -> Path:
 
 
 def _cache_dir() -> Path:
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "codexU" / "claude-code"
     return Path(os.path.expanduser("~")) / "Library" / "Caches" / "codexU" / "claude-code"
 
 
-def read_claude_token_history() -> Optional[TokenStats]:
-    import time
-    cache_key = "claude_token_history"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
-
-    projects_path = _projects_dir()
-    if not projects_path.exists():
-        return None
-
-    today = datetime.now(timezone.utc).date()
-    seven_days_ago = today - timedelta(days=7)
-
-    today_bd = TokenBreakdown()
-    week_bd = TokenBreakdown()
-    cumulative = TokenBreakdown()
-
-    for jsonl_file in projects_path.rglob("*.jsonl"):
-        try:
-            with open(jsonl_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    event = parse_jsonl_line(line)
-                    if not event:
-                        continue
-                    msg = event.get("message", {})
-                    if not isinstance(msg, dict):
-                        continue
-                    usage = msg.get("usage")
-                    if not usage or not isinstance(usage, dict):
-                        continue
-
-                    inp = usage.get("input_tokens", 0) or 0
-                    out = usage.get("output_tokens", 0) or 0
-                    cached = usage.get("cached_input_tokens", 0) or 0
-                    uncached = inp - cached if inp > cached else inp
-
-                    cumulative.uncached_input += uncached
-                    cumulative.cached_input += cached
-                    cumulative.output += out
-
-                    ts = event.get("timestamp") or event.get("created_at")
-                    if ts:
-                        try:
-                            d = datetime.fromisoformat(
-                                str(ts).replace("Z", "+00:00")
-                            ).date()
-                            if d == today:
-                                today_bd.uncached_input += uncached
-                                today_bd.cached_input += cached
-                                today_bd.output += out
-                            if d >= seven_days_ago:
-                                week_bd.uncached_input += uncached
-                                week_bd.cached_input += cached
-                                week_bd.output += out
-                        except (ValueError, AttributeError):
-                            pass
-        except (OSError, json.JSONDecodeError):
-            continue
-
-    result = TokenStats(today=today_bd, last_7d=week_bd, cumulative=cumulative)
-    _cache[cache_key] = (time.time(), result)
-    return result
-
-
-def read_claude_quota_snapshot() -> Optional[tuple[QuotaInfo, QuotaInfo]]:
-    cache_path = _cache_dir() / "statusline-snapshot.json"
-    if not cache_path.exists():
+def read_claude_quota_snapshot() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
+    path = _cache_dir() / "statusline-snapshot.json"
+    if not path.exists():
         return None
     try:
-        with open(cache_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        limits_5h = data.get("rateLimits", {}).get("5h", {})
-        limits_7d = data.get("rateLimits", {}).get("7d", {})
+        data = json.loads(path.read_text(encoding="utf-8"))
+        limits = data.get("rateLimits", {})
 
-        quota_5h = None
-        if "used" in limits_5h and "max" in limits_5h:
-            used = limits_5h["used"]
-            max_v = limits_5h["max"]
-            if max_v > 0:
-                used_pct = used / max_v * 100
-                quota_5h = QuotaInfo(
-                    used_pct=used_pct,
-                    remaining_pct=100 - used_pct,
-                )
+        def make_quota(item) -> Optional[QuotaInfo]:
+            if not isinstance(item, dict):
+                return None
+            used = item.get("used")
+            maximum = item.get("max")
+            if maximum in (None, 0) or used is None:
+                return None
+            used_pct = max(0.0, min(100.0, float(used) / float(maximum) * 100))
+            reset = item.get("resetsAt", item.get("resetAt"))
+            reset_time = None
+            if reset:
+                try:
+                    reset_time = datetime.fromisoformat(str(reset).replace("Z", "+00:00")).astimezone()
+                except ValueError:
+                    pass
+            return QuotaInfo(used_pct=used_pct, remaining_pct=100 - used_pct, reset_time=reset_time)
 
-        quota_7d = None
-        if "used" in limits_7d and "max" in limits_7d:
-            used = limits_7d["used"]
-            max_v = limits_7d["max"]
-            if max_v > 0:
-                used_pct = used / max_v * 100
-                quota_7d = QuotaInfo(
-                    used_pct=used_pct,
-                    remaining_pct=100 - used_pct,
-                )
-
-        return (quota_5h, quota_7d)
-    except (OSError, json.JSONDecodeError, KeyError):
+        return make_quota(limits.get("5h")), make_quota(limits.get("7d"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
 
-def read_claude_projects() -> list[ProjectStats]:
-    import time
-    cache_key = "claude_projects"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
+def read_claude_token_history() -> Optional[TokenStats]:
+    cached = _cached("token_history")
+    if cached is not None:
+        return cached
+    projects = _projects_dir()
+    if not projects.exists():
+        return None
 
-    from collections import defaultdict
-    project_tokens: dict[str, int] = defaultdict(int)
-    project_threads: dict[str, int] = defaultdict(int)
-    project_last: dict[str, Optional[datetime]] = {}
-
-    projects_path = _projects_dir()
-    if not projects_path.exists():
-        return []
-
-    for jsonl_file in projects_path.rglob("*.jsonl"):
+    today = get_statistics_timezone().now_date()
+    rolling_start = today - timedelta(days=6)
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    today_bd, rolling_bd, week_bd = TokenBreakdown(), TokenBreakdown(), TokenBreakdown()
+    month_bd, cumulative = TokenBreakdown(), TokenBreakdown()
+    for path in projects.rglob("*.jsonl"):
         try:
-            mtime = datetime.fromtimestamp(
-                jsonl_file.stat().st_mtime, tz=timezone.utc
-            )
-            parts = jsonl_file.relative_to(projects_path).parts
-            project_name = parts[0] if len(parts) > 1 else "default"
-            project_threads[project_name] += 1
-            if project_name not in project_last or mtime > project_last[project_name]:
-                project_last[project_name] = mtime
-
-            with open(jsonl_file, "r", encoding="utf-8") as f:
-                for line in f:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
                     event = parse_jsonl_line(line)
                     if not event:
                         continue
-                    msg = event.get("message", {})
-                    if not isinstance(msg, dict):
+                    message = event.get("message", {})
+                    usage = message.get("usage") if isinstance(message, dict) else None
+                    if not isinstance(usage, dict):
                         continue
-                    usage = msg.get("usage")
-                    if usage and isinstance(usage, dict):
-                        project_tokens[project_name] += (
-                            usage.get("input_tokens", 0)
-                            + usage.get("output_tokens", 0)
-                        )
-        except (OSError, json.JSONDecodeError):
+                    input_tokens = int(usage.get("input_tokens", 0) or 0)
+                    cached_input = int(usage.get("cached_input_tokens", 0) or 0)
+                    cached_input += int(usage.get("cache_read_input_tokens", 0) or 0)
+                    cached_input += int(usage.get("cache_creation_input_tokens", 0) or 0)
+                    output = int(usage.get("output_tokens", 0) or 0)
+                    breakdown = TokenBreakdown(
+                        cached_input=max(0, cached_input),
+                        uncached_input=max(0, input_tokens),
+                        output=max(0, output),
+                    )
+                    cumulative.cached_input += breakdown.cached_input
+                    cumulative.uncached_input += breakdown.uncached_input
+                    cumulative.output += breakdown.output
+                    timestamp = event.get("timestamp") or event.get("created_at")
+                    try:
+                        parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                        day = get_statistics_timezone().date_for(parsed)
+                    except (TypeError, ValueError):
+                        day = get_statistics_timezone().date_for(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+                    if day == today:
+                        today_bd.cached_input += breakdown.cached_input
+                        today_bd.uncached_input += breakdown.uncached_input
+                        today_bd.output += breakdown.output
+                    if day >= rolling_start:
+                        rolling_bd.cached_input += breakdown.cached_input
+                        rolling_bd.uncached_input += breakdown.uncached_input
+                        rolling_bd.output += breakdown.output
+                    if day >= week_start:
+                        week_bd.cached_input += breakdown.cached_input
+                        week_bd.uncached_input += breakdown.uncached_input
+                        week_bd.output += breakdown.output
+                    if day >= month_start:
+                        month_bd.cached_input += breakdown.cached_input
+                        month_bd.uncached_input += breakdown.uncached_input
+                        month_bd.output += breakdown.output
+        except (OSError, UnicodeError):
             continue
+    return _store("token_history", TokenStats(
+        today=today_bd,
+        last_7d=rolling_bd,
+        current_week=week_bd,
+        cumulative=cumulative,
+        current_month=month_bd,
+    ))
 
-    result = sorted(
-        [
-            ProjectStats(
-                name=name,
-                token_total=tokens,
-                thread_count=project_threads.get(name, 0),
-                last_active=project_last.get(name),
-            )
-            for name, tokens in project_tokens.items()
-        ],
-        key=lambda x: x.token_total, reverse=True,
-    )
-    _cache[cache_key] = (time.time(), result)
-    return result
+
+def read_claude_daily_tokens() -> list[DailyToken]:
+    """Aggregate Claude transcript usage into the same 180-day shape as Codex."""
+    cached = _cached("daily_tokens")
+    if cached is not None:
+        return cached
+    daily: dict[str, DailyToken] = {}
+    projects = _projects_dir()
+    if not projects.exists():
+        return []
+    for path in projects.rglob("*.jsonl"):
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    event = parse_jsonl_line(line)
+                    message = event.get("message", {}) if event else {}
+                    usage = message.get("usage") if isinstance(message, dict) else None
+                    if not isinstance(usage, dict):
+                        continue
+                    timestamp = event.get("timestamp") or event.get("created_at")
+                    try:
+                        parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                    except (TypeError, ValueError):
+                        parsed = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                    day = get_statistics_timezone().date_for(parsed)
+                    cached_input = int(usage.get("cached_input_tokens", 0) or 0)
+                    cached_input += int(usage.get("cache_read_input_tokens", 0) or 0)
+                    cached_input += int(usage.get("cache_creation_input_tokens", 0) or 0)
+                    breakdown = TokenBreakdown(
+                        cached_input=max(0, cached_input),
+                        uncached_input=max(0, int(usage.get("input_tokens", 0) or 0)),
+                        output=max(0, int(usage.get("output_tokens", 0) or 0)),
+                    )
+                    key = day.isoformat()
+                    item = daily.setdefault(
+                        key,
+                        DailyToken(
+                            date=datetime.combine(day, datetime.min.time(), tzinfo=get_statistics_timezone().tzinfo()),
+                            runtime=RuntimeScope.CLAUDE_CODE,
+                        ),
+                    )
+                    item.cached_input += breakdown.cached_input
+                    item.uncached_input += breakdown.uncached_input
+                    item.output += breakdown.output
+                    item.total = item.cached_input + item.uncached_input + item.output
+        except (OSError, UnicodeError):
+            continue
+    result = sorted(daily.values(), key=lambda item: item.date, reverse=True)[:180]
+    return _store("daily_tokens", result)
 
 
 def read_claude_tasks() -> list[TaskItem]:
-    import time
-    cache_key = "claude_tasks"
-    if cache_key in _cache:
-        cached_time, cached_data = _cache[cache_key]
-        if time.time() - cached_time < _cache_timeout:
-            return cached_data
-
-    tasks: list[TaskItem] = []
-    tasks_path = _tasks_dir()
-    if not tasks_path.exists():
-        return tasks
-
-    for task_file in tasks_path.rglob("*.json"):
+    cached = _cached("tasks")
+    if cached is not None:
+        return cached
+    result: list[TaskItem] = []
+    tasks_dir = _tasks_dir()
+    if not tasks_dir.exists():
+        return result
+    for path in tasks_dir.rglob("*.json"):
         try:
-            with open(task_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            title = data.get("title", data.get("name", task_file.stem))
-            status = data.get("status", "pending")
-            status_map = {
-                "in_progress": "running",
-                "pending": "pending",
-                "completed": "completed",
-                "cancelled": "completed",
-            }
-            s = status_map.get(status, "pending")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            status = str(data.get("status", "pending"))
+            status = {"in_progress": "running", "pending": "pending", "completed": "completed", "cancelled": "completed"}.get(status, "pending")
+            timestamp = data.get("updated_at") or data.get("created_at")
             updated = None
-            ts = data.get("updated_at") or data.get("created_at")
-            if ts:
+            if timestamp:
                 try:
-                    updated = datetime.fromisoformat(
-                        str(ts).replace("Z", "+00:00")
-                    )
-                except (ValueError, AttributeError):
+                    updated = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                except ValueError:
                     pass
-            tasks.append(TaskItem(
-                id=task_file.stem,
-                title=title,
-                status=s,
+            result.append(TaskItem(
+                id=path.stem,
+                title=data.get("title", data.get("name", path.stem)),
+                status=status,
                 runtime=RuntimeScope.CLAUDE_CODE,
                 updated_at=updated,
                 project=data.get("project", ""),
             ))
-        except (OSError, json.JSONDecodeError, KeyError):
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
             continue
+    today = get_statistics_timezone().now_date()
+    result = [
+        task for task in result
+        if task.updated_at is None or get_statistics_timezone().date_for(task.updated_at) == today
+    ]
+    return _store("tasks", result)
 
-    _cache[cache_key] = (time.time(), tasks)
-    return tasks
+
+def read_claude_projects() -> list[ProjectStats]:
+    cached = _cached("projects")
+    if cached is not None:
+        return cached
+    data = defaultdict(lambda: {
+        "tokens": 0, "threads": 0, "last": None,
+        "breakdown": TokenBreakdown(), "recent": TokenBreakdown(),
+        "week": TokenBreakdown(), "month": TokenBreakdown(),
+    })
+    today = get_statistics_timezone().now_date()
+    recent_start = today - timedelta(days=6)
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    projects = _projects_dir()
+    if not projects.exists():
+        return []
+    for path in projects.rglob("*.jsonl"):
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            parts = path.relative_to(projects).parts
+            name = parts[0] if len(parts) > 1 else "default"
+            data[name]["threads"] += 1
+            if data[name]["last"] is None or mtime > data[name]["last"]:
+                data[name]["last"] = mtime
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    event = parse_jsonl_line(line)
+                    message = event.get("message", {}) if event else {}
+                    usage = message.get("usage") if isinstance(message, dict) else None
+                    if isinstance(usage, dict):
+                        cached_input = int(usage.get("cached_input_tokens", 0) or 0)
+                        cached_input += int(usage.get("cache_read_input_tokens", 0) or 0)
+                        cached_input += int(usage.get("cache_creation_input_tokens", 0) or 0)
+                        breakdown = TokenBreakdown(
+                            cached_input=max(0, cached_input),
+                            uncached_input=max(0, int(usage.get("input_tokens", 0) or 0)),
+                            output=max(0, int(usage.get("output_tokens", 0) or 0)),
+                        )
+                        data[name]["tokens"] += breakdown.total
+                        for field in ("cached_input", "uncached_input", "output"):
+                            data[name]["breakdown"].__dict__[field] += getattr(breakdown, field)
+                        timestamp = event.get("timestamp") or event.get("created_at")
+                        try:
+                            event_day = get_statistics_timezone().date_for(datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")))
+                        except (TypeError, ValueError):
+                            event_day = get_statistics_timezone().date_for(mtime)
+                        if event_day >= recent_start:
+                            for field in ("cached_input", "uncached_input", "output"):
+                                data[name]["recent"].__dict__[field] += getattr(breakdown, field)
+                        if week_start <= event_day <= today:
+                            for field in ("cached_input", "uncached_input", "output"):
+                                data[name]["week"].__dict__[field] += getattr(breakdown, field)
+                        if month_start <= event_day <= today:
+                            for field in ("cached_input", "uncached_input", "output"):
+                                data[name]["month"].__dict__[field] += getattr(breakdown, field)
+        except (OSError, UnicodeError):
+            continue
+    result = [
+        ProjectStats(
+            name=name,
+            token_total=item["tokens"],
+            estimated_value=estimate_api_value(item["breakdown"], CLAUDE_PROMPT_PRICES),
+            thread_count=item["threads"],
+            last_active=item["last"],
+            runtime=RuntimeScope.CLAUDE_CODE,
+            last_7d_token_total=item["recent"].total,
+            last_7d_estimated_value=estimate_api_value(item["recent"], CLAUDE_PROMPT_PRICES),
+            current_week_token_total=item["week"].total,
+            current_week_estimated_value=estimate_api_value(item["week"], CLAUDE_PROMPT_PRICES),
+            current_week_pricing_coverage_pct=100.0 if item["week"].total else 0.0,
+            current_month_token_total=item["month"].total,
+            current_month_estimated_value=estimate_api_value(item["month"], CLAUDE_PROMPT_PRICES),
+            current_month_pricing_coverage_pct=100.0 if item["month"].total else 0.0,
+            pricing_coverage_pct=100.0 if item["tokens"] else 0.0,
+            source_label="精细统计",
+        )
+        for name, item in data.items()
+    ]
+    result.sort(key=lambda item: item.token_total, reverse=True)
+    return _store("projects", result[:20])
+
+
+def _content_blocks(event: dict):
+    message = event.get("message", {})
+    content = message.get("content", []) if isinstance(message, dict) else []
+    return content if isinstance(content, list) else []
 
 
 def read_claude_tool_usage() -> list[ToolUsage]:
-    from collections import defaultdict
-    tools: dict[str, int] = defaultdict(int)
-
-    projects_path = _projects_dir()
-    if not projects_path.exists():
+    counts: defaultdict[str, int] = defaultdict(int)
+    projects = _projects_dir()
+    if not projects.exists():
         return []
-
-    for jsonl_file in projects_path.rglob("*.jsonl"):
+    for path in projects.rglob("*.jsonl"):
         try:
-            with open(jsonl_file, "r", encoding="utf-8") as f:
-                for line in f:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
                     event = parse_jsonl_line(line)
                     if not event:
                         continue
-                    content = event.get("message", {}).get("content", [])
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict):
-                                tool_use = block.get("tool_use", {})
-                                if isinstance(tool_use, dict):
-                                    name = tool_use.get("name", "unknown")
-                                    tools[name] += 1
-        except (OSError, json.JSONDecodeError):
+                    for block in _content_blocks(event):
+                        if isinstance(block, dict):
+                            tool_use = block.get("tool_use")
+                            if isinstance(tool_use, dict) and isinstance(tool_use.get("name"), str):
+                                counts[tool_use["name"]] += 1
+        except (OSError, UnicodeError):
             continue
+    def category(name: str) -> str:
+        lowered = name.lower()
+        if any(token in lowered for token in ("bash", "terminal", "shell", "exec")):
+            return "命令执行"
+        if any(token in lowered for token in ("read", "write", "edit", "glob", "grep")):
+            return "文件操作"
+        if any(token in lowered for token in ("web", "search", "fetch")):
+            return "网络访问"
+        return "其他"
 
     return sorted(
-        [ToolUsage(name=n, call_count=c, runtime=RuntimeScope.CLAUDE_CODE)
-         for n, c in tools.items()],
-        key=lambda x: x.call_count, reverse=True,
-    )[:20]
+        [ToolUsage(
+            name=name,
+            call_count=count,
+            runtime=RuntimeScope.CLAUDE_CODE,
+            category=category(name),
+        ) for name, count in counts.items()],
+        key=lambda item: item.call_count,
+        reverse=True,
+    )
 
 
 def read_claude_skill_usage() -> list[SkillUsage]:
-    skills: dict[str, int] = {}
-    projects_path = _projects_dir()
-    if not projects_path.exists():
+    counts: defaultdict[str, int] = defaultdict(int)
+    projects = _projects_dir()
+    if not projects.exists():
         return []
-
-    for jsonl_file in projects_path.rglob("*.jsonl"):
+    for path in projects.rglob("*.jsonl"):
         try:
-            with open(jsonl_file, "r", encoding="utf-8") as f:
-                for line in f:
+            with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
                     event = parse_jsonl_line(line)
-                    if not event:
-                        continue
-                    content = event.get("message", {}).get("content", [])
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict):
-                                skill = block.get("skill")
-                                if skill and isinstance(skill, str):
-                                    skills[skill] = skills.get(skill, 0) + 1
-        except (OSError, json.JSONDecodeError):
+                    for block in _content_blocks(event or {}):
+                        if isinstance(block, dict) and isinstance(block.get("skill"), str):
+                            counts[block["skill"]] += 1
+        except (OSError, UnicodeError):
             continue
-
     return sorted(
-        [SkillUsage(name=n, use_count=c, runtime=RuntimeScope.CLAUDE_CODE)
-         for n, c in skills.items()],
-        key=lambda x: x.use_count, reverse=True,
-    )[:20]
+        [SkillUsage(name=name, use_count=count, runtime=RuntimeScope.CLAUDE_CODE) for name, count in counts.items()],
+        key=lambda item: item.use_count,
+        reverse=True,
+    )
 
 
 def read_claude_snapshot() -> UsageSnapshot:
     quota = read_claude_quota_snapshot()
-    tokens = read_claude_token_history()
-
-    api_value = estimate_api_value(
-        tokens.cumulative if tokens else TokenBreakdown(),
-        CLAUDE_PROMPT_PRICES,
-    ) if tokens else 0.0
-
+    tokens = read_claude_token_history() or TokenStats()
     return UsageSnapshot(
         quota_5h=quota[0] if quota else None,
         quota_7d=quota[1] if quota else None,
-        tokens=tokens or TokenStats(),
-        api_equivalent_value=api_value,
+        tokens=tokens,
+        api_equivalent_value=estimate_api_value(tokens.cumulative, CLAUDE_PROMPT_PRICES),
+        today_api_equivalent_value=estimate_api_value(tokens.today, CLAUDE_PROMPT_PRICES),
+        last_7d_api_equivalent_value=estimate_api_value(tokens.last_7d, CLAUDE_PROMPT_PRICES),
+        current_week_api_equivalent_value=estimate_api_value(tokens.current_week, CLAUDE_PROMPT_PRICES),
+        monthly_api_equivalent_value=estimate_api_value(tokens.current_month, CLAUDE_PROMPT_PRICES),
+        pricing_coverage_pct=100.0 if tokens.cumulative.total else 0.0,
     )

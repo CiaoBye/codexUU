@@ -1,0 +1,89 @@
+# CodexUU
+
+CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，参考 [shanggqm/codexU](https://github.com/shanggqm/codexU) 的信息架构重新实现。
+
+它读取本机 Codex 与 Claude Code 数据，集中展示额度窗口、Token 用量、API 等效价值、任务、趋势、项目排行、Skill 与工具调用。数据默认只在本机处理，不上传线程内容、项目路径或使用记录。
+
+> CodexUU 是非官方项目，与 OpenAI、Anthropic 及上游 codexU 无隶属关系。
+
+## 当前功能
+
+- Codex 5 小时 / 7 天额度窗口，缺失窗口按需隐藏，不伪造占位额度。
+- 额度支持“剩余 / 已用”口径切换，并使用相反的环形进度方向表达。
+- 今日、本周、本月、累计 Token，细分未缓存输入、缓存输入和输出。
+- 按日志实际模型和公开单价估算 API 等效价值，未知模型显示计价覆盖率。
+- 今日任务看板：进行中、待处理、定时、完成。
+- 每日、每周、每月、累计趋势；每日视图包含半年 Token 活动热力图。
+- 项目用量排行与项目活动概览，支持本周、本月、累计口径。
+- Skill 使用与明确工具调用事件统计。
+- Codex / Claude Code 数据源在设置页切换。
+- 自动、浅色、深色主题和中英文界面。
+- Windows 原生全局快捷键、主窗口置顶、关闭行为配置。
+- 托盘快速状态悬浮窗，可快速查看 Codex / Claude Code 今日用量和额度。
+- GitHub Release 自动检查、手动检查、Release 页面和 Windows 安装包下载入口。
+- 数据源诊断：Codex app-server、SQLite、session 精细事件和 Claude transcript。
+- 统计时区支持跟随系统、UTC 和固定 IANA 时区。
+- 刷新防重复执行，并提供刷新中、完成和失败反馈。
+
+## 数据来源与口径
+
+| 数据 | 来源 |
+|---|---|
+| Codex 额度 | 优先调用 `codex app-server`，失败时回退最新 session 中的 rate limit 事件 |
+| 累计 Token | `~/.codex/state_5.sqlite` 线程索引 |
+| Token 拆分与趋势 | `~/.codex/sessions/**/rollout-*.jsonl`、`archived_sessions` 中的 `token_count` |
+| 今日任务 | Codex SQLite 线程、启用中的 automation 与 Claude task |
+| 项目排行 | session 中的工作目录与精细 Token 增量，只保留仍存在的真实项目目录 |
+| Skill 数据 | 明确的 Skill 加载，以及关联的 `function_call`、`custom_tool_call` 或对应 Runtime 显式事件 |
+| Claude Code | `~/.claude/projects/**/*.jsonl`、tasks 与可选 statusline snapshot |
+
+“本周”固定按所选统计时区的周一 00:00 到周日 23:59 计算。所有累计、趋势和项目数字均为本机记录，不代表跨设备账号活动页统计。
+
+## 运行要求
+
+- Windows 10/11
+- Python 3.11 或更高版本
+- 本机至少运行过一次 Codex；Claude Code 数据为可选
+
+## 本地运行
+
+```powershell
+git clone https://github.com/CiaoBye/codexUU.git
+cd codexUU
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python main.py
+```
+
+程序关闭主窗口后默认保留在系统托盘。默认全局快捷键为 `Ctrl+U`，可在设置中修改。
+
+## 设置说明
+
+- 通用：语言、Runtime、更新偏好、全局快捷键、置顶和关闭行为。
+- 外观：主题、额度已用/剩余口径、减少动态效果。
+- 系统：GitHub 更新、统计时区和数据源诊断。
+
+更新检查访问本仓库公开的 GitHub Releases API。若 Release 附带 `.msi`、`.exe` 或 Windows `.zip`，设置页会启用“下载更新”；应用不会静默安装。
+
+## 开发与验证
+
+```powershell
+python -m compileall -q app main.py
+$env:PYTHONPATH='.'
+python -m pytest -q
+powershell -ExecutionPolicy Bypass -File scripts\restart.ps1
+```
+
+Qt 界面修改还应使用 `QT_QPA_PLATFORM=offscreen` 完成窗口、主题、Tab 和真实数据 smoke test。
+
+## 已知边界
+
+- Codex 本地额度接口只提供百分比与重置时间，不提供绝对配额。
+- Codex App 账号活动页可能包含跨设备、云端任务及已清理历史，因此不会与本机统计完全一致。
+- Claude Code 额度依赖可选本地 statusline snapshot；缺失时只展示可验证的本机历史用量。
+- API 等效价值是按公开 API 单价计算的估算值，不代表实际账单或返现。
+
+## 致谢
+
+界面信息架构、额度窗口和本地优先思路参考了 [shanggqm/codexU](https://github.com/shanggqm/codexU)。CodexUU 针对 Windows、Qt 与本机数据源做了独立实现和扩展。

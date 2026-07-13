@@ -22,3 +22,11 @@ def test_translation_manager_english():
 def test_translation_manager_fallback():
     manager = TranslationManager()
     assert manager.tr("nonexistent_key") == "nonexistent_key"
+
+
+def test_translation_listener_is_zero_argument_callback():
+    manager = TranslationManager()
+    changed = []
+    manager.add_listener(lambda: changed.append(manager.get_language()))
+    manager.set_language("en")
+    assert changed == ["en"]

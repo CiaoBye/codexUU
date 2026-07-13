@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtCore import Qt, QRectF, Signal, QObject
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -103,14 +103,19 @@ class TrayManager(QObject):
     show_main_window = Signal()
     show_settings = Signal()
     quit_app = Signal()
+    status_icon_changed = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, settings_manager=None, parent=None):
         super().__init__(parent)
+        self.settings_manager = settings_manager
         self.data = MultiRuntimeUsageSnapshot()
+        self._icon_key = None
         self.panel = TrayQuickPanel()
         self.panel.show_main.connect(self._open_main)
         self.panel.show_settings.connect(self._open_settings)
         self._setup_tray()
+        if self.settings_manager:
+            self.settings_manager.add_listener(self._refresh_status_icon)
 
     def _setup_tray(self):
         icon_path = Path(__file__).resolve().parents[1] / "resources" / "icons" / "codexu-logo.svg"
@@ -167,5 +172,55 @@ class TrayManager(QObject):
     def update_data(self, data):
         self.data = data
         self.panel.update_data(data)
-        total = data.codex.tokens.today_total + data.claude_code.tokens.today_total
-        self.tray_icon.setToolTip(f"CodexUU | 今日: {format_tokens(total)}")
+        self._refresh_status_icon()
+
+    def _refresh_status_icon(self):
+        runtime = self.settings_manager.get_active_runtime() if self.settings_manager else "codex"
+        snapshot = self.data.claude_code if runtime == "claudeCode" else self.data.codex
+        mode = self.settings_manager.get_quota_display() if self.settings_manager else "remaining"
+        quota = snapshot.quota_7d or snapshot.quota_5h
+        value = None
+        if quota is not None:
+            value = quota.used_pct if mode == "used" else quota.remaining_pct
+        icon_key = (runtime, mode, None if value is None else round(value))
+        if icon_key != self._icon_key:
+            icon = self._status_icon(value, mode)
+            self.tray_icon.setIcon(icon)
+            self.status_icon_changed.emit(icon)
+            self._icon_key = icon_key
+        runtime_name = "Claude Code" if runtime == "claudeCode" else "Codex"
+        quota_name = "7d" if snapshot.quota_7d else "5h"
+        quota_text = "--" if value is None else f"{value:.0f}%"
+        mode_text = "已用" if mode == "used" else "剩余"
+        self.tray_icon.setToolTip(
+            f"CodexUU\n{runtime_name} · {quota_name} {mode_text} {quota_text}\n"
+            f"今日 {format_tokens(snapshot.tokens.today.total)}\n单击查看快速状态"
+        )
+
+    @staticmethod
+    def _status_icon(value, mode):
+        """Windows 通知区只允许图标；用动态额度环表达状态，避免常驻文本。"""
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bounds = QRectF(8, 8, 48, 48)
+        painter.setPen(QPen(QColor("#d8deea"), 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawArc(bounds, 0, 360 * 16)
+        if value is not None:
+            value = max(0.0, min(100.0, float(value)))
+            color = QColor("#3296f3") if mode == "used" else QColor("#8668f2")
+            direction = 1 if mode == "used" else -1
+            painter.setPen(QPen(color, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(bounds, 90 * 16, int(direction * 360 * 16 * value / 100))
+            text = f"{value:.0f}"
+        else:
+            text = "U"
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#f8fafc"))
+        painter.drawEllipse(bounds.adjusted(7, 7, -7, -7))
+        painter.setPen(QColor("#25324a"))
+        painter.setFont(QFont("Segoe UI Variable", 16, QFont.Weight.Bold))
+        painter.drawText(QRectF(12, 15, 40, 32), Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
+        return QIcon(pixmap)

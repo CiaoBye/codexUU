@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -71,6 +71,15 @@ def icon_path(name: str) -> str:
     return str(ICONS_DIR / name)
 
 
+def icon_label(name: str, size: int = 16) -> QLabel:
+    label = QLabel()
+    label.setFixedSize(size, size)
+    label.setPixmap(QPixmap(icon_path(name)).scaled(
+        size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+    ))
+    return label
+
+
 class Surface(QFrame):
     def __init__(self, object_name: str = "surfaceCard", parent=None):
         super().__init__(parent)
@@ -113,17 +122,13 @@ class MetricCard(Surface):
         self.value.setObjectName("metricValue")
         value_row.addWidget(self.value)
         value_row.addStretch()
-        self.trend_badge = QLabel("")
-        self.trend_badge.setObjectName("neutralBadge")
-        self.trend_badge.hide()
-        value_row.addWidget(self.trend_badge)
         layout.addLayout(value_row)
         layout.addStretch()
         self.breakdown = QLabel("未缓存 0  ·  缓存 0  ·  输出 0")
-        self.breakdown.setObjectName("metricHint")
+        self.breakdown.setObjectName("metricBreakdown")
         self.breakdown.setTextFormat(Qt.TextFormat.RichText)
-        self.breakdown.setMinimumHeight(30)
-        self.breakdown.setWordWrap(True)
+        self.breakdown.setMinimumHeight(18)
+        self.breakdown.setWordWrap(False)
         layout.addWidget(self.breakdown)
         self.language = "zh"
         self._tokens = None
@@ -156,13 +161,6 @@ class MetricCard(Surface):
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
 
-    def set_badge(self, text="", tone="neutral"):
-        self.trend_badge.setText(text)
-        self.trend_badge.setObjectName(f"{tone}Badge")
-        self.trend_badge.style().unpolish(self.trend_badge)
-        self.trend_badge.style().polish(self.trend_badge)
-        self.trend_badge.setVisible(bool(text))
-
     def _animate_total(self, target):
         target = int(target or 0)
         if self.reduce_motion or self._display_total == 0:
@@ -186,16 +184,21 @@ class MetricCard(Surface):
             format_tokens(tokens.cached_input) if tokens else "0",
             format_tokens(tokens.output) if tokens else "0",
         )
+        self.breakdown.setToolTip(
+            f"Uncached {values[0]} · Cached {values[1]} · Output {values[2]}"
+            if self.language == "en"
+            else f"未缓存 {values[0]} · 缓存 {values[1]} · 输出 {values[2]}"
+        )
         if self.language == "en":
             self.breakdown.setText(
                 f'<span style="color:#3f95ff">Uncached {values[0]}</span> · '
-                f'<span style="color:#8d74ff">Cached {values[1]}</span><br>'
+                f'<span style="color:#8d74ff">Cached {values[1]}</span> · '
                 f'<span style="color:#e99a25">Output {values[2]}</span>'
             )
         else:
             self.breakdown.setText(
                 f'<span style="color:#3f95ff">未缓存 {values[0]}</span> · '
-                f'<span style="color:#8d74ff">缓存 {values[1]}</span><br>'
+                f'<span style="color:#8d74ff">缓存 {values[1]}</span> · '
                 f'<span style="color:#e99a25">输出 {values[2]}</span>'
             )
 
@@ -307,6 +310,7 @@ class QuotaPanel(Surface):
         layout.setSpacing(3)
         header = QHBoxLayout()
         header.setSpacing(4)
+        header.addWidget(icon_label("quota.svg", 16))
         self.title = QLabel("额度窗口")
         self.title.setObjectName("sectionTitle")
         header.addWidget(self.title)
@@ -408,15 +412,32 @@ class MilestoneProgress(QWidget):
         painter.setPen(QPen(QColor(127, 145, 172, 42), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(left, y, left + width, y)
         progress_x = left + width * self.position(self.value)
-        painter.setPen(QPen(QColor("#4e82e3"), 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(left, y, int(progress_x), y)
+        milestone_colors = {
+            "Plus": QColor("#2596f3"),
+            "Pro 100": QColor("#8267e8"),
+            "Pro 200": QColor("#b25bd6"),
+        }
+        previous_x = left
+        previous_color = milestone_colors["Plus"]
+        for label, amount in self.MILESTONES:
+            segment_end = min(progress_x, left + width * self.position(amount))
+            if segment_end > previous_x:
+                painter.setPen(QPen(previous_color, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawLine(int(previous_x), y, int(segment_end), y)
+            previous_x = left + width * self.position(amount)
+            previous_color = milestone_colors[label]
+            if progress_x <= previous_x:
+                break
+        if progress_x > previous_x:
+            painter.setPen(QPen(previous_color, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawLine(int(previous_x), y, int(progress_x), y)
         painter.setFont(QFont("Microsoft YaHei", 8))
         for label, amount in self.MILESTONES:
             x = left + width * self.position(amount)
             painter.setBrush(QColor("#ffffff"))
-            painter.setPen(QPen(QColor("#6d9dff"), 2))
+            painter.setPen(QPen(milestone_colors[label], 2))
             painter.drawEllipse(QRectF(x - 4, y - 4, 8, 8))
-            painter.setPen(QColor("#748197"))
+            painter.setPen(milestone_colors[label])
             painter.drawText(QRectF(x - 34, 17, 68, 15), Qt.AlignmentFlag.AlignCenter, label)
         painter.setPen(QColor("#748197"))
         painter.drawText(QRectF(self.width() - 72, 17, 68, 15), Qt.AlignmentFlag.AlignRight, "$46.5K")
@@ -430,6 +451,7 @@ class ValueCard(Surface):
         layout.setContentsMargins(15, 11, 15, 11)
         layout.setSpacing(7)
         header = QHBoxLayout()
+        header.addWidget(icon_label("value.svg", 16))
         self.title = QLabel("羊毛进度")
         self.title.setObjectName("sectionTitle")
         header.addWidget(self.title)
@@ -591,6 +613,7 @@ class DashboardWidget(QWidget):
         self.data = MultiRuntimeUsageSnapshot()
         self._pending_result = None
         self._loading = False
+        self._silent_refresh = False
         self._pending_error = None
 
         self.setObjectName("dashboard")
@@ -678,11 +701,6 @@ class DashboardWidget(QWidget):
         self.language_buttons[language].setChecked(True)
         header.addWidget(language_group)
 
-        self.refresh_feedback = QLabel()
-        self.refresh_feedback.setObjectName("statusPill")
-        self.refresh_feedback.hide()
-        header.addWidget(self.refresh_feedback)
-
         self.refresh_button = QPushButton()
         self.refresh_button.setIcon(QIcon(icon_path("refresh.svg")))
         self.refresh_button.setIconSize(QSize(16, 16))
@@ -749,6 +767,12 @@ class DashboardWidget(QWidget):
         tab_row = QHBoxLayout()
         tab_row.setSpacing(0)
         self.tab_bar = SlidingTabBar(("今日任务", "用量趋势", "项目排行", "Skill"))
+        for button, icon in zip(
+            self.tab_bar.buttons,
+            ("tab-today.svg", "tab-trend.svg", "tab-project.svg", "tab-skill.svg"),
+        ):
+            button.setIcon(QIcon(icon_path(icon)))
+            button.setIconSize(QSize(15, 15))
         self.tab_bar.changed.connect(self._show_tab)
         self.tab_buttons = self.tab_bar.buttons
         tab_row.addWidget(self.tab_bar)
@@ -838,18 +862,19 @@ class DashboardWidget(QWidget):
             if hasattr(widget, "set_language"):
                 widget.set_language("en" if english else "zh")
 
-    def refresh(self):
-        QTimer.singleShot(0, self._do_refresh)
+    def refresh(self, silent=False):
+        QTimer.singleShot(0, lambda: self._do_refresh(silent))
 
-    def _do_refresh(self):
+    def _do_refresh(self, silent=False):
         if self._loading:
             return
         self._loading = True
-        self.refresh_button.setEnabled(False)
-        self.refresh_button.setIcon(QIcon())
-        self.refresh_button.setText("…")
-        self.refresh_button.setToolTip("Refreshing…" if self._is_english() else "正在刷新…")
-        self._show_refresh_feedback("Refreshing…" if self._is_english() else "正在刷新…")
+        self._silent_refresh = bool(silent)
+        if not self._silent_refresh:
+            self.refresh_button.setEnabled(False)
+            self.refresh_button.setIcon(QIcon())
+            self.refresh_button.setText("…")
+            self.refresh_button.setToolTip("Refreshing…" if self._is_english() else "正在刷新…")
         self._pending_result = None
         self._pending_error = None
 
@@ -887,26 +912,24 @@ class DashboardWidget(QWidget):
             self.data.projects = projects
             self.data.tools = tools
             self.data.skills = skills
-            self.refresh_button.setEnabled(True)
-            self._restore_refresh_button()
+            if not self._silent_refresh:
+                self.refresh_button.setEnabled(True)
+                self._restore_refresh_button()
             self._update()
             now = datetime.now().strftime("%H:%M:%S")
             self.refresh_button.setToolTip(
                 f"Updated at {now}" if self._is_english() else f"刷新完成 · {now}"
             )
-            self._show_refresh_feedback(
-                f"Updated {now}" if self._is_english() else f"已刷新 {now}", 2600,
-            )
         elif not self._loading:
             self._poll_timer.stop()
-            self.refresh_button.setEnabled(True)
-            self._restore_refresh_button()
+            if not self._silent_refresh:
+                self.refresh_button.setEnabled(True)
+                self._restore_refresh_button()
             if self._pending_error:
                 self.refresh_button.setToolTip(
                     f"Refresh failed: {self._pending_error}" if self._is_english()
                     else f"刷新失败：{self._pending_error}"
                 )
-                self._show_refresh_feedback("Refresh failed" if self._is_english() else "刷新失败", 3600)
 
     def _restore_refresh_button(self):
         self.refresh_button.setText("")
@@ -915,12 +938,6 @@ class DashboardWidget(QWidget):
 
     def _is_english(self):
         return bool(self.translation_manager and self.translation_manager.get_language() == "en")
-
-    def _show_refresh_feedback(self, text, timeout=0):
-        self.refresh_feedback.setText(text)
-        self.refresh_feedback.show()
-        if timeout:
-            QTimer.singleShot(timeout, self.refresh_feedback.hide)
 
     def _visible_data(self):
         scope = self.current_scope
@@ -962,43 +979,9 @@ class DashboardWidget(QWidget):
         )
 
         tasks, daily, projects, tools, skills = self._visible_data()
-        self._update_metric_badges(daily, snapshot)
         self.task_tab.update_tasks(tasks)
         self.trend_tab.set_data(daily, snapshot.cumulative_index_total or snapshot.tokens.cumulative.total)
         self.project_tab.update_projects(projects)
         self.skill_tab.set_data(skills, tools)
         self._update_tab_summary()
         self.data_updated.emit(self.data)
-
-    def _update_metric_badges(self, daily, snapshot):
-        totals = {}
-        for item in daily:
-            day = item.date.date() if hasattr(item.date, "date") else item.date
-            totals[day] = totals.get(day, 0) + item.total
-        today = get_statistics_timezone().now_date()
-        week_start = today - timedelta(days=today.weekday())
-        previous_week = sum(
-            value for day, value in totals.items()
-            if week_start - timedelta(days=7) <= day < week_start
-        )
-        month_start = today.replace(day=1)
-        previous_month_end = month_start - timedelta(days=1)
-        previous_month_start = previous_month_end.replace(day=1)
-        previous_month = sum(
-            value for day, value in totals.items()
-            if previous_month_start <= day <= previous_month_end
-        )
-
-        def badge(card, current, previous):
-            if previous <= 0:
-                text = "New" if self._is_english() else "新增"
-                card.set_badge(text, "positive" if current > 0 else "neutral")
-                return
-            change = (current - previous) / previous * 100
-            card.set_badge(f"{change:+.0f}%", "positive" if change >= 0 else "negative")
-
-        badge(self.today_card, snapshot.tokens.today.total, totals.get(today - timedelta(days=1), 0))
-        badge(self.week_card, snapshot.tokens.current_week.total, previous_week)
-        badge(self.month_card, snapshot.tokens.current_month.total, previous_month)
-        coverage = f"Priced {snapshot.pricing_coverage_pct:.0f}%" if self._is_english() else f"计价 {snapshot.pricing_coverage_pct:.0f}%"
-        self.cumulative_card.set_badge(coverage, "neutral")

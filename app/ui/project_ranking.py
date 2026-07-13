@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -21,6 +24,16 @@ from app.utils.statistics_timezone import get_statistics_timezone
 
 
 MODES = ("week", "month", "all")
+ICONS_DIR = Path(__file__).resolve().parents[2] / "resources" / "icons"
+
+
+def _header_icon(name):
+    icon = QLabel()
+    icon.setFixedSize(16, 16)
+    icon.setPixmap(QPixmap(str(ICONS_DIR / name)).scaled(
+        16, 16, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+    ))
+    return icon
 
 
 def project_values(project: ProjectStats, mode: str):
@@ -168,6 +181,7 @@ class ProjectRankingWidget(QWidget):
         left.setContentsMargins(13, 10, 13, 10)
         left.setSpacing(8)
         header = QHBoxLayout()
+        header.addWidget(_header_icon("tab-project.svg"))
         self.ranking_title = QLabel("项目用量排行")
         self.ranking_title.setObjectName("sectionTitle")
         header.addWidget(self.ranking_title)
@@ -195,6 +209,7 @@ class ProjectRankingWidget(QWidget):
         right.setContentsMargins(13, 10, 13, 10)
         right.setSpacing(8)
         overview_header = QHBoxLayout()
+        overview_header.addWidget(_header_icon("activity.svg"))
         self.overview_title = QLabel("项目活动概览")
         self.overview_title.setObjectName("sectionTitle")
         overview_header.addWidget(self.overview_title)

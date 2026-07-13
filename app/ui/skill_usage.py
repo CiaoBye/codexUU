@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -13,9 +16,11 @@ from PySide6.QtWidgets import (
 
 from app.data.models import SkillUsage, ToolUsage
 
+ICONS_DIR = Path(__file__).resolve().parents[2] / "resources" / "icons"
+
 
 class _UsageList(QFrame):
-    def __init__(self, title: str, source: str, empty_text: str, parent=None):
+    def __init__(self, title: str, source: str, empty_text: str, icon_name: str, parent=None):
         super().__init__(parent)
         self.setObjectName("surfaceCard")
         self.empty_text = empty_text
@@ -24,6 +29,12 @@ class _UsageList(QFrame):
         outer.setSpacing(8)
 
         header = QHBoxLayout()
+        icon = QLabel()
+        icon.setFixedSize(16, 16)
+        icon.setPixmap(QPixmap(str(ICONS_DIR / icon_name)).scaled(
+            16, 16, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        ))
+        header.addWidget(icon)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("sectionTitle")
         header.addWidget(self.title_label)
@@ -103,11 +114,13 @@ class SkillUsageWidget(QWidget):
             "Skill 使用 TOP20",
             "明确 SKILL.md 加载",
             "未发现明确的 Skill 加载记录\n不会把已安装 Skill 或普通文本提及算作使用",
+            "tab-skill.svg",
         )
         self.tools = _UsageList(
             "工具调用 TOP20",
             "函数调用事件",
             "未发现明确的工具调用事件",
+            "tab-tool.svg",
         )
         layout.addWidget(self.skills, 1)
         layout.addWidget(self.tools, 1)

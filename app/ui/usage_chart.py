@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QPointF, QRectF
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -24,6 +25,16 @@ from app.utils.statistics_timezone import get_statistics_timezone
 
 
 MODES = ("daily", "weekly", "monthly", "cumulative")
+ICONS_DIR = Path(__file__).resolve().parents[2] / "resources" / "icons"
+
+
+def _header_icon(name):
+    icon = QLabel()
+    icon.setFixedSize(16, 16)
+    icon.setPixmap(QPixmap(str(ICONS_DIR / name)).scaled(
+        16, 16, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+    ))
+    return icon
 
 
 def _item_date(item) -> date:
@@ -257,6 +268,7 @@ class UsageTrendWidget(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(14, 10, 14, 10)
         left_header = QHBoxLayout()
+        left_header.addWidget(_header_icon("activity.svg"))
         self.activity_title = QLabel("Token 活动")
         self.activity_title.setObjectName("sectionTitle")
         left_header.addWidget(self.activity_title)
@@ -277,9 +289,13 @@ class UsageTrendWidget(QWidget):
         right.setObjectName("surfaceCard")
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(14, 10, 14, 10)
+        trend_header = QHBoxLayout()
+        trend_header.addWidget(_header_icon("tab-trend.svg"))
         self.trend_title = QLabel("趋势")
         self.trend_title.setObjectName("sectionTitle")
-        right_layout.addWidget(self.trend_title)
+        trend_header.addWidget(self.trend_title)
+        trend_header.addStretch()
+        right_layout.addLayout(trend_header)
         self.chart = UsagePlot()
         right_layout.addWidget(self.chart, 1)
         charts.addWidget(right, 1)

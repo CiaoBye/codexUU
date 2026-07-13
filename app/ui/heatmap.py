@@ -10,7 +10,7 @@ from app.utils.statistics_timezone import get_statistics_timezone
 
 
 class TokenHeatmap(QWidget):
-    CELL_SIZE = 13
+    CELL_SIZE = 15
     CELL_GAP_X = 4
     CELL_GAP_Y = 7
 
@@ -66,9 +66,16 @@ class TokenHeatmap(QWidget):
         levels = light_levels if self._is_light() else dark_levels
         weeks = 27
         self._cells = []
-        left = 32
-        grid_height = 7 * self.CELL_SIZE + 6 * self.CELL_GAP_Y
-        top = max(28, self.height() - 28 - grid_height)
+        left, right = 32, 8
+        available_width = max(1, self.width() - left - right)
+        cell_size = min(
+            17.0,
+            max(10.0, (available_width - (weeks - 1) * self.CELL_GAP_X) / weeks),
+        )
+        gap_x = max(2.0, (available_width - weeks * cell_size) / (weeks - 1))
+        top, bottom = 28.0, 28.0
+        available_height = max(1.0, self.height() - top - bottom)
+        gap_y = max(2.0, (available_height - 7 * cell_size) / 6)
         for column in range(weeks):
             for row in range(7):
                 item_date = start + timedelta(days=column * 7 + row)
@@ -79,9 +86,9 @@ class TokenHeatmap(QWidget):
                 else:
                     level = sum(total > threshold for threshold in thresholds)
                     color = QColor(levels[min(3, level)])
-                x = left + column * (self.CELL_SIZE + self.CELL_GAP_X)
-                y = top + row * (self.CELL_SIZE + self.CELL_GAP_Y)
-                rect = QRectF(x, y, self.CELL_SIZE, self.CELL_SIZE)
+                x = left + column * (cell_size + gap_x)
+                y = top + row * (cell_size + gap_y)
+                rect = QRectF(x, y, cell_size, cell_size)
                 painter.setBrush(color)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawRoundedRect(rect, 3, 3)
@@ -91,14 +98,14 @@ class TokenHeatmap(QWidget):
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#8a94a6"))
         for row, label in enumerate(("日", "一", "二", "三", "四", "五", "六")):
-            painter.drawText(QRectF(0, top + row * (self.CELL_SIZE + self.CELL_GAP_Y) - 1, 22, 16), Qt.AlignmentFlag.AlignCenter, label)
+            painter.drawText(QRectF(0, top + row * (cell_size + gap_y) - 1, 22, 16), Qt.AlignmentFlag.AlignCenter, label)
         last_month = None
         for column in range(weeks):
             month_date = start + timedelta(days=column * 7)
             if month_date.month != last_month:
                 painter.drawText(
-                    left + column * (self.CELL_SIZE + self.CELL_GAP_X),
-                    top - 11,
+                    left + column * (cell_size + gap_x),
+                    5,
                     month_date.strftime("%Y/%m"),
                 )
                 last_month = month_date.month

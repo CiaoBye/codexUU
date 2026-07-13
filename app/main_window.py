@@ -78,8 +78,13 @@ class MainAppWindow(QMainWindow):
                 self.show()
         shortcut = self.settings_manager.get_shortcut()
         if shortcut != self._applied_shortcut:
-            self.hotkey_registered = self.global_hotkey.register(shortcut)
+            self.try_register_shortcut(shortcut)
+
+    def try_register_shortcut(self, shortcut):
+        self.hotkey_registered = self.global_hotkey.register(shortcut)
+        if self.hotkey_registered:
             self._applied_shortcut = shortcut
+        return self.hotkey_registered
 
     def _handle_close_request(self):
         behavior = self.settings_manager.get_window_preferences()[1] if self.settings_manager else "tray"

@@ -1,5 +1,7 @@
 # CodexUU
 
+当前预览版本：`0.0.11`。版本从 `0.0.1` 起步，每完成一轮可验收的代码更新递增补丁版本，并同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
+
 CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，参考 [shanggqm/codexU](https://github.com/shanggqm/codexU) 的信息架构重新实现。
 
 它读取本机 Codex 与 Claude Code 数据，集中展示额度窗口、Token 用量、API 等效价值、任务、趋势、项目排行、Skill 与工具调用。数据默认只在本机处理，不上传线程内容、项目路径或使用记录。
@@ -19,6 +21,7 @@ CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，
 - Codex / Claude Code 数据源在设置页切换。
 - 自动、浅色、深色主题和中英文界面。
 - Windows 原生全局快捷键、主窗口置顶、关闭行为配置。
+- Windows 11 动态托盘额度环、详细状态 tooltip 与单击快速状态悬浮窗；通知区图标会按当前 Runtime 和额度已用/剩余口径更新。
 - 托盘快速状态悬浮窗，可快速查看 Codex / Claude Code 今日用量和额度。
 - GitHub Release 自动检查、手动检查、Release 页面和 Windows 安装包下载入口。
 - 数据源诊断：Codex app-server、SQLite、session 精细事件和 Claude transcript。
@@ -56,7 +59,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-程序关闭主窗口后默认保留在系统托盘。默认全局快捷键为 `Ctrl+U`，可在设置中修改。
+程序关闭主窗口后默认保留在系统托盘。默认全局快捷键为 `Ctrl+U`，可在设置中点击录制并修改；新组合键只有在 Windows 全局注册成功后才会保存。
+
+Windows 11 的通知区不允许第三方应用像 macOS 菜单栏一样常驻任意文本，因此 CodexUU 使用动态额度环图标、悬停详情和点击浮窗提供等价状态。若图标被收入 `^` 隐藏区，可在“设置 > 个性化 > 任务栏 > 其他系统托盘图标”中固定 CodexUU。
 
 ## 设置说明
 
@@ -65,6 +70,8 @@ python main.py
 - 系统：GitHub 更新、统计时区和数据源诊断。
 
 更新检查访问本仓库公开的 GitHub Releases API。若 Release 附带 `.msi`、`.exe` 或 Windows `.zip`，设置页会启用“下载更新”；应用不会静默安装。
+
+自动数据刷新固定为 60 秒，并使用 Windows/Qt 粗粒度定时器与刷新互斥。该周期优先控制 session 扫描和托盘重绘成本；手动刷新按钮仍可立即更新，但主界面不常驻显示自动刷新状态。
 
 ## 开发与验证
 

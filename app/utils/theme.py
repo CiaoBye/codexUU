@@ -44,6 +44,7 @@ QLabel#caption { color: #748197; font-size: 10px; }
 QLabel#metricValue { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 27px; font-weight: 700; }
 QLabel#metricLabel { color: #aab6c8; font-size: 11px; }
 QLabel#metricHint { color: #748197; font-size: 10px; }
+QLabel#metricBreakdown { color: #748197; font-size: 8px; }
 QLabel#brandMark { color: #76a7ff; font-size: 20px; font-weight: 700; }
 QLabel#brandName { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 17px; font-weight: 700; }
 QLabel#brandSubtitle { color: #748197; font-size: 10px; }
@@ -94,7 +95,12 @@ QComboBox:focus, QComboBox:on { border-color: #5e91f4; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 32px; border: 0; border-top-right-radius: 8px; border-bottom-right-radius: 8px; background: transparent; }
 QComboBox::drop-down:hover { background: #243044; }
 QComboBox::down-arrow { image: url(resources/icons/chevron-down.svg); width: 12px; height: 8px; }
-QComboBox QAbstractItemView { background: #171d27; color: #e7edf7; border: 1px solid #354157; border-radius: 8px; padding: 5px; outline: 0; selection-background-color: #315ba0; }
+QListView#comboPopup { background: #171d27; color: #e7edf7; border: 1px solid #354157; border-radius: 10px; padding: 5px; outline: 0; }
+QListView#comboPopup::item { border: 0; border-radius: 6px; padding: 6px 10px; }
+QListView#comboPopup::item:hover { background: #243044; }
+QListView#comboPopup::item:selected { background: #315ba0; color: #ffffff; }
+QPushButton#shortcutRecorder { background: #171d27; color: #e7edf7; border: 1px solid #2b3546; border-radius: 8px; padding: 7px 12px; text-align: left; }
+QPushButton#shortcutRecorder:hover, QPushButton#shortcutRecorder:focus { border-color: #5e91f4; background: #1b2330; }
 QTabWidget::pane { border: 0; background: transparent; }
 QTabBar::tab { background: transparent; color: #91a0b7; padding: 7px 12px; }
 QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #6d9dff; }
@@ -143,6 +149,7 @@ QLabel#caption { color: #8a94a6; font-size: 10px; }
 QLabel#metricValue { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 27px; font-weight: 700; }
 QLabel#metricLabel { color: #526071; font-size: 11px; }
 QLabel#metricHint { color: #8a94a6; font-size: 10px; }
+QLabel#metricBreakdown { color: #8a94a6; font-size: 8px; }
 QLabel#brandMark { color: #326ad6; font-size: 20px; font-weight: 700; }
 QLabel#brandName { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 17px; font-weight: 700; }
 QLabel#brandSubtitle { color: #8a94a6; font-size: 10px; }
@@ -193,7 +200,12 @@ QComboBox:focus, QComboBox:on { border-color: #5e91f4; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 32px; border: 0; border-top-right-radius: 8px; border-bottom-right-radius: 8px; background: transparent; }
 QComboBox::drop-down:hover { background: #edf3fb; }
 QComboBox::down-arrow { image: url(resources/icons/chevron-down.svg); width: 12px; height: 8px; }
-QComboBox QAbstractItemView { background: #ffffff; color: #26344b; border: 1px solid #d7dfeb; border-radius: 8px; padding: 5px; outline: 0; selection-background-color: #dbe8ff; }
+QListView#comboPopup { background: #ffffff; color: #26344b; border: 1px solid #cbd7e7; border-radius: 10px; padding: 5px; outline: 0; }
+QListView#comboPopup::item { border: 0; border-radius: 6px; padding: 6px 10px; }
+QListView#comboPopup::item:hover { background: #edf3fb; }
+QListView#comboPopup::item:selected { background: #dbe8ff; color: #1d54b1; }
+QPushButton#shortcutRecorder { background: #ffffff; color: #26344b; border: 1px solid #d7dfeb; border-radius: 8px; padding: 7px 12px; text-align: left; }
+QPushButton#shortcutRecorder:hover, QPushButton#shortcutRecorder:focus { border-color: #5e91f4; background: #fbfdff; }
 QTabWidget::pane { border: 0; background: transparent; }
 QTabBar::tab { background: transparent; color: #667085; padding: 7px 12px; }
 QTabBar::tab:selected { color: #1d54b1; border-bottom: 2px solid #326ad6; }

@@ -45,19 +45,21 @@ class CodexUApplication:
             translation_manager=self.translation_manager,
             theme_manager=self.theme_manager,
         )
-        self.tray = TrayManager()
+        self.tray = TrayManager(self.settings_manager)
 
         self.tray.show_main_window.connect(self._show_main)
         self.tray.show_settings.connect(self._show_settings)
         self.tray.quit_app.connect(self.app.quit)
         self.window.dashboard.open_settings.connect(self._show_settings)
         self.window.dashboard.data_updated.connect(self.tray.update_data)
+        self.tray.status_icon_changed.connect(self.window.setWindowIcon)
 
         self.window.show()
-        QTimer.singleShot(300, self.window.dashboard.refresh)
+        QTimer.singleShot(300, self._refresh)
         QTimer.singleShot(1800, self._auto_check_update)
 
         self.timer = QTimer()
+        self.timer.setTimerType(Qt.TimerType.VeryCoarseTimer)
         self.timer.timeout.connect(self._refresh)
         self.timer.start(60000)
 
@@ -80,7 +82,7 @@ class CodexUApplication:
 
     def _refresh(self):
         try:
-            self.window.dashboard.refresh()
+            self.window.dashboard.refresh(silent=True)
         except Exception:
             pass
 

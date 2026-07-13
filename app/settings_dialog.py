@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget, QApplication,
-    QKeySequenceEdit,
+    QLabel, QLineEdit, QListView, QPushButton, QStyledItemDelegate, QTabWidget,
+    QVBoxLayout, QWidget, QApplication,
 )
 
 from app.constants import APP_REPO, APP_VERSION
@@ -20,8 +20,99 @@ from app.utils.translation import TranslationManager
 from app.utils.update_checker import check_for_update
 
 
+ICONS_DIR = Path(__file__).resolve().parents[1] / "resources" / "icons"
+
+
+class _ComboDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        return QSize(size.width(), max(34, size.height()))
+
+
+class StyledComboBox(QComboBox):
+    """统一使用 Qt 自绘列表，避开 Windows 原生下拉框的方框和箭头。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        view = QListView(self)
+        view.setObjectName("comboPopup")
+        view.setSpacing(2)
+        view.setUniformItemSizes(True)
+        view.setItemDelegate(_ComboDelegate(view))
+        self.setView(view)
+        self.setMaxVisibleItems(7)
+
+
+class ShortcutRecorder(QPushButton):
+    sequence_changed = Signal(str)
+
+    def __init__(self, sequence: str, parent=None):
+        super().__init__(parent)
+        self._sequence = sequence
+        self._recording = False
+        self.setObjectName("shortcutRecorder")
+        self.setMinimumHeight(36)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.clicked.connect(self.begin_recording)
+        self._render()
+
+    def sequence(self):
+        return self._sequence
+
+    def set_sequence(self, sequence):
+        self._sequence = str(sequence or "Ctrl+U")
+        self._recording = False
+        self._render()
+
+    def begin_recording(self):
+        self._recording = True
+        self.setText("请按下新的组合键…")
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.grabKeyboard()
+
+    def keyPressEvent(self, event):
+        if not self._recording:
+            super().keyPressEvent(event)
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            self._finish_recording()
+            return
+        if event.key() in (Qt.Key.Key_Control, Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Meta):
+            return
+        modifiers = []
+        pressed = event.modifiers()
+        for flag, label in (
+            (Qt.KeyboardModifier.ControlModifier, "Ctrl"),
+            (Qt.KeyboardModifier.AltModifier, "Alt"),
+            (Qt.KeyboardModifier.ShiftModifier, "Shift"),
+            (Qt.KeyboardModifier.MetaModifier, "Win"),
+        ):
+            if pressed & flag:
+                modifiers.append(label)
+        key_text = QKeySequence(event.key()).toString(QKeySequence.SequenceFormat.PortableText)
+        candidate = "+".join(modifiers + [key_text])
+        if parse_shortcut(candidate):
+            self._sequence = candidate
+            self._finish_recording()
+            self.sequence_changed.emit(candidate)
+
+    def focusOutEvent(self, event):
+        if self._recording:
+            self._finish_recording()
+        super().focusOutEvent(event)
+
+    def _finish_recording(self):
+        if self._recording:
+            self.releaseKeyboard()
+        self._recording = False
+        self._render()
+
+    def _render(self):
+        self.setText(f"{self._sequence}    ·    点击重新录制")
+
+
 def _combo(items):
-    combo = QComboBox()
+    combo = StyledComboBox()
     combo.addItems(items)
     return combo
 
@@ -79,6 +170,8 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._general_tab(), "通用")
         self.tabs.addTab(self._display_tab(), "外观")
         self.tabs.addTab(self._system_tab(), "系统")
+        for index, icon in enumerate(("settings-general.svg", "settings-display.svg", "settings-system.svg")):
+            self.tabs.setTabIcon(index, QIcon(str(ICONS_DIR / icon)))
         root.addWidget(self.tabs, 1)
 
         footer = QHBoxLayout()
@@ -110,7 +203,7 @@ class SettingsDialog(QDialog):
         self.lang_combo.setCurrentIndex(0 if self.translation_manager.get_language() == "zh" else 1)
         self.lang_combo.currentIndexChanged.connect(self._on_language_index)
         form.addRow("语言", self.lang_combo)
-        self.runtime_combo = QComboBox()
+        self.runtime_combo = StyledComboBox()
         self.runtime_combo.addItem("Codex", "codex")
         self.runtime_combo.addItem("Claude Code", "claudeCode")
         self.runtime_combo.setCurrentIndex(0 if self.settings_manager.get_active_runtime() == "codex" else 1)
@@ -129,9 +222,18 @@ class SettingsDialog(QDialog):
 
         self.window_card, window_form = self._card("窗口与快捷键")
         self.window_form = window_form
-        self.shortcut_edit = QKeySequenceEdit(QKeySequence(self.settings_manager.get_shortcut()))
-        self.shortcut_edit.editingFinished.connect(self._save_shortcut)
-        window_form.addRow("全局快捷键", self.shortcut_edit)
+        self.shortcut_row = QWidget()
+        shortcut_layout = QHBoxLayout(self.shortcut_row)
+        shortcut_layout.setContentsMargins(0, 0, 0, 0)
+        shortcut_layout.setSpacing(8)
+        self.shortcut_edit = ShortcutRecorder(self.settings_manager.get_shortcut())
+        self.shortcut_edit.sequence_changed.connect(self._save_shortcut)
+        shortcut_layout.addWidget(self.shortcut_edit, 1)
+        self.shortcut_reset = QPushButton("恢复默认")
+        self.shortcut_reset.setObjectName("iconButton")
+        self.shortcut_reset.clicked.connect(lambda: self._save_shortcut("Ctrl+U"))
+        shortcut_layout.addWidget(self.shortcut_reset)
+        window_form.addRow("全局快捷键", self.shortcut_row)
         self.shortcut_status = QLabel("")
         self.shortcut_status.setObjectName("caption")
         window_form.addRow("状态", self.shortcut_status)
@@ -139,7 +241,7 @@ class SettingsDialog(QDialog):
         self.always_on_top_cb = _check("主窗口始终置顶", always_on_top)
         self.always_on_top_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.always_on_top_cb)
-        self.close_combo = QComboBox()
+        self.close_combo = StyledComboBox()
         self.close_combo.addItem("隐藏到托盘", "tray")
         self.close_combo.addItem("最小化", "minimize")
         self.close_combo.addItem("退出程序", "quit")
@@ -162,7 +264,7 @@ class SettingsDialog(QDialog):
         self.theme_combo.setCurrentIndex(theme_map.get(self.theme_manager.get_theme(), 2))
         self.theme_combo.currentIndexChanged.connect(self._on_theme_index)
         form.addRow("主题", self.theme_combo)
-        self.quota_combo = QComboBox()
+        self.quota_combo = StyledComboBox()
         self.quota_combo.addItem("显示剩余", "remaining")
         self.quota_combo.addItem("显示已用", "used")
         self.quota_combo.setCurrentIndex(0 if self.settings_manager.get_quota_display() == "remaining" else 1)
@@ -214,7 +316,7 @@ class SettingsDialog(QDialog):
         timezone_card = self.timezone_card
         self.timezone_form = timezone_form
         mode, identifier = self.settings_manager.get_statistics_timezone()
-        self.timezone_combo = QComboBox()
+        self.timezone_combo = StyledComboBox()
         self.timezone_combo.addItem("跟随系统", "system")
         self.timezone_combo.addItem("UTC", "utc")
         self.timezone_combo.addItem("固定 IANA 时区", "fixed")
@@ -269,8 +371,8 @@ class SettingsDialog(QDialog):
         self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())
         self.settings_manager.save()
 
-    def _save_shortcut(self):
-        shortcut = self.shortcut_edit.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+    def _save_shortcut(self, shortcut=None):
+        shortcut = shortcut or self.shortcut_edit.sequence()
         if not parse_shortcut(shortcut):
             self.shortcut_status.setText(
                 "Use a modifier plus a letter, number, or F-key."
@@ -278,10 +380,22 @@ class SettingsDialog(QDialog):
                 else "请使用修饰键 + 字母、数字或 F 功能键。"
             )
             return
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "try_register_shortcut"):
+            registered = parent.try_register_shortcut(shortcut)
+            if not registered:
+                self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
+                self.shortcut_status.setText(
+                    "Shortcut is occupied; choose another."
+                    if self.translation_manager.get_language() == "en"
+                    else "快捷键被占用，请更换组合。"
+                )
+                return
+        else:
+            registered = True
+        self.shortcut_edit.set_sequence(shortcut)
         self.settings_manager.set_shortcut(shortcut)
         self.settings_manager.save()
-        parent = self.parent()
-        registered = bool(parent is not None and getattr(parent, "hotkey_registered", False))
         self.shortcut_status.setText(
             ("Saved; active globally." if self.translation_manager.get_language() == "en" else "已保存并全局生效。")
             if registered else
@@ -402,7 +516,8 @@ class SettingsDialog(QDialog):
         self.appearance_form.labelForField(self.theme_combo).setText("Theme" if english else "主题")
         self.appearance_form.labelForField(self.quota_combo).setText("Quota display" if english else "额度口径")
         self.reduce_motion_cb.setText("Reduce motion" if english else "减少动态效果")
-        self.window_form.labelForField(self.shortcut_edit).setText("Global shortcut" if english else "全局快捷键")
+        self.window_form.labelForField(self.shortcut_row).setText("Global shortcut" if english else "全局快捷键")
+        self.shortcut_reset.setText("Reset" if english else "恢复默认")
         self.window_form.labelForField(self.shortcut_status).setText("Status" if english else "状态")
         self.always_on_top_cb.setText("Keep main window on top" if english else "主窗口始终置顶")
         self.window_form.labelForField(self.close_combo).setText("Close main window" if english else "关闭主窗口")

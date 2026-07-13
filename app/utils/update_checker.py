@@ -8,7 +8,7 @@ from typing import Optional
 
 import requests
 from packaging.version import Version
-from app.constants import APP_REPO
+from app.constants import APP_REPO, APP_VERSION
 
 
 GITHUB_API = f"https://api.github.com/repos/{APP_REPO}/releases?per_page=20"
@@ -70,7 +70,7 @@ def check_for_update(current_version: str, include_beta: bool = True, force: boo
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "codexU-update-checker",
+        "User-Agent": f"CodexUU/{APP_VERSION}",
     }
     if cached and cached.get("etag"):
         headers["If-None-Match"] = str(cached["etag"])

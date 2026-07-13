@@ -42,6 +42,10 @@ def _store(key: str, value):
     return value
 
 
+def clear_cache():
+    _cache.clear()
+
+
 def _claude_dir() -> Path:
     return Path(os.path.expanduser("~")) / ".claude"
 

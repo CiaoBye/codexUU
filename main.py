@@ -2,7 +2,7 @@ from __future__ import annotations
 import sys
 import threading
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
@@ -15,6 +15,10 @@ from app.utils.theme import ThemeManager
 from app.utils.statistics_timezone import configure_statistics_timezone
 from app.utils.update_checker import check_for_update
 from app.constants import APP_NAME, APP_VERSION
+
+
+class UpdateBridge(QObject):
+    finished = Signal(object)
 
 
 class CodexUApplication:
@@ -40,6 +44,8 @@ class CodexUApplication:
         self.theme_manager.apply_theme(self.app)
 
         self.settings_dialog = None
+        self.update_bridge = UpdateBridge()
+        self.update_bridge.finished.connect(self._on_update_ready)
         self.window = MainAppWindow(
             settings_manager=self.settings_manager,
             translation_manager=self.translation_manager,
@@ -93,16 +99,16 @@ class CodexUApplication:
 
         def worker():
             release = check_for_update(APP_VERSION, include_beta=include_beta)
-            if release:
-                QTimer.singleShot(
-                    0,
-                    lambda: self.tray.tray_icon.showMessage(
-                        "CodexUU 有可用更新",
-                        f"发现 {release.tag_name}，打开设置查看详情。",
-                    ),
-                )
+            self.update_bridge.finished.emit(release)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_ready(self, release):
+        if release:
+            self.tray.tray_icon.showMessage(
+                "CodexUU 有可用更新",
+                f"发现 {release.tag_name}，打开设置查看详情。",
+            )
 
     def run(self):
         return self.app.exec()

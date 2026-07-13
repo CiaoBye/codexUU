@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 
 from app.data import codex_reader
 from app.data.codex_reader import _delta_breakdown
@@ -125,3 +126,61 @@ def test_skill_usage_only_counts_explicit_skill_file_loads(monkeypatch):
 
     skills = codex_reader.read_skill_usage()
     assert [(item.name, item.use_count) for item in skills] == [("imagegen", 2)]
+
+
+def test_task_completion_uses_archived_at_and_active_window_is_two_hours():
+    configure_statistics_timezone("utc")
+    now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    yesterday = now - timedelta(days=1)
+    completed = codex_reader._classify_thread_task(
+        1, yesterday.timestamp(), yesterday.timestamp(), yesterday.timestamp(),
+        (now - timedelta(minutes=5)).timestamp(), now,
+    )
+    active = codex_reader._classify_thread_task(
+        0, now.timestamp(), now.timestamp(), (now - timedelta(minutes=90)).timestamp(), None, now,
+    )
+    pending = codex_reader._classify_thread_task(
+        0, now.timestamp(), now.timestamp(), (now - timedelta(hours=3)).timestamp(), None, now,
+    )
+    assert completed[0] == "completed"
+    assert active[0] == "running"
+    assert pending[0] == "pending"
+    configure_statistics_timezone("system")
+
+
+def test_task_board_reads_today_archive_time_and_cleans_markdown(monkeypatch, tmp_path):
+    configure_statistics_timezone("utc")
+    now = datetime.now(timezone.utc)
+    db = tmp_path / "state_5.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE threads (id TEXT, title TEXT, preview TEXT, cwd TEXT, archived INTEGER, "
+            "created_at INTEGER, updated_at INTEGER, recency_at INTEGER, archived_at INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("done", "[CodexUU](https://github.com/CiaoBye/codexUU)", "", str(tmp_path), 1,
+             int((now - timedelta(days=2)).timestamp()), int((now - timedelta(days=2)).timestamp()),
+             int((now - timedelta(days=2)).timestamp()), int((now - timedelta(minutes=3)).timestamp())),
+        )
+    monkeypatch.setattr(codex_reader, "_state_db_path", lambda: db)
+    monkeypatch.setattr(codex_reader, "_automations_dir", lambda: tmp_path / "none")
+    codex_reader.clear_cache()
+    tasks = codex_reader.read_task_board()
+    assert [(task.status, task.title) for task in tasks] == [("completed", "CodexUU")]
+    configure_statistics_timezone("system")
+
+
+def test_clear_cache_forces_fresh_aggregate_reads():
+    codex_reader._store("probe", 1)
+    assert codex_reader._cached("probe") == 1
+    codex_reader.clear_cache()
+    assert codex_reader._cached("probe") is None
+
+
+def test_state_db_path_supports_nested_sqlite_directory(monkeypatch, tmp_path):
+    nested = tmp_path / "sqlite" / "state_5.sqlite"
+    nested.parent.mkdir()
+    nested.touch()
+    monkeypatch.setattr(codex_reader, "_codex_dir", lambda: tmp_path)
+    assert codex_reader._state_db_path() == nested

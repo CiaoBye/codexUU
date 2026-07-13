@@ -25,6 +25,18 @@ STATUS_LABELS = {
 STATUS_LABELS_EN = {
     "running": "Active", "pending": "Pending", "scheduled": "Scheduled", "completed": "Done",
 }
+EMPTY_LABELS = {
+    "running": "当前没有近 2 小时活跃的线程",
+    "pending": "今天没有待处理线程",
+    "scheduled": "当前没有启用的自动任务",
+    "completed": "今天没有归档的线程",
+}
+EMPTY_LABELS_EN = {
+    "running": "No threads active in the last 2 hours",
+    "pending": "No pending threads today",
+    "scheduled": "No enabled automations",
+    "completed": "No threads archived today",
+}
 RUNTIME_BADGE = {
     RuntimeScope.CODEX: ("C", "#60a5fa"),
     RuntimeScope.CLAUDE_CODE: ("H", "#a78bfa"),
@@ -109,6 +121,8 @@ class TaskColumn(QFrame):
         self.label = QLabel(STATUS_LABELS.get(status, status))
         self.label.setFont(QFont(FONT, 10, QFont.Weight.Bold))
         self.label.setStyleSheet(f"color: {color};")
+        if status == "completed":
+            self.label.setToolTip("完成 = 今天在 Codex 中归档的线程")
         header.addWidget(self.label)
         self.count_label = QLabel("0")
         self.count_label.setFont(QFont(FONT, 10))
@@ -140,16 +154,23 @@ class TaskColumn(QFrame):
         for task in filtered:
             self.container_layout.addWidget(TaskCard(task, self.language))
         if not filtered:
-            empty = QLabel("No tasks" if self.language == "en" else "当前没有任务")
+            labels = EMPTY_LABELS_EN if self.language == "en" else EMPTY_LABELS
+            empty = QLabel(labels.get(self.status, "No tasks" if self.language == "en" else "当前没有任务"))
             empty.setFont(QFont(FONT, 9))
             empty.setObjectName("caption")
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setWordWrap(True)
             self.container_layout.addWidget(empty)
 
     def set_language(self, language):
         self.language = language
         labels = STATUS_LABELS_EN if language == "en" else STATUS_LABELS
         self.label.setText(labels.get(self.status, self.status))
+        if self.status == "completed":
+            self.label.setToolTip(
+                "Done = threads archived in Codex today"
+                if language == "en" else "完成 = 今天在 Codex 中归档的线程"
+            )
 
 
 class TaskBoardWidget(QWidget):

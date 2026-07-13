@@ -18,7 +18,8 @@ def diagnose_data_sources() -> list[DataSourceStatus]:
     codex = home / ".codex"
     sessions = codex / "sessions"
     archived = codex / "archived_sessions"
-    state = codex / "state_5.sqlite"
+    state_candidates = (codex / "state_5.sqlite", codex / "sqlite" / "state_5.sqlite")
+    state = next((path for path in state_candidates if path.exists()), state_candidates[0])
     session_count = sum(1 for _ in sessions.rglob("*.jsonl")) if sessions.exists() else 0
     archived_count = sum(1 for _ in archived.glob("*.jsonl")) if archived.exists() else 0
     executable = shutil.which("codex")

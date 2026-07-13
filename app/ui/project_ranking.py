@@ -148,6 +148,10 @@ class RecentProjectRow(QFrame):
         marker = QLabel()
         marker.setObjectName("projectMarker")
         marker.setFixedSize(22, 22)
+        marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        marker.setPixmap(QPixmap(str(ICONS_DIR / "tab-project.svg")).scaled(
+            13, 13, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        ))
         layout.addWidget(marker)
         text = QVBoxLayout()
         text.setSpacing(1)

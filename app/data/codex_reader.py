@@ -33,6 +33,7 @@ from app.constants import APP_VERSION
 _cache: dict[str, tuple[float, object]] = {}
 _CACHE_TTL = 60
 _rollout_file_cache: dict[Path, tuple[int, int, datetime, list[dict]]] = {}
+_ROLLOUT_FILE_CACHE_LIMIT = 1024
 
 
 def _cached(key: str):
@@ -47,13 +48,25 @@ def _store(key: str, value):
     return value
 
 
+def clear_cache():
+    """清除聚合快照；保留 rollout 文件级缓存，避免重复解析未变化日志。"""
+    _cache.clear()
+
+
 def _codex_dir() -> Path:
     return Path(os.path.expanduser("~")) / ".codex"
 
 
 def _state_db_path() -> Optional[Path]:
-    path = _codex_dir() / "state_5.sqlite"
-    return path if path.exists() else None
+    for path in (_codex_dir() / "state_5.sqlite", _codex_dir() / "sqlite" / "state_5.sqlite"):
+        if path.exists():
+            return path
+    return None
+
+
+def _connect_state_db(path: Path):
+    """Open Codex state without creating or mutating its database."""
+    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=1)
 
 
 def _sessions_dir() -> Path:
@@ -293,6 +306,14 @@ def _iter_rollout_events(days: int = 180) -> Iterator[tuple[Path, datetime, dict
                 continue
     for stale_path in set(_rollout_file_cache) - seen_files:
         _rollout_file_cache.pop(stale_path, None)
+    if len(_rollout_file_cache) > _ROLLOUT_FILE_CACHE_LIMIT:
+        keep = {
+            path for path, _ in sorted(
+                _rollout_file_cache.items(), key=lambda item: item[1][2], reverse=True,
+            )[:_ROLLOUT_FILE_CACHE_LIMIT]
+        }
+        for stale_path in set(_rollout_file_cache) - keep:
+            _rollout_file_cache.pop(stale_path, None)
     _store(cache_key, records)
     yield from records
 
@@ -302,7 +323,7 @@ def read_token_totals_from_db() -> Optional[TokenStats]:
     if not db_path:
         return None
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with _connect_state_db(db_path) as conn:
             rows = conn.execute(
                 "SELECT date, input_tokens, cached_input_tokens, output_tokens "
                 "FROM daily_token_usage ORDER BY date"
@@ -358,7 +379,7 @@ def read_thread_index_token_total() -> Optional[int]:
     if not db_path:
         return None
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with _connect_state_db(db_path) as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(tokens_used), 0) FROM threads "
                 "WHERE tokens_used IS NOT NULL"
@@ -461,6 +482,33 @@ def _parse_updated(value) -> Optional[datetime]:
         return None
 
 
+def _clean_task_title(value, fallback="未命名任务") -> str:
+    text = str(value or fallback)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or fallback
+
+
+def _classify_thread_task(archived, created_at, updated_at, recency_at, archived_at, now):
+    created = _parse_updated(created_at)
+    updated = _parse_updated(updated_at)
+    recency = _parse_updated(recency_at)
+    archived_time = _parse_updated(archived_at)
+    statistics = get_statistics_timezone()
+    today = statistics.date_for(now)
+    if bool(archived):
+        activity = archived_time or updated
+        if activity and statistics.date_for(activity) == today:
+            return "completed", activity
+        return None
+    candidates = [value for value in (created, updated, recency) if value is not None]
+    if not candidates or not any(statistics.date_for(value) == today for value in candidates):
+        return None
+    activity = recency or updated or created
+    age = now.astimezone(timezone.utc) - activity.astimezone(timezone.utc)
+    return ("running" if age <= timedelta(hours=2) else "pending"), activity
+
+
 def read_task_board() -> list[TaskItem]:
     cached = _cached("task_board")
     if cached is not None:
@@ -469,27 +517,34 @@ def read_task_board() -> list[TaskItem]:
     db_path = _state_db_path()
     if db_path:
         try:
-            with sqlite3.connect(str(db_path)) as conn:
+            with _connect_state_db(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(threads)")}
+                def field(name, fallback="NULL"):
+                    return name if name in columns else f"{fallback} AS {name}"
+                order_fields = [name for name in ("archived_at", "recency_at", "updated_at", "created_at") if name in columns]
+                order_expr = "COALESCE(" + ", ".join(order_fields) + ")" if len(order_fields) > 1 else (order_fields[0] if order_fields else "rowid")
                 rows = conn.execute(
-                    "SELECT id, title, updated_at, cwd, archived "
-                    "FROM threads ORDER BY updated_at DESC LIMIT 100"
+                    "SELECT " + ", ".join((
+                        field("id", "rowid"), field("title", "''"), field("preview", "''"),
+                        field("cwd", "''"), field("archived", "0"), field("created_at"),
+                        field("updated_at"), field("recency_at"), field("archived_at"),
+                    )) + f" FROM threads ORDER BY {order_expr} DESC LIMIT 300"
                 ).fetchall()
                 now = datetime.now(timezone.utc)
-                for tid, title, updated, cwd, archived in rows:
-                    updated_at = _parse_updated(updated)
-                    if archived:
-                        status = "completed"
-                    elif updated_at and now - updated_at <= timedelta(minutes=15):
-                        status = "running"
-                    else:
-                        status = "pending"
+                for tid, title, preview, cwd, archived, created, updated, recency, archived_at in rows:
+                    classification = _classify_thread_task(
+                        archived, created, updated, recency, archived_at, now,
+                    )
+                    if classification is None:
+                        continue
+                    status, activity_at = classification
                     project = Path(str(cwd).replace("\\\\?\\", "")).name if cwd else ""
                     tasks.append(TaskItem(
                         id=str(tid),
-                        title=title or "未命名任务",
+                        title=_clean_task_title(title or preview),
                         status=status,
                         runtime=RuntimeScope.CODEX,
-                        updated_at=updated_at,
+                        updated_at=activity_at,
                         project=project,
                     ))
         except sqlite3.Error:
@@ -500,7 +555,9 @@ def read_task_board() -> list[TaskItem]:
         for path in auto_dir.rglob("automation.toml"):
             try:
                 content = path.read_text(encoding="utf-8")
-                if re.search(r"enabled\s*=\s*true", content, re.IGNORECASE) is None:
+                enabled = re.search(r"enabled\s*=\s*true", content, re.IGNORECASE)
+                active = re.search(r"status\s*=\s*[\"']ACTIVE[\"']", content, re.IGNORECASE)
+                if enabled is None and active is None:
                     continue
                 match = re.search(r'name\s*=\s*["\']([^"\']+)', content)
                 tasks.append(TaskItem(
@@ -511,13 +568,6 @@ def read_task_board() -> list[TaskItem]:
                 ))
             except (OSError, UnicodeError):
                 continue
-    today = get_statistics_timezone().now_date()
-    tasks = [
-        task for task in tasks
-        if task.status == "scheduled"
-        or task.updated_at is None
-        or get_statistics_timezone().date_for(task.updated_at) == today
-    ]
     return _store("task_board", tasks)
 
 
@@ -658,7 +708,7 @@ def _thread_project_map() -> dict[str, Optional[str]]:
         return {}
     result = {}
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with _connect_state_db(db_path) as conn:
             rows = conn.execute(
                 "SELECT rollout_path, cwd FROM threads "
                 "WHERE rollout_path IS NOT NULL AND cwd IS NOT NULL"

@@ -104,8 +104,8 @@ class TokenHeatmap(QWidget):
             month_date = start + timedelta(days=column * 7)
             if month_date.month != last_month:
                 painter.drawText(
-                    left + column * (cell_size + gap_x),
-                    5,
+                    QRectF(left + column * (cell_size + gap_x) - 2, 2, 54, 18),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                     month_date.strftime("%Y/%m"),
                 )
                 last_month = month_date.month

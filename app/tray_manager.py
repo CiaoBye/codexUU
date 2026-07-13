@@ -153,10 +153,14 @@ class TrayManager(QObject):
         tray_rect = self.tray_icon.geometry()
         screen = QApplication.screenAt(tray_rect.center()) or QApplication.primaryScreen()
         available = screen.availableGeometry()
-        x = min(max(available.left() + 8, tray_rect.center().x() - self.panel.width() // 2), available.right() - self.panel.width() - 8)
-        y = tray_rect.top() - self.panel.height() - 10
-        if y < available.top():
-            y = tray_rect.bottom() + 10
+        if tray_rect.isEmpty() or not available.contains(tray_rect.center()):
+            x = available.right() - self.panel.width() - 10
+            y = available.bottom() - self.panel.height() - 10
+        else:
+            x = min(max(available.left() + 8, tray_rect.center().x() - self.panel.width() // 2), available.right() - self.panel.width() - 8)
+            y = tray_rect.top() - self.panel.height() - 10
+            if y < available.top():
+                y = tray_rect.bottom() + 10
         self.panel.move(x, y)
         self.panel.show()
         self.panel.raise_()

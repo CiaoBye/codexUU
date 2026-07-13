@@ -1,6 +1,6 @@
 # CodexUU
 
-当前预览版本：`0.1.01`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
+当前预览版本：`0.1.02`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
 
 CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，参考 [shanggqm/codexU](https://github.com/shanggqm/codexU) 的信息架构重新实现。
 
@@ -14,7 +14,7 @@ CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，
 - 额度支持“剩余 / 已用”口径切换，并使用相反的环形进度方向表达。
 - 今日、本周、本月、累计 Token，细分未缓存输入、缓存输入和输出。
 - 按日志实际模型和公开单价估算 API 等效价值，未知模型显示计价覆盖率。
-- 今日任务看板：进行中、待处理、定时、完成。
+- 今日任务看板：近 2 小时活跃、今日待处理、已启用自动任务、今日归档完成。
 - 每日、每周、每月、累计趋势；每日视图包含半年 Token 活动热力图。
 - 项目用量排行与项目活动概览，支持本周、本月、累计口径。
 - Skill 使用与明确工具调用事件统计。
@@ -33,7 +33,7 @@ CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，
 | 数据 | 来源 |
 |---|---|
 | Codex 额度 | 优先调用 `codex app-server`，失败时回退最新 session 中的 rate limit 事件 |
-| 累计 Token | `~/.codex/state_5.sqlite` 线程索引 |
+| 累计 Token | `~/.codex/state_5.sqlite` 或新版 `~/.codex/sqlite/state_5.sqlite` 线程索引 |
 | Token 拆分与趋势 | `~/.codex/sessions/**/rollout-*.jsonl`、`archived_sessions` 中的 `token_count` |
 | 今日任务 | Codex SQLite 线程、启用中的 automation 与 Claude task |
 | 项目排行 | session 中的工作目录与精细 Token 增量，只保留仍存在的真实项目目录 |
@@ -41,6 +41,8 @@ CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，
 | Claude Code | `~/.claude/projects/**/*.jsonl`、tasks 与可选 statusline snapshot |
 
 “本周”固定按所选统计时区的周一 00:00 到周日 23:59 计算。所有累计、趋势和项目数字均为本机记录，不代表跨设备账号活动页统计。
+
+任务看板中的“完成”不是模型停止生成，而是线程在今天被 Codex 归档；优先使用 SQLite 的 `archived_at`，旧结构才回退 `updated_at`。未归档线程最后活动时间在 2 小时内归为“进行中”，今天更早活动的归为“待处理”。
 
 ## 运行要求
 

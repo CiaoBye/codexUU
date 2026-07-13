@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.data.claude_reader import (
+    clear_cache as clear_claude_cache,
     read_claude_daily_tokens,
     read_claude_projects,
     read_claude_skill_usage,
@@ -44,6 +45,7 @@ from app.data.claude_reader import (
     read_claude_tool_usage,
 )
 from app.data.codex_reader import (
+    clear_cache as clear_codex_cache,
     read_codex_snapshot,
     read_daily_tokens,
     read_projects,
@@ -880,6 +882,8 @@ class DashboardWidget(QWidget):
 
         def load():
             try:
+                clear_codex_cache()
+                clear_claude_cache()
                 codex = read_codex_snapshot()
                 claude = read_claude_snapshot()
                 tasks = read_task_board() + read_claude_tasks()

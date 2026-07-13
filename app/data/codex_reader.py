@@ -13,6 +13,10 @@ from app.data.models import (
     CODEX_PROMPT_PRICES,
 )
 
+# Cache for expensive operations
+_cache = {}
+_cache_timeout = 60  # seconds
+
 
 def _codex_dir() -> Path:
     return Path(os.path.expanduser("~")) / ".codex"
@@ -37,10 +41,14 @@ def _automations_dir() -> Path:
 
 def read_quota_from_appserver() -> Optional[tuple[QuotaInfo, QuotaInfo]]:
     import subprocess
+    import shutil
+    # Skip if codex command not found
+    if not shutil.which("codex"):
+        return None
     try:
         result = subprocess.run(
             ["codex", "app-server", "--json"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
             return None
@@ -140,6 +148,13 @@ def read_token_totals_from_db() -> Optional[TokenStats]:
 
 
 def read_session_tokens() -> TokenBreakdown:
+    import time
+    cache_key = "session_tokens"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     total = TokenBreakdown()
     for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
         if not session_dir.exists():
@@ -158,10 +173,19 @@ def read_session_tokens() -> TokenBreakdown:
                             total.output += tc.get("output", 0)
             except (OSError, json.JSONDecodeError):
                 continue
+
+    _cache[cache_key] = (time.time(), total)
     return total
 
 
 def read_daily_tokens() -> list[DailyToken]:
+    import time
+    cache_key = "daily_tokens"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     from collections import defaultdict
     daily: dict[str, DailyToken] = defaultdict(
         lambda: DailyToken(date=datetime.now(timezone.utc), total=0)
@@ -197,10 +221,19 @@ def read_daily_tokens() -> list[DailyToken]:
                 continue
 
     result = sorted(daily.values(), key=lambda x: x.date, reverse=True)
-    return result[:180]
+    result = result[:180]
+    _cache[cache_key] = (time.time(), result)
+    return result
 
 
 def read_task_board() -> list[TaskItem]:
+    import time
+    cache_key = "task_board"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     tasks: list[TaskItem] = []
     db_path = _state_db_path()
     if db_path:
@@ -258,10 +291,18 @@ def read_task_board() -> list[TaskItem]:
             except (OSError, UnicodeDecodeError):
                 continue
 
+    _cache[cache_key] = (time.time(), tasks)
     return tasks
 
 
 def read_projects() -> list[ProjectStats]:
+    import time
+    cache_key = "projects"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     from collections import defaultdict
     project_tokens: dict[str, int] = defaultdict(int)
     project_threads: dict[str, int] = defaultdict(int)
@@ -311,10 +352,19 @@ def read_projects() -> list[ProjectStats]:
             thread_count=project_threads.get(name, 0),
             last_active=project_last.get(name),
         ))
+
+    _cache[cache_key] = (time.time(), results)
     return results
 
 
 def read_tool_usage() -> list[ToolUsage]:
+    import time
+    cache_key = "tool_usage"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     from collections import defaultdict
     tools: dict[str, int] = defaultdict(int)
     for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
@@ -334,13 +384,23 @@ def read_tool_usage() -> list[ToolUsage]:
                                 tools[name] += 1
             except (OSError, json.JSONDecodeError):
                 continue
-    return sorted(
+
+    result = sorted(
         [ToolUsage(name=n, call_count=c) for n, c in tools.items()],
         key=lambda x: x.call_count, reverse=True,
     )[:20]
+    _cache[cache_key] = (time.time(), result)
+    return result
 
 
 def read_skill_usage() -> list[SkillUsage]:
+    import time
+    cache_key = "skill_usage"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     from collections import defaultdict
     skills: dict[str, int] = defaultdict(int)
     for session_dir in [_sessions_dir(), _archived_sessions_dir()]:
@@ -358,10 +418,13 @@ def read_skill_usage() -> list[SkillUsage]:
                             skills[skill] += 1
             except (OSError, json.JSONDecodeError):
                 continue
-    return sorted(
+
+    result = sorted(
         [SkillUsage(name=n, use_count=c) for n, c in skills.items()],
         key=lambda x: x.use_count, reverse=True,
     )[:20]
+    _cache[cache_key] = (time.time(), result)
+    return result
 
 
 def read_codex_snapshot() -> UsageSnapshot:

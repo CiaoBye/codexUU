@@ -13,6 +13,10 @@ from app.data.models import (
     CLAUDE_PROMPT_PRICES,
 )
 
+# Cache for expensive operations
+_cache = {}
+_cache_timeout = 60  # seconds
+
 
 def _claude_dir() -> Path:
     return Path(os.path.expanduser("~")) / ".claude"
@@ -31,6 +35,13 @@ def _cache_dir() -> Path:
 
 
 def read_claude_token_history() -> Optional[TokenStats]:
+    import time
+    cache_key = "claude_token_history"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     projects_path = _projects_dir()
     if not projects_path.exists():
         return None
@@ -84,7 +95,9 @@ def read_claude_token_history() -> Optional[TokenStats]:
         except (OSError, json.JSONDecodeError):
             continue
 
-    return TokenStats(today=today_bd, last_7d=week_bd, cumulative=cumulative)
+    result = TokenStats(today=today_bd, last_7d=week_bd, cumulative=cumulative)
+    _cache[cache_key] = (time.time(), result)
+    return result
 
 
 def read_claude_quota_snapshot() -> Optional[tuple[QuotaInfo, QuotaInfo]]:
@@ -125,6 +138,13 @@ def read_claude_quota_snapshot() -> Optional[tuple[QuotaInfo, QuotaInfo]]:
 
 
 def read_claude_projects() -> list[ProjectStats]:
+    import time
+    cache_key = "claude_projects"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     from collections import defaultdict
     project_tokens: dict[str, int] = defaultdict(int)
     project_threads: dict[str, int] = defaultdict(int)
@@ -162,7 +182,7 @@ def read_claude_projects() -> list[ProjectStats]:
         except (OSError, json.JSONDecodeError):
             continue
 
-    return sorted(
+    result = sorted(
         [
             ProjectStats(
                 name=name,
@@ -174,9 +194,18 @@ def read_claude_projects() -> list[ProjectStats]:
         ],
         key=lambda x: x.token_total, reverse=True,
     )
+    _cache[cache_key] = (time.time(), result)
+    return result
 
 
 def read_claude_tasks() -> list[TaskItem]:
+    import time
+    cache_key = "claude_tasks"
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if time.time() - cached_time < _cache_timeout:
+            return cached_data
+
     tasks: list[TaskItem] = []
     tasks_path = _tasks_dir()
     if not tasks_path.exists():
@@ -215,6 +244,7 @@ def read_claude_tasks() -> list[TaskItem]:
         except (OSError, json.JSONDecodeError, KeyError):
             continue
 
+    _cache[cache_key] = (time.time(), tasks)
     return tasks
 
 

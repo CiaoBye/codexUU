@@ -1,6 +1,6 @@
 # CodexUU
 
-当前预览版本：`0.0.11`。版本从 `0.0.1` 起步，每完成一轮可验收的代码更新递增补丁版本，并同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
+当前预览版本：`0.1.01`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
 
 CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，参考 [shanggqm/codexU](https://github.com/shanggqm/codexU) 的信息架构重新实现。
 

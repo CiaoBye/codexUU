@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     QTimer,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -89,12 +89,54 @@ class Surface(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
 
+class TokenCompositionBar(QWidget):
+    COLORS = (QColor("#3f95ff"), QColor("#8d74ff"), QColor("#e99a25"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.values = (0, 0, 0)
+        self.setFixedHeight(8)
+
+    def set_tokens(self, tokens):
+        self.values = (
+            int(tokens.uncached_input if tokens else 0),
+            int(tokens.cached_input if tokens else 0),
+            int(tokens.output if tokens else 0),
+        )
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QRectF(0, 1, self.width(), 6)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(127, 145, 172, 36))
+        painter.drawRoundedRect(track, 3, 3)
+        total = sum(self.values)
+        if total <= 0:
+            return
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(track, 3, 3)
+        painter.save()
+        painter.setClipPath(clip_path)
+        x = 0.0
+        for index, value in enumerate(self.values):
+            if value <= 0:
+                continue
+            width = self.width() * value / total
+            segment = QRectF(x, 1, width, 6)
+            painter.setBrush(self.COLORS[index])
+            painter.drawRect(segment)
+            x += width
+        painter.restore()
+
+
 class MetricCard(Surface):
     activated = Signal()
 
     def __init__(self, label: str, icon: str, parent=None):
         super().__init__(parent=parent)
-        self.setMinimumHeight(128)
+        self.setMinimumHeight(146)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(18)
@@ -102,8 +144,8 @@ class MetricCard(Surface):
         shadow.setColor(QColor(13, 24, 45, 34))
         self.setGraphicsEffect(shadow)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 13, 15, 13)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(4)
 
         header = QHBoxLayout()
         symbol = QLabel()
@@ -128,13 +170,33 @@ class MetricCard(Surface):
         value_row.addWidget(self.value)
         value_row.addStretch()
         layout.addLayout(value_row)
-        layout.addStretch()
-        self.breakdown = QLabel("未缓存 0  ·  缓存 0  ·  输出 0")
-        self.breakdown.setObjectName("metricBreakdown")
-        self.breakdown.setTextFormat(Qt.TextFormat.RichText)
-        self.breakdown.setMinimumHeight(18)
-        self.breakdown.setWordWrap(False)
-        layout.addWidget(self.breakdown)
+        self.composition = TokenCompositionBar()
+        layout.addWidget(self.composition)
+        self.breakdown_rows = {}
+        breakdown = QVBoxLayout()
+        breakdown.setSpacing(1)
+        for key, color, label in (
+            ("uncached", "#3f95ff", "未缓存"),
+            ("cached", "#8d74ff", "缓存"),
+            ("output", "#e99a25", "输出"),
+        ):
+            row = QHBoxLayout()
+            row.setSpacing(5)
+            dot = QLabel()
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet(f"background:{color}; border-radius:3px;")
+            row.addWidget(dot)
+            name = QLabel(label)
+            name.setObjectName("metricBreakdown")
+            row.addWidget(name)
+            row.addStretch()
+            amount = QLabel("0")
+            amount.setObjectName("metricBreakdown")
+            amount.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(amount)
+            breakdown.addLayout(row)
+            self.breakdown_rows[key] = (name, amount)
+        layout.addLayout(breakdown)
         self.language = "zh"
         self._tokens = None
         self._total_override = None
@@ -149,6 +211,7 @@ class MetricCard(Surface):
         display_total = total_override if total_override is not None else detail_total
         self._animate_total(display_total)
         self.value_hint.setText(f"${estimated_value:,.2f}" if estimated_value else "$0")
+        self.composition.set_tokens(tokens)
         self._update_detail()
         if total_override is not None:
             self.value.setToolTip(
@@ -189,23 +252,13 @@ class MetricCard(Surface):
             format_tokens(tokens.cached_input) if tokens else "0",
             format_tokens(tokens.output) if tokens else "0",
         )
-        self.breakdown.setToolTip(
-            f"Uncached {values[0]} · Cached {values[1]} · Output {values[2]}"
-            if self.language == "en"
-            else f"未缓存 {values[0]} · 缓存 {values[1]} · 输出 {values[2]}"
-        )
-        if self.language == "en":
-            self.breakdown.setText(
-                f'<span style="color:#3f95ff">Uncached {values[0]}</span> · '
-                f'<span style="color:#8d74ff">Cached {values[1]}</span> · '
-                f'<span style="color:#e99a25">Output {values[2]}</span>'
-            )
-        else:
-            self.breakdown.setText(
-                f'<span style="color:#3f95ff">未缓存 {values[0]}</span> · '
-                f'<span style="color:#8d74ff">缓存 {values[1]}</span> · '
-                f'<span style="color:#e99a25">输出 {values[2]}</span>'
-            )
+        labels = ("Uncached", "Cached", "Output") if self.language == "en" else ("未缓存", "缓存", "输出")
+        for key, label, value in zip(("uncached", "cached", "output"), labels, values):
+            name, amount = self.breakdown_rows[key]
+            name.setText(label)
+            amount.setText(value)
+            name.setToolTip(f"{label} {value}")
+            amount.setToolTip(f"{label} {value}")
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -735,7 +788,7 @@ class DashboardWidget(QWidget):
     def _build_summary(self):
         summary = QFrame()
         summary.setObjectName("summaryPanel")
-        summary.setFixedHeight(260)
+        summary.setFixedHeight(286)
         layout = QHBoxLayout(summary)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
@@ -973,7 +1026,7 @@ class DashboardWidget(QWidget):
         index = self.stack.currentIndex()
         english = bool(self.translation_manager and self.translation_manager.get_language() == "en")
         summaries = (
-            f"{len(tasks)} items" if english else f"{len(tasks)} 事项",
+            f"{self.task_tab.project_count()} projects" if english else f"{self.task_tab.project_count()} 个项目",
             f"{len(daily)} active days" if english else f"{len(daily)} 活跃日",
             f"{len(projects)} projects" if english else f"{len(projects)} 项目",
             f"{len(skills)} skills · {len(tools)} calls" if english else f"{len(skills)} Skill · {len(tools)} 次调用",

@@ -121,6 +121,7 @@ class TrayManager(QObject):
         self.desktop_panel.position_changed.connect(self._save_desktop_status_position)
         self.desktop_panel.style_change_requested.connect(self._set_desktop_status_style)
         self.desktop_panel.size_change_requested.connect(self._set_desktop_status_size)
+        self.desktop_panel.mode_change_requested.connect(self._set_quota_display)
         self.desktop_panel.hide_requested.connect(lambda: self._set_desktop_status_enabled(False))
         self._setup_tray()
         if self.settings_manager:
@@ -224,6 +225,11 @@ class TrayManager(QObject):
             self.settings_manager.set_desktop_status_size(size)
             self.settings_manager.save()
 
+    def _set_quota_display(self, mode):
+        if self.settings_manager:
+            self.settings_manager.set_quota_display(mode)
+            self.settings_manager.save()
+
     def _sync_desktop_status(self):
         enabled = False
         position = None
@@ -235,6 +241,9 @@ class TrayManager(QObject):
             size = self.settings_manager.get_desktop_status_size()
         self.desktop_panel.set_style(style)
         self.desktop_panel.set_display_size(size)
+        self.desktop_panel.set_display_mode(
+            self.settings_manager.get_quota_display() if self.settings_manager else "remaining"
+        )
         if self.theme_manager:
             self.desktop_panel.set_theme(self.theme_manager.get_effective_theme())
         if hasattr(self, "desktop_action"):

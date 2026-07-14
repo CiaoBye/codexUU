@@ -12,7 +12,6 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPen,
-    QRadialGradient,
 )
 from PySide6.QtWidgets import QMenu, QWidget
 
@@ -27,6 +26,7 @@ class DesktopStatusPanel(QWidget):
     position_changed = Signal(QPoint)
     style_change_requested = Signal(str)
     size_change_requested = Signal(str)
+    mode_change_requested = Signal(str)
     hide_requested = Signal()
 
     _BASE_SIZES = {"orb": 176, "halo": 188, "mini": 116}
@@ -52,9 +52,11 @@ class DesktopStatusPanel(QWidget):
         self._theme = "dark"
         self._runtime = "Codex"
         self._today = "0"
-        self._quota = None
-        self._quota_label = "--"
-        self._reset_label = ""
+        self._q5 = None
+        self._q7 = None
+        self._display_mode = "remaining"
+        self._press_position: QPoint | None = None
+        self._dragged = False
         self._apply_geometry()
 
     def set_style(self, style: str):
@@ -69,6 +71,11 @@ class DesktopStatusPanel(QWidget):
         self._theme = "light" if theme == "light" else "dark"
         self.update()
 
+    def set_display_mode(self, mode: str):
+        self._display_mode = mode if mode in ("remaining", "used") else "remaining"
+        self._update_tooltip()
+        self.update()
+
     def _apply_geometry(self):
         diameter = round(self._BASE_SIZES[self._style] * self._SIZE_FACTORS[self._size])
         self.setFixedSize(diameter, diameter)
@@ -78,20 +85,25 @@ class DesktopStatusPanel(QWidget):
     def update_snapshot(self, runtime: str, snapshot):
         self._runtime = "Claude Code" if runtime == "claudeCode" else "Codex"
         self._today = format_tokens(snapshot.tokens.today.total)
-        quota = snapshot.quota_7d or snapshot.quota_5h
-        self._quota = quota
-        self._quota_label = "7D" if snapshot.quota_7d else "5H" if snapshot.quota_5h else "--"
-        self._reset_label = self._format_reset(quota)
-        if quota is None:
+        self._q5 = snapshot.quota_5h
+        self._q7 = snapshot.quota_7d
+        self._update_tooltip()
+        self.update()
+
+    def _update_tooltip(self):
+        available = [("5H", self._q5), ("7D", self._q7)]
+        available = [(label, quota) for label, quota in available if quota is not None]
+        mode_label = "已用" if self._display_mode == "used" else "剩余"
+        if not available:
             tip = f"{self._runtime}\n暂无可验证额度窗口\n双击打开主窗口 · 右键调整样式"
         else:
-            tip = (
-                f"{self._runtime}\n{self._quota_label} 剩余 {quota.remaining_pct:.0f}%"
-                f"\n今日 {self._today}\n{self._reset_label or '重置时间未知'}"
-                "\n双击打开主窗口 · 右键调整样式"
-            )
+            lines = [self._runtime]
+            for label, quota in available:
+                value = quota.used_pct if self._display_mode == "used" else quota.remaining_pct
+                lines.append(f"{label} {mode_label} {value:.0f}% · {self._format_reset(quota) or '重置时间未知'}")
+            lines.extend((f"今日 {self._today}", "点击中心切换已用/剩余 · 双击打开主窗口"))
+            tip = "\n".join(lines)
         self.setToolTip(tip)
-        self.update()
 
     @staticmethod
     def _format_reset(quota) -> str:
@@ -114,12 +126,20 @@ class DesktopStatusPanel(QWidget):
         available = max(0, round(rect.width()) - 6)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, metrics.elidedText(text, Qt.TextElideMode.ElideRight, available))
 
+    def _quota_value(self, quota):
+        if quota is None:
+            return None
+        value = quota.used_pct if self._display_mode == "used" else quota.remaining_pct
+        return max(0.0, min(100.0, float(value)))
+
+    def _mode_label(self):
+        return "已用" if self._display_mode == "used" else "剩余"
+
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         dark = self._theme == "dark"
         surface = QColor("#151d2b") if dark else QColor("#ffffff")
-        inner = QColor("#1b2536") if dark else QColor("#f7f9fd")
         edge = QColor("#354258") if dark else QColor("#d6e0ee")
         track = QColor("#2c3749") if dark else QColor("#e7ebf2")
         primary = QColor("#8b72ff") if dark else QColor("#705cf2")
@@ -134,48 +154,68 @@ class DesktopStatusPanel(QWidget):
         painter.drawEllipse(shadow.translated(0, 2))
 
         bounds = QRectF(6, 6, diameter - 12, diameter - 12)
-        if self._style == "halo":
-            glow = QRadialGradient(bounds.center(), diameter * 0.56)
-            glow.setColorAt(0, QColor(94, 74, 190, 100 if dark else 45))
-            glow.setColorAt(0.72, QColor(surface.red(), surface.green(), surface.blue(), 245))
-            glow.setColorAt(1, QColor(surface.red(), surface.green(), surface.blue(), 0))
-            painter.setBrush(glow)
-            painter.drawEllipse(bounds)
-
         painter.setBrush(surface)
         painter.setPen(QPen(edge, max(1.0, diameter / 180)))
         painter.drawEllipse(bounds.adjusted(2, 2, -2, -2))
 
-        ring_margin = diameter * (0.105 if self._style != "mini" else 0.12)
-        ring = bounds.adjusted(ring_margin, ring_margin, -ring_margin, -ring_margin)
-        ring_width = diameter * (0.055 if self._style != "mini" else 0.065)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(track, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawArc(ring, 0, 360 * 16)
-        if self._quota is not None:
-            painter.setPen(QPen(primary, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawArc(ring, 90 * 16, -int(360 * 16 * self._quota.remaining_pct / 100))
-        if self._style == "halo" and self._quota is not None:
-            outer = ring.adjusted(-diameter * 0.07, -diameter * 0.07, diameter * 0.07, diameter * 0.07)
-            painter.setPen(QPen(QColor(secondary.red(), secondary.green(), secondary.blue(), 150), max(2.0, diameter * 0.018), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawArc(outer, 90 * 16, -int(360 * 16 * self._quota.remaining_pct / 100))
+        available = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
+        available = [item for item in available if item[1] is not None]
+        active_label, active_quota, active_color = available[-1] if available else ("--", None, primary)
+        active_value = self._quota_value(active_quota)
 
-        inner_bounds = ring.adjusted(ring_width * 0.55, ring_width * 0.55, -ring_width * 0.55, -ring_width * 0.55)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(inner)
-        painter.drawEllipse(inner_bounds)
-
-        value = "--" if self._quota is None else f"{self._quota.remaining_pct:.0f}%"
-        if self._style == "mini":
-            self._draw_centered(painter, QRectF(0, diameter * 0.24, diameter, diameter * 0.18), self._quota_label, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold), muted)
-            self._draw_centered(painter, QRectF(0, diameter * 0.40, diameter, diameter * 0.28), value, self._scaled_font("Segoe UI Variable Display", 22, QFont.Weight.Bold), text)
+        if self._style == "orb":
+            gauge = bounds.adjusted(diameter * 0.13, diameter * 0.13, -diameter * 0.13, -diameter * 0.13)
+            width = diameter * 0.065
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(track, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(gauge, 225 * 16, -270 * 16)
+            if active_value is not None:
+                painter.setPen(QPen(active_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawArc(gauge, 225 * 16, -int(270 * 16 * active_value / 100))
+            self._draw_centered(painter, QRectF(diameter * 0.21, diameter * 0.27, diameter * 0.58, diameter * 0.13), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), active_color)
+            value_text = "--" if active_value is None else f"{active_value:.0f}%"
+            self._draw_centered(painter, QRectF(diameter * 0.16, diameter * 0.40, diameter * 0.68, diameter * 0.23), value_text, self._scaled_font("Segoe UI Variable Display", 28, QFont.Weight.Bold), text)
+            reset = self._format_reset(active_quota).replace("重置 ", "") or "暂无重置时间"
+            self._draw_centered(painter, QRectF(diameter * 0.20, diameter * 0.66, diameter * 0.60, diameter * 0.12), reset, self._scaled_font("Microsoft YaHei", 8), muted)
+        elif self._style == "halo":
+            ring_width = diameter * 0.052
+            if len(available) == 2:
+                rings = (
+                    (bounds.adjusted(diameter * 0.10, diameter * 0.10, -diameter * 0.10, -diameter * 0.10), available[0]),
+                    (bounds.adjusted(diameter * 0.22, diameter * 0.22, -diameter * 0.22, -diameter * 0.22), available[1]),
+                )
+            elif available:
+                rings = ((bounds.adjusted(diameter * 0.15, diameter * 0.15, -diameter * 0.15, -diameter * 0.15), available[0]),)
+            else:
+                rings = ()
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for ring, (_, quota, color) in rings:
+                painter.setPen(QPen(track, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawArc(ring, 0, 360 * 16)
+                value = self._quota_value(quota)
+                painter.setPen(QPen(color, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawArc(ring, 90 * 16, -int(360 * 16 * value / 100))
+            if len(available) == 2:
+                q5_value = self._quota_value(self._q5)
+                q7_value = self._quota_value(self._q7)
+                self._draw_centered(painter, QRectF(diameter * 0.28, diameter * 0.34, diameter * 0.44, diameter * 0.15), f"5H  {q5_value:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), secondary)
+                self._draw_centered(painter, QRectF(diameter * 0.28, diameter * 0.49, diameter * 0.44, diameter * 0.15), f"7D  {q7_value:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), primary)
+            else:
+                value_text = "--" if active_value is None else f"{active_label}  {active_value:.0f}%"
+                self._draw_centered(painter, QRectF(diameter * 0.22, diameter * 0.39, diameter * 0.56, diameter * 0.22), value_text, self._scaled_font("Segoe UI Variable Display", 18, QFont.Weight.Bold), text)
+            self._draw_centered(painter, QRectF(diameter * 0.30, diameter * 0.65, diameter * 0.40, diameter * 0.11), self._mode_label(), self._scaled_font("Microsoft YaHei", 8), muted)
         else:
-            self._draw_centered(painter, QRectF(diameter * 0.19, diameter * 0.18, diameter * 0.62, diameter * 0.13), self._runtime, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold), muted)
-            self._draw_centered(painter, QRectF(diameter * 0.19, diameter * 0.31, diameter * 0.62, diameter * 0.12), self._quota_label, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.Bold), primary)
-            self._draw_centered(painter, QRectF(diameter * 0.16, diameter * 0.40, diameter * 0.68, diameter * 0.22), value, self._scaled_font("Segoe UI Variable Display", 24, QFont.Weight.Bold), text)
-            self._draw_centered(painter, QRectF(diameter * 0.20, diameter * 0.62, diameter * 0.60, diameter * 0.12), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), muted)
-            reset = self._reset_label or "重置时间未知"
-            self._draw_centered(painter, QRectF(diameter * 0.15, diameter * 0.73, diameter * 0.70, diameter * 0.12), reset, self._scaled_font("Microsoft YaHei", 7), muted)
+            ring = bounds.adjusted(diameter * 0.12, diameter * 0.12, -diameter * 0.12, -diameter * 0.12)
+            width = diameter * 0.068
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(track, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(ring, 0, 360 * 16)
+            if active_value is not None:
+                painter.setPen(QPen(active_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawArc(ring, 90 * 16, -int(360 * 16 * active_value / 100))
+            self._draw_centered(painter, QRectF(0, diameter * 0.27, diameter, diameter * 0.16), active_label, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
+            value_text = "--" if active_value is None else f"{active_value:.0f}%"
+            self._draw_centered(painter, QRectF(0, diameter * 0.42, diameter, diameter * 0.25), value_text, self._scaled_font("Segoe UI Variable Display", 20, QFont.Weight.Bold), text)
         painter.end()
 
     def contextMenuEvent(self, event: QContextMenuEvent):
@@ -207,6 +247,8 @@ class DesktopStatusPanel(QWidget):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._press_position = event.position().toPoint()
+            self._dragged = False
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
@@ -214,6 +256,8 @@ class DesktopStatusPanel(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            if self._press_position is not None and (event.position().toPoint() - self._press_position).manhattanLength() > 4:
+                self._dragged = True
             self.move(event.globalPosition().toPoint() - self._drag_start)
             event.accept()
             return
@@ -221,9 +265,20 @@ class DesktopStatusPanel(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
+            click_position = event.position().toPoint()
+            should_toggle = (
+                not self._dragged
+                and (click_position - self.rect().center()).manhattanLength() <= self.width() * 0.34
+            )
             self._drag_start = None
+            self._press_position = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
-            self.position_changed.emit(self.pos())
+            if should_toggle:
+                next_mode = "used" if self._display_mode == "remaining" else "remaining"
+                self.set_display_mode(next_mode)
+                self.mode_change_requested.emit(next_mode)
+            elif self._dragged:
+                self.position_changed.emit(self.pos())
             event.accept()
             return
         super().mouseReleaseEvent(event)

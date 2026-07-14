@@ -1,6 +1,6 @@
 from __future__ import annotations
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QFrame, QSizePolicy, QGridLayout,
@@ -26,51 +26,105 @@ STATUS_LABELS_EN = {
     "running": "Active", "pending": "Pending", "scheduled": "Scheduled", "completed": "Done",
 }
 STATUS_TOOLTIPS = {
-    "running": "进行中 = 今天有活动且最后活动时间在近 2 小时内的未归档线程",
-    "pending": "待处理 = 今天有活动、超过 2 小时未更新且尚未归档的线程",
+    "running": "进行中 = 项目内至少有一个未归档线程在近 2 小时有活动",
+    "pending": "待处理 = 项目今天有活动，但未归档线程已超过 2 小时未更新",
     "scheduled": "定时 = 本机 ~/.codex/automations 中当前启用的自动任务",
-    "completed": "完成 = 今天在 Codex 中明确归档的线程；停止输出不等于完成",
+    "completed": "完成 = 项目本期线程均已明确归档；停止输出不等于完成",
 }
 STATUS_TOOLTIPS_EN = {
-    "running": "Active = unarchived threads updated within the last 2 hours today",
-    "pending": "Pending = unarchived threads active earlier today but idle for over 2 hours",
+    "running": "Active = the project has an unarchived thread updated within the last 2 hours",
+    "pending": "Pending = project activity today, but unarchived threads are idle for over 2 hours",
     "scheduled": "Scheduled = enabled tasks in local ~/.codex/automations",
-    "completed": "Done = threads explicitly archived in Codex today; stopped output is not completion",
+    "completed": "Done = all project threads in this period were explicitly archived",
 }
 EMPTY_LABELS = {
-    "running": "当前没有近 2 小时活跃的线程",
-    "pending": "今天没有待处理线程",
+    "running": "当前没有近 2 小时活跃的项目",
+    "pending": "今天没有待处理项目",
     "scheduled": "当前没有启用的自动任务",
-    "completed": "今天没有归档的线程",
+    "completed": "今天没有已完成项目",
 }
 EMPTY_LABELS_EN = {
-    "running": "No threads active in the last 2 hours",
-    "pending": "No pending threads today",
+    "running": "No projects active in the last 2 hours",
+    "pending": "No pending projects today",
     "scheduled": "No enabled automations",
-    "completed": "No threads archived today",
+    "completed": "No completed projects today",
 }
 RUNTIME_BADGE = {
     RuntimeScope.CODEX: ("C", "#60a5fa"),
     RuntimeScope.CLAUDE_CODE: ("H", "#a78bfa"),
 }
 
+STATUS_PRIORITY = {"running": 0, "pending": 1, "scheduled": 2, "completed": 3}
+
+
+def aggregate_tasks_by_project(tasks):
+    """将今日线程按 Runtime + 项目聚合，项目状态由最活跃状态决定。"""
+    groups = {}
+    for task in tasks or []:
+        project_name = str(task.project or "").strip() or str(task.title or "未命名项目").strip()
+        key = (task.runtime, project_name.casefold())
+        groups.setdefault(key, {"name": project_name, "items": []})["items"].append(task)
+
+    aggregated = []
+    for (runtime, _), group in groups.items():
+        items = group["items"]
+        latest = max(items, key=lambda item: item.updated_at.timestamp() if item.updated_at else float("-inf"))
+        status = min((item.status for item in items), key=lambda value: STATUS_PRIORITY.get(value, 99))
+        latest_title = str(latest.title or "").strip()
+        aggregated.append(TaskItem(
+            id=latest.id,
+            title=group["name"],
+            status=status,
+            runtime=runtime,
+            updated_at=latest.updated_at,
+            project=group["name"],
+            detail=latest_title if latest_title.casefold() != group["name"].casefold() else "",
+            thread_count=len(items),
+        ))
+    return sorted(
+        aggregated,
+        key=lambda item: (
+            STATUS_PRIORITY.get(item.status, 99),
+            -(item.updated_at.timestamp() if item.updated_at else 0),
+            item.title.casefold(),
+        ),
+    )
+
+
+class ElidedLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.set_full_text(text)
+
+    def set_full_text(self, text):
+        self._full_text = str(text or "")
+        self.setToolTip(self._full_text)
+        self._refresh_text()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def _refresh_text(self):
+        available = max(20, self.width() - 2)
+        self.setText(QFontMetrics(self.font()).elidedText(self._full_text, Qt.TextElideMode.ElideRight, available))
+
 
 class TaskCard(QFrame):
     def __init__(self, task: TaskItem, language="zh", parent=None):
         super().__init__(parent)
         self.setObjectName("taskCard")
-        self.setFixedHeight(92)
+        self.setFixedHeight(96)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
 
         header = QHBoxLayout()
-        id_label = QLabel(task.id[:8] if len(task.id) > 8 else task.id)
-        id_label.setFont(QFont(FONT, 10, QFont.Weight.Bold))
-        id_label.setObjectName("caption")
-        header.addWidget(id_label)
-        header.addStretch()
+        title = ElidedLabel(task.title or "未命名项目")
+        title.setFont(QFont(FONT, 10, QFont.Weight.Bold))
+        header.addWidget(title, 1)
         badge_char, badge_color = RUNTIME_BADGE.get(task.runtime, ("?", "#888"))
         badge = QLabel(badge_char)
         badge.setFixedSize(20, 20)
@@ -80,18 +134,14 @@ class TaskCard(QFrame):
         header.addWidget(badge)
         layout.addLayout(header)
 
-        title = QLabel(task.title or "未命名任务")
-        title.setWordWrap(False)
-        title.setToolTip(task.title or "未命名任务")
-        title.setStyleSheet("font-size: 12px; font-weight: 600;")
-        layout.addWidget(title)
-
-        if task.project:
-            proj = QLabel(task.project[:30])
-            proj.setFont(QFont(FONT, 8))
-            proj.setObjectName("caption")
-            proj.setWordWrap(True)
-            layout.addWidget(proj)
+        if language == "en":
+            detail = task.detail or ("Enabled automation" if task.status == "scheduled" else "Project activity today")
+        else:
+            detail = task.detail or ("启用中的自动任务" if task.status == "scheduled" else "今日项目活动")
+        detail_label = ElidedLabel(detail)
+        detail_label.setFont(QFont(FONT, 8))
+        detail_label.setObjectName("caption")
+        layout.addWidget(detail_label)
 
         status_row = QHBoxLayout()
         status_dot = QLabel()
@@ -104,6 +154,14 @@ class TaskCard(QFrame):
         status_text.setFont(QFont(FONT, 8))
         status_text.setStyleSheet(f"color: {sc};")
         status_row.addWidget(status_text)
+        count_text = (
+            f"{task.thread_count} threads" if language == "en"
+            else f"{task.thread_count} 条线程"
+        )
+        count_label = QLabel(count_text)
+        count_label.setFont(QFont(FONT, 8))
+        count_label.setObjectName("caption")
+        status_row.addWidget(count_label)
         status_row.addStretch()
         if task.updated_at:
             time_label = QLabel(task.updated_at.strftime("%H:%M"))
@@ -200,9 +258,12 @@ class TaskBoardWidget(QWidget):
         self._tasks = []
 
     def update_tasks(self, tasks):
-        self._tasks = list(tasks or [])
+        self._tasks = aggregate_tasks_by_project(tasks)
         for col in self.columns.values():
             col.update_tasks(self._tasks)
+
+    def project_count(self):
+        return len(self._tasks)
 
     def set_language(self, language):
         for col in self.columns.values():

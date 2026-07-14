@@ -34,6 +34,8 @@ namespace CodexUU {
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+        [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
         public static bool HasVisibleMainWindow(uint targetProcessId) {
             bool found = false;
             EnumWindows((hWnd, lParam) => {
@@ -42,7 +44,14 @@ namespace CodexUU {
                 if (processId != targetProcessId || !IsWindowVisible(hWnd)) return true;
                 var title = new StringBuilder(256);
                 GetWindowText(hWnd, title, title.Capacity);
-                if (title.ToString() == "CodexUU") { found = true; return false; }
+                RECT rect;
+                GetWindowRect(hWnd, out rect);
+                int width = rect.Right - rect.Left;
+                int height = rect.Bottom - rect.Top;
+                if (title.ToString() == "CodexUU" && width >= 800 && height >= 600) {
+                    found = true;
+                    return false;
+                }
                 return true;
             }, IntPtr.Zero);
             return found;

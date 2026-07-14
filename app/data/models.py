@@ -73,6 +73,8 @@ class TaskItem:
     runtime: RuntimeScope = RuntimeScope.CODEX
     updated_at: Optional[datetime] = None
     project: str = ""
+    detail: str = ""
+    thread_count: int = 1
 
 
 @dataclass

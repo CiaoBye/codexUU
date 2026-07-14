@@ -1,9 +1,10 @@
 from __future__ import annotations
 import ctypes
 import os
+import uuid
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtGui import QCloseEvent, QIcon, QShowEvent
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
 
 from app.ui.dashboard import DashboardWidget
@@ -11,6 +12,25 @@ from app.utils.settings import SettingsManager
 from app.utils.translation import TranslationManager
 from app.utils.theme import ThemeManager
 from app.utils.global_hotkey import GlobalHotkey
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = (
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    )
+
+    @classmethod
+    def parse(cls, value: str):
+        parsed = uuid.UUID(value)
+        return cls(
+            parsed.time_low,
+            parsed.time_mid,
+            parsed.time_hi_version,
+            (ctypes.c_ubyte * 8).from_buffer_copy(parsed.bytes[8:]),
+        )
 
 
 class MainAppWindow(QMainWindow):
@@ -113,7 +133,7 @@ class MainAppWindow(QMainWindow):
         self._apply_dark_titlebar()
 
     def _apply_taskbar_visibility(self):
-        """Hide only the taskbar entry in lightweight mode, never the native caption."""
+        """Use the Shell taskbar API without turning the caption into a tool window."""
         if os.name != "nt":
             return
         try:
@@ -124,19 +144,74 @@ class MainAppWindow(QMainWindow):
             get_style.restype = ctypes.c_long
             set_style.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_long)
             set_style.restype = ctypes.c_long
-            exstyle = int(get_style(hwnd, -20))  # GWL_EXSTYLE
-            tool_window = 0x00000080  # WS_EX_TOOLWINDOW: no taskbar button
-            target = exstyle | tool_window if self._lightweight_mode else exstyle & ~tool_window
-            if target != exstyle:
-                set_style(hwnd, -20, target)
-                ctypes.windll.user32.SetWindowPos(
-                    hwnd, 0, 0, 0, 0, 0,
-                    0x0001 | 0x0002 | 0x0004 | 0x0020,  # frame changed, no move/size/z-order
-                )
+            style = int(get_style(hwnd, -16))
+            # Explicitly retain caption controls even after upgrading from an
+            # older WS_EX_TOOLWINDOW session.
+            standard_controls = 0x00080000 | 0x00020000 | 0x00010000 | 0x00040000
+            target_style = style | standard_controls
+            exstyle = int(get_style(hwnd, -20))
+            tool_window = 0x00000080
+            app_window = 0x00040000
+            target_exstyle = exstyle & ~tool_window
+            target_exstyle = (
+                target_exstyle & ~app_window
+                if self._lightweight_mode
+                else target_exstyle | app_window
+            )
+            if target_style != style:
+                set_style(hwnd, -16, target_style)
+            if target_exstyle != exstyle:
+                set_style(hwnd, -20, target_exstyle)
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0004 | 0x0020,
+            )
+            self._set_taskbar_tab(hwnd, visible=not self._lightweight_mode)
         except Exception:
-            # A normal taskbar button is safer than changing the native window
-            # frame when a Windows API is unavailable.
             pass
+
+    @staticmethod
+    def _set_taskbar_tab(hwnd: int, visible: bool) -> bool:
+        """Call ITaskbarList AddTab/DeleteTab through its stable COM vtable."""
+        if os.name != "nt":
+            return False
+        ole32 = ctypes.windll.ole32
+        initialized = False
+        taskbar = ctypes.c_void_p()
+        try:
+            init_result = int(ole32.CoInitialize(None))
+            initialized = init_result in (0, 1)
+            clsid = _GUID.parse("56FDF344-FD6D-11D0-958A-006097C9A090")
+            iid = _GUID.parse("56FDF342-FD6D-11D0-958A-006097C9A090")
+            ole32.CoCreateInstance.argtypes = (
+                ctypes.POINTER(_GUID), ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p),
+            )
+            ole32.CoCreateInstance.restype = ctypes.c_long
+            result = ole32.CoCreateInstance(
+                ctypes.byref(clsid), None, 1, ctypes.byref(iid), ctypes.byref(taskbar),
+            )
+            if result < 0 or not taskbar.value:
+                return False
+            vtable = ctypes.cast(taskbar, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            no_arg = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)
+            with_hwnd = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
+            hr_init = no_arg(vtable[3])
+            add_tab = with_hwnd(vtable[4])
+            delete_tab = with_hwnd(vtable[5])
+            release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+            if hr_init(taskbar) < 0:
+                return False
+            result = add_tab(taskbar, hwnd) if visible else delete_tab(taskbar, hwnd)
+            return result >= 0
+        finally:
+            if taskbar.value:
+                try:
+                    release(taskbar)
+                except Exception:
+                    pass
+            if initialized:
+                ole32.CoUninitialize()
 
     def _apply_dark_titlebar(self):
         try:
@@ -151,3 +226,7 @@ class MainAppWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         event.ignore()
         self._handle_close_request()
+
+    def showEvent(self, event: QShowEvent):
+        super().showEvent(event)
+        QTimer.singleShot(120, self._apply_windows_chrome)

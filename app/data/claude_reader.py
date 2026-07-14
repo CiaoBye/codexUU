@@ -173,6 +173,62 @@ def read_claude_daily_tokens() -> list[DailyToken]:
     return _store("daily_tokens", result)
 
 
+def read_claude_model_usage() -> list[ModelUsage]:
+    """Aggregate model usage without inventing an unavailable effort level."""
+    cached = _cached("model_usage")
+    if cached is not None:
+        return cached
+    grouped = defaultdict(lambda: {
+        "tokens": TokenBreakdown(), "sessions": set(), "last": None, "daily": {},
+    })
+    for event in _indexed_events():
+        breakdown = TokenBreakdown(
+            cached_input=event.cached_input,
+            uncached_input=event.uncached_input,
+            output=event.output,
+        )
+        if not breakdown.total:
+            continue
+        model = (event.model or "unknown").strip()
+        item = grouped[model]
+        item["sessions"].add(event.path)
+        event_time = event.timestamp or event.modified_at
+        if item["last"] is None or event_time > item["last"]:
+            item["last"] = event_time
+        for field in ("cached_input", "uncached_input", "output"):
+            setattr(item["tokens"], field, getattr(item["tokens"], field) + getattr(breakdown, field))
+        day = get_statistics_timezone().date_for(event_time)
+        daily = item["daily"].setdefault(
+            day.isoformat(),
+            DailyToken(
+                date=datetime.combine(day, datetime.min.time(), tzinfo=get_statistics_timezone().tzinfo()),
+                runtime=RuntimeScope.CLAUDE_CODE,
+            ),
+        )
+        daily.cached_input += breakdown.cached_input
+        daily.uncached_input += breakdown.uncached_input
+        daily.output += breakdown.output
+        daily.total = daily.cached_input + daily.uncached_input + daily.output
+
+    result = []
+    for model, item in grouped.items():
+        tokens = item["tokens"]
+        value = estimate_api_value(tokens, CLAUDE_PROMPT_PRICES)
+        result.append(ModelUsage(
+            name=model,
+            effort="",
+            runtime=RuntimeScope.CLAUDE_CODE,
+            token_total=tokens.total,
+            tokens=tokens,
+            estimated_value=value,
+            pricing_coverage_pct=100.0,
+            session_count=len(item["sessions"]),
+            last_active=item["last"],
+            daily_tokens=sorted(item["daily"].values(), key=lambda daily: daily.date, reverse=True),
+        ))
+    return _store("model_usage", sorted(result, key=lambda item: item.token_total, reverse=True))
+
+
 def read_claude_tasks() -> list[TaskItem]:
     cached = _cached("tasks")
     if cached is not None:

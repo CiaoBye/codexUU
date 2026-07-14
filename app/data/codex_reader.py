@@ -290,15 +290,44 @@ def _event_date(timestamp: str, fallback: datetime) -> datetime:
     return fallback.astimezone(get_statistics_timezone().tzinfo())
 
 
+def _model_context_from_event(event: dict) -> tuple[str, str, str]:
+    """Extract only model metadata needed to attribute subsequent token deltas."""
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return "", "", ""
+    source = payload
+    if payload.get("type") == "thread_settings_applied" and isinstance(payload.get("thread_settings"), dict):
+        source = payload["thread_settings"]
+    model = str(source.get("model") or "").strip()
+    effort = str(source.get("effort") or source.get("reasoning_effort") or "").strip().lower()
+    if not effort:
+        collaboration = source.get("collaboration_mode")
+        settings = collaboration.get("settings") if isinstance(collaboration, dict) else None
+        if isinstance(settings, dict):
+            effort = str(settings.get("reasoning_effort") or "").strip().lower()
+    turn_id = str(payload.get("turn_id") or source.get("turn_id") or "").strip()
+    return model, effort, turn_id
+
+
 def _iter_token_deltas(days: int = 180) -> Iterator[tuple[Path, datetime, str, TokenBreakdown, dict]]:
+    cache_key = f"token_deltas:{days}"
+    cached = _cached(cache_key)
+    if cached is not None:
+        yield from cached
+        return
     previous: dict[Path, TokenBreakdown] = {}
     active_models: dict[Path, str] = {}
+    active_efforts: dict[Path, str] = {}
+    active_turns: dict[Path, str] = {}
+    records: list[tuple[Path, datetime, str, TokenBreakdown, dict]] = []
     for path, mtime, event in _iter_rollout_events(days=days):
-        payload = event.get("payload")
-        if isinstance(payload, dict):
-            model = payload.get("model")
-            if isinstance(model, str) and model.strip():
-                active_models[path] = model.strip()
+        model, effort, turn_id = _model_context_from_event(event)
+        if model:
+            active_models[path] = model
+        if effort:
+            active_efforts[path] = effort
+        if turn_id:
+            active_turns[path] = turn_id
         parsed = _read_token_event(event)
         if not parsed:
             continue
@@ -308,7 +337,11 @@ def _iter_token_deltas(days: int = 180) -> Iterator[tuple[Path, datetime, str, T
             previous[path] = current
         if delta.total > 0:
             event["_codexu_model"] = active_models.get(path, "")
-            yield path, mtime, timestamp, delta, event
+            event["_codexu_effort"] = active_efforts.get(path, "")
+            event["_codexu_turn_id"] = active_turns.get(path, "")
+            records.append((path, mtime, timestamp, delta, event))
+    _store(cache_key, records)
+    yield from records
 
 
 def _iter_rollout_events(days: int = 180) -> Iterator[tuple[Path, datetime, dict]]:
@@ -448,6 +481,67 @@ def read_daily_tokens() -> list[DailyToken]:
         item.total = item.cached_input + item.uncached_input + item.output
     result = sorted(daily.values(), key=lambda item: item.date, reverse=True)[:180]
     return _store("daily_tokens", result)
+
+
+def read_model_usage() -> list[ModelUsage]:
+    cached = _cached("model_usage")
+    if cached is not None:
+        return cached
+    grouped = defaultdict(lambda: {
+        "tokens": TokenBreakdown(), "sessions": set(), "turns": set(),
+        "last": None, "daily": {},
+    })
+
+    def add(target: TokenBreakdown, value: TokenBreakdown):
+        target.cached_input += value.cached_input
+        target.uncached_input += value.uncached_input
+        target.output += value.output
+
+    for path, mtime, timestamp, breakdown, event in _iter_token_deltas(days=180):
+        model = str(event.get("_codexu_model") or "").strip()
+        effort = str(event.get("_codexu_effort") or "").strip().lower()
+        item = grouped[(model, effort)]
+        add(item["tokens"], breakdown)
+        item["sessions"].add(path)
+        turn_id = str(event.get("_codexu_turn_id") or "").strip()
+        if turn_id:
+            item["turns"].add(turn_id)
+        event_time = _event_date(timestamp, mtime)
+        if item["last"] is None or event_time > item["last"]:
+            item["last"] = event_time
+        day_key = event_time.date().isoformat()
+        daily = item["daily"].setdefault(
+            day_key,
+            DailyToken(
+                date=datetime.combine(event_time.date(), datetime.min.time(), tzinfo=get_statistics_timezone().tzinfo()),
+                runtime=RuntimeScope.CODEX,
+            ),
+        )
+        daily.cached_input += breakdown.cached_input
+        daily.uncached_input += breakdown.uncached_input
+        daily.output += breakdown.output
+        daily.total = daily.cached_input + daily.uncached_input + daily.output
+
+    result = []
+    for (model, effort), item in grouped.items():
+        tokens = item["tokens"]
+        if not tokens.total:
+            continue
+        value = estimate_model_api_value(tokens, model)
+        result.append(ModelUsage(
+            name=model or "未知模型",
+            effort=effort,
+            runtime=RuntimeScope.CODEX,
+            token_total=tokens.total,
+            tokens=tokens,
+            estimated_value=value or 0.0,
+            pricing_coverage_pct=100.0 if value is not None else 0.0,
+            session_count=len(item["sessions"]),
+            turn_count=len(item["turns"]),
+            last_active=item["last"],
+            daily_tokens=sorted(item["daily"].values(), key=lambda daily: daily.date, reverse=True),
+        ))
+    return _store("model_usage", sorted(result, key=lambda item: item.token_total, reverse=True))
 
 
 def read_model_priced_values() -> dict[str, float | int]:

@@ -115,6 +115,13 @@ class ModelUsage:
     token_total: int = 0
     estimated_value: float = 0.0
     pricing_coverage_pct: float = 0.0
+    effort: str = ""
+    runtime: RuntimeScope = RuntimeScope.CODEX
+    tokens: TokenBreakdown = field(default_factory=TokenBreakdown)
+    session_count: int = 0
+    turn_count: int = 0
+    last_active: Optional[datetime] = None
+    daily_tokens: list[DailyToken] = field(default_factory=list)
 
 
 @dataclass
@@ -150,6 +157,7 @@ class MultiRuntimeUsageSnapshot:
     projects: list[ProjectStats] = field(default_factory=list)
     tools: list[ToolUsage] = field(default_factory=list)
     skills: list[SkillUsage] = field(default_factory=list)
+    models: list[ModelUsage] = field(default_factory=list)
 
     def for_scope(self, scope: RuntimeScope) -> UsageSnapshot:
         return self.codex if scope == RuntimeScope.CODEX else self.claude_code

@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QPointF, QRectF
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -12,14 +12,16 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
-from app.data.models import DailyToken, format_tokens
+from app.data.models import DailyToken, ModelUsage, format_tokens
 from app.ui.heatmap import TokenHeatmap
 from app.utils.statistics_timezone import get_statistics_timezone
 
@@ -140,6 +142,64 @@ def longest_streak(by_day):
     return best
 
 
+def _model_label(name: str) -> str:
+    value = (name or "unknown").strip()
+    aliases = {
+        "gpt-5.6-sol": "Sol",
+        "gpt-5.6-terra": "Terra",
+        "gpt-5.6-luna": "Luna",
+    }
+    return aliases.get(value.lower(), value)
+
+
+def _effort_label(effort: str, english: bool) -> str:
+    key = (effort or "").strip().lower()
+    zh = {"low": "低", "medium": "中", "high": "高", "xhigh": "超高", "max": "极高", "ultra": "极限"}
+    en = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "X-high", "max": "Max", "ultra": "Ultra"}
+    return (en if english else zh).get(key, "Not provided" if english else "未提供")
+
+
+class ModelUsageRow(QFrame):
+    activated = Signal(object)
+
+    def __init__(self, model: ModelUsage, total: int, english: bool, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.setObjectName("modelUsageRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(62)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(11, 7, 11, 7)
+        layout.setSpacing(4)
+        heading = QHBoxLayout()
+        name = QLabel(f"{_model_label(model.name)} · {_effort_label(model.effort, english)}")
+        name.setObjectName("modelUsageName")
+        heading.addWidget(name)
+        heading.addStretch()
+        value = QLabel(format_tokens(model.token_total))
+        value.setObjectName("modelUsageValue")
+        heading.addWidget(value)
+        layout.addLayout(heading)
+        progress = QProgressBar()
+        progress.setObjectName("modelUsageProgress")
+        progress.setRange(0, 1000)
+        progress.setValue(round(model.token_total / max(1, total) * 1000))
+        progress.setTextVisible(False)
+        progress.setFixedHeight(6)
+        layout.addWidget(progress)
+        detail = QLabel(
+            f"All-time {model.session_count} sessions · {model.turn_count} turns"
+            if english else f"累计 {model.session_count} 个会话 · {model.turn_count} 个回合"
+        )
+        detail.setObjectName("metricHint")
+        layout.addWidget(detail)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activated.emit(self.model)
+        super().mouseReleaseEvent(event)
+
+
 class UsagePlot(QWidget):
     def __init__(self, bars=False, parent=None):
         super().__init__(parent)
@@ -232,6 +292,8 @@ class UsageTrendWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.daily_tokens = []
+        self.model_usage = []
+        self.selected_model = None
         self.cumulative_total = None
         self.mode = "daily"
         self.language = "zh"
@@ -257,6 +319,17 @@ class UsageTrendWidget(QWidget):
             self.mode_buttons[mode] = button
             controls.addWidget(button)
         controls.addStretch()
+        self.view_group = QButtonGroup(self)
+        self.view_group.setExclusive(True)
+        self.overview_button = QPushButton("")
+        self.models_button = QPushButton("")
+        for index, button in enumerate((self.overview_button, self.models_button)):
+            button.setObjectName("miniTabButton")
+            button.setCheckable(True)
+            button.setChecked(index == 0)
+            self.view_group.addButton(button, index)
+            controls.addWidget(button)
+        self.view_group.idClicked.connect(self._set_view)
         layout.addLayout(controls)
 
         self.charts_host = QWidget()
@@ -299,8 +372,60 @@ class UsageTrendWidget(QWidget):
         self.chart = UsagePlot()
         right_layout.addWidget(self.chart, 1)
         charts.addWidget(right, 1)
-        layout.addWidget(self.charts_host, 1)
+        self.models_host = self._build_models_host()
+        self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(self.charts_host)
+        self.content_stack.addWidget(self.models_host)
+        layout.addWidget(self.content_stack, 1)
         self.set_language("zh")
+
+    def _build_models_host(self):
+        host = QWidget()
+        columns = QHBoxLayout(host)
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(10)
+
+        ranking = QFrame()
+        ranking.setObjectName("surfaceCard")
+        ranking_layout = QVBoxLayout(ranking)
+        ranking_layout.setContentsMargins(14, 10, 14, 10)
+        self.models_title = QLabel("")
+        self.models_title.setObjectName("sectionTitle")
+        ranking_layout.addWidget(self.models_title)
+        self.models_scroll = QScrollArea()
+        self.models_scroll.setWidgetResizable(True)
+        self.models_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.models_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.models_list = QWidget()
+        self.models_list_layout = QVBoxLayout(self.models_list)
+        self.models_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.models_list_layout.setSpacing(7)
+        self.models_list_layout.addStretch()
+        self.models_scroll.setWidget(self.models_list)
+        ranking_layout.addWidget(self.models_scroll, 1)
+        columns.addWidget(ranking, 1)
+
+        detail = QFrame()
+        detail.setObjectName("surfaceCard")
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(14, 10, 14, 10)
+        detail_header = QHBoxLayout()
+        self.model_detail_title = QLabel("")
+        self.model_detail_title.setObjectName("sectionTitle")
+        detail_header.addWidget(self.model_detail_title)
+        detail_header.addStretch()
+        self.model_detail_value = QLabel("")
+        self.model_detail_value.setObjectName("modelUsageValue")
+        detail_header.addWidget(self.model_detail_value)
+        detail_layout.addLayout(detail_header)
+        self.model_detail_meta = QLabel("")
+        self.model_detail_meta.setObjectName("metricHint")
+        self.model_detail_meta.setWordWrap(True)
+        detail_layout.addWidget(self.model_detail_meta)
+        self.model_chart = UsagePlot()
+        detail_layout.addWidget(self.model_chart, 1)
+        columns.addWidget(detail, 1)
+        return host
 
     def set_language(self, language):
         self.language = language
@@ -309,7 +434,13 @@ class UsageTrendWidget(QWidget):
         for mode, label in zip(MODES, labels):
             self.mode_buttons[mode].setText(label)
         self.activity_title.setText("Token activity" if english else "Token 活动")
+        self.overview_button.setText("Overview" if english else "概览")
+        self.models_button.setText("Models" if english else "模型")
+        self.models_title.setText("Models and reasoning effort" if english else "模型与推理强度")
         self._render()
+
+    def _set_view(self, index):
+        self.content_stack.setCurrentIndex(index)
 
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
@@ -350,10 +481,81 @@ class UsageTrendWidget(QWidget):
         self._mode_animation = fade_out
         fade_out.start()
 
-    def set_data(self, daily_tokens, cumulative_total=None):
+    def set_data(self, daily_tokens, cumulative_total=None, model_usage=None):
         self.daily_tokens = list(daily_tokens or [])
         self.cumulative_total = cumulative_total
+        self.model_usage = list(model_usage or [])
+        if self.selected_model not in self.model_usage:
+            self.selected_model = self.model_usage[0] if self.model_usage else None
         self._render()
+
+    def _period_model(self, model):
+        points = aggregate_points(model.daily_tokens, self.mode, model.token_total)
+        total = points[-1][1] if self.mode == "cumulative" and points else sum(value for _, value in points)
+        return ModelUsage(
+            name=model.name,
+            effort=model.effort,
+            runtime=model.runtime,
+            token_total=total,
+            estimated_value=model.estimated_value,
+            pricing_coverage_pct=model.pricing_coverage_pct,
+            tokens=model.tokens,
+            session_count=model.session_count,
+            turn_count=model.turn_count,
+            last_active=model.last_active,
+            daily_tokens=model.daily_tokens,
+        ), points
+
+    def _select_model(self, model):
+        self.selected_model = model
+        self._render_models()
+
+    def _clear_model_rows(self):
+        while self.models_list_layout.count() > 1:
+            item = self.models_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def _render_models(self):
+        self._clear_model_rows()
+        english = self.language == "en"
+        period_models = []
+        for original in self.model_usage:
+            period, points = self._period_model(original)
+            if period.token_total:
+                period_models.append((original, period, points))
+        period_models.sort(key=lambda item: item[1].token_total, reverse=True)
+        total = sum(item[1].token_total for item in period_models)
+        if not period_models:
+            empty = QLabel("No model usage in this period" if english else "当前口径暂无模型用量")
+            empty.setObjectName("emptyState")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.models_list_layout.insertWidget(0, empty, 1)
+            self.model_detail_title.setText("Model details" if english else "模型详情")
+            self.model_detail_meta.setText("")
+            self.model_detail_value.setText("0")
+            self.model_chart.set_points([])
+            return
+        originals = [item[0] for item in period_models]
+        if self.selected_model not in originals:
+            self.selected_model = originals[0]
+        selected = period_models[originals.index(self.selected_model)]
+        for original, period, _points in period_models:
+            row = ModelUsageRow(period, total, english)
+            row.setProperty("selected", original is self.selected_model)
+            row.activated.connect(lambda _period, target=original: self._select_model(target))
+            self.models_list_layout.insertWidget(self.models_list_layout.count() - 1, row)
+        original, period, points = selected
+        effort = _effort_label(original.effort, english)
+        self.model_detail_title.setText(f"{_model_label(original.name)} · {effort}")
+        self.model_detail_value.setText(format_tokens(period.token_total))
+        coverage = f"{original.pricing_coverage_pct:.0f}%"
+        self.model_detail_meta.setText(
+            f"All-time {original.session_count} sessions · {original.turn_count} turns · pricing coverage {coverage}"
+            if english else f"累计 {original.session_count} 个会话 · {original.turn_count} 个回合 · 计价覆盖 {coverage}"
+        )
+        self.model_chart.set_points(points)
 
     def _render(self):
         english = self.language == "en"
@@ -375,3 +577,4 @@ class UsageTrendWidget(QWidget):
         }
         self.summary.setText(f"{mode_names[self.mode]} · {format_tokens(total)}")
         self.trend_title.setText(("Trend · " if english else "趋势 · ") + mode_names[self.mode])
+        self._render_models()

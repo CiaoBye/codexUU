@@ -224,9 +224,9 @@ class TrayManager(QObject):
         if value is not None:
             value = max(0.0, min(100.0, float(value)))
             color = QColor("#3296f3") if mode == "used" else QColor("#8668f2")
-            direction = 1 if mode == "used" else -1
             painter.setPen(QPen(color, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawArc(bounds, 90 * 16, int(direction * 360 * 16 * value / 100))
+            start = 270 if mode == "used" else 90
+            painter.drawArc(bounds, start * 16, -int(360 * 16 * value / 100))
             text = f"{value:.0f}"
         else:
             text = "U"

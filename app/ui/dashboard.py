@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from app.data.claude_reader import (
     clear_cache as clear_claude_cache,
     read_claude_daily_tokens,
+    read_claude_model_usage,
     read_claude_projects,
     read_claude_skill_usage,
     read_claude_snapshot,
@@ -48,6 +49,7 @@ from app.data.codex_reader import (
     clear_cache as clear_codex_cache,
     read_codex_snapshot,
     read_daily_tokens,
+    read_model_usage,
     read_projects,
     read_skill_usage,
     read_task_board,
@@ -95,7 +97,7 @@ class TokenCompositionBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.values = (0, 0, 0)
-        self.setFixedHeight(8)
+        self.setFixedHeight(12)
 
     def set_tokens(self, tokens):
         self.values = (
@@ -108,23 +110,37 @@ class TokenCompositionBar(QWidget):
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        track = QRectF(0, 1, self.width(), 6)
+        track = QRectF(0, 2, self.width(), 8)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(127, 145, 172, 36))
-        painter.drawRoundedRect(track, 3, 3)
+        painter.drawRoundedRect(track, 4, 4)
         total = sum(self.values)
         if total <= 0:
             return
         clip_path = QPainterPath()
-        clip_path.addRoundedRect(track, 3, 3)
+        clip_path.addRoundedRect(track, 4, 4)
         painter.save()
         painter.setClipPath(clip_path)
+        widths = [self.width() * value / total if value > 0 else 0.0 for value in self.values]
+        minimum = min(5.0, self.width() / max(1, sum(value > 0 for value in self.values)))
+        deficit = 0.0
+        for index, width in enumerate(widths):
+            if 0 < width < minimum:
+                deficit += minimum - width
+                widths[index] = minimum
+        for index in sorted(range(len(widths)), key=widths.__getitem__, reverse=True):
+            removable = max(0.0, widths[index] - minimum)
+            take = min(removable, deficit)
+            widths[index] -= take
+            deficit -= take
+            if deficit <= 0:
+                break
         x = 0.0
         for index, value in enumerate(self.values):
             if value <= 0:
                 continue
-            width = self.width() * value / total
-            segment = QRectF(x, 1, width, 6)
+            width = widths[index]
+            segment = QRectF(x, 2, width, 8)
             painter.setBrush(self.COLORS[index])
             painter.drawRect(segment)
             x += width
@@ -306,8 +322,8 @@ class QuotaDial(QWidget):
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
             value = max(0.0, min(100.0, value))
             painter.setPen(QPen(color, 10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            direction = 1 if self.display_mode == "used" else -1
-            painter.drawArc(rect, 90 * 16, int(direction * 360 * 16 * value / 100))
+            start = 270 if self.display_mode == "used" else 90
+            painter.drawArc(rect, start * 16, -int(360 * 16 * value / 100))
 
         painter.setPen(QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc"))
         painter.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
@@ -957,11 +973,12 @@ class DashboardWidget(QWidget):
                 tasks = read_task_board() + read_claude_tasks()
                 daily = read_daily_tokens() + read_claude_daily_tokens()
                 daily.sort(key=lambda item: item.date, reverse=True)
+                models = read_model_usage() + read_claude_model_usage()
                 projects = read_projects() + read_claude_projects()
                 projects.sort(key=lambda item: item.token_total, reverse=True)
                 tools = read_tool_usage() + read_claude_tool_usage()
                 skills = read_skill_usage() + read_claude_skill_usage()
-                self._pending_result = (codex, claude, tasks, daily, projects, tools, skills)
+                self._pending_result = (codex, claude, tasks, daily, projects, tools, skills, models)
             except Exception as error:
                 self._pending_error = str(error)
                 traceback.print_exc()
@@ -976,7 +993,7 @@ class DashboardWidget(QWidget):
             self._poll_timer.stop()
             result = self._pending_result
             self._pending_result = None
-            codex, claude, tasks, daily, projects, tools, skills = result
+            codex, claude, tasks, daily, projects, tools, skills, models = result
             self.data.codex = codex
             self.data.claude_code = claude
             self.data.tasks = tasks
@@ -984,6 +1001,7 @@ class DashboardWidget(QWidget):
             self.data.projects = projects
             self.data.tools = tools
             self.data.skills = skills
+            self.data.models = models
             if not self._silent_refresh:
                 self.refresh_button.setEnabled(True)
                 self._restore_refresh_button()
@@ -1052,7 +1070,12 @@ class DashboardWidget(QWidget):
 
         tasks, daily, projects, tools, skills = self._visible_data()
         self.task_tab.update_tasks(tasks)
-        self.trend_tab.set_data(daily, snapshot.cumulative_index_total or snapshot.tokens.cumulative.total)
+        models = [item for item in self.data.models if item.runtime == self.current_scope]
+        self.trend_tab.set_data(
+            daily,
+            snapshot.cumulative_index_total or snapshot.tokens.cumulative.total,
+            models,
+        )
         self.project_tab.update_projects(projects)
         self.skill_tab.set_data(skills, tools)
         self._update_tab_summary()

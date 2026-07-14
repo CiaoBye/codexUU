@@ -47,7 +47,14 @@ QLabel#caption { color: #748197; font-size: 10px; }
 QLabel#metricValue { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 27px; font-weight: 700; }
 QLabel#metricLabel { color: #aab6c8; font-size: 11px; }
 QLabel#metricHint { color: #748197; font-size: 10px; }
-QLabel#metricBreakdown { color: #748197; font-size: 8px; }
+QLabel#metricBreakdown { color: #9aa8bd; font-size: 9px; }
+QFrame#modelUsageRow { background: #151b25; border: 1px solid #283246; border-radius: 9px; }
+QFrame#modelUsageRow:hover { background: #1d2736; border-color: #425a80; }
+QFrame#modelUsageRow[selected="true"] { background: #202d45; border-color: #5e91f4; }
+QLabel#modelUsageName { color: #f3f6fb; font-size: 11px; font-weight: 650; }
+QLabel#modelUsageValue { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 13px; font-weight: 700; }
+QProgressBar#modelUsageProgress { background: #2b3445; border: 0; border-radius: 3px; }
+QProgressBar#modelUsageProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #398cf0,stop:1 #8d74ff); border-radius: 3px; }
 QLabel#brandMark { color: #76a7ff; font-size: 20px; font-weight: 700; }
 QLabel#brandName { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 17px; font-weight: 700; }
 QLabel#brandSubtitle { color: #748197; font-size: 10px; }
@@ -159,7 +166,14 @@ QLabel#caption { color: #8a94a6; font-size: 10px; }
 QLabel#metricValue { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 27px; font-weight: 700; }
 QLabel#metricLabel { color: #526071; font-size: 11px; }
 QLabel#metricHint { color: #8a94a6; font-size: 10px; }
-QLabel#metricBreakdown { color: #8a94a6; font-size: 8px; }
+QLabel#metricBreakdown { color: #667085; font-size: 9px; }
+QFrame#modelUsageRow { background: #f8faff; border: 1px solid #dfe6f2; border-radius: 9px; }
+QFrame#modelUsageRow:hover { background: #f1f6ff; border-color: #b7ccec; }
+QFrame#modelUsageRow[selected="true"] { background: #eaf2ff; border-color: #6d9dff; }
+QLabel#modelUsageName { color: #26344b; font-size: 11px; font-weight: 650; }
+QLabel#modelUsageValue { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 13px; font-weight: 700; }
+QProgressBar#modelUsageProgress { background: #e3e9f2; border: 0; border-radius: 3px; }
+QProgressBar#modelUsageProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #398cf0,stop:1 #8d74ff); border-radius: 3px; }
 QLabel#brandMark { color: #326ad6; font-size: 20px; font-weight: 700; }
 QLabel#brandName { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 17px; font-weight: 700; }
 QLabel#brandSubtitle { color: #8a94a6; font-size: 10px; }

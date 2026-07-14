@@ -20,6 +20,37 @@ def test_cumulative_token_reset_starts_new_session():
     assert _delta_breakdown(previous, current).total == 34
 
 
+def test_turn_context_exposes_model_effort_and_turn_id():
+    model, effort, turn_id = codex_reader._model_context_from_event({
+        "type": "turn_context",
+        "payload": {"model": "gpt-5.6-sol", "effort": "medium", "turn_id": "turn-1"},
+    })
+    assert (model, effort, turn_id) == ("gpt-5.6-sol", "medium", "turn-1")
+
+
+def test_model_usage_keeps_model_effort_token_and_daily_attribution(monkeypatch):
+    now = datetime.now(timezone.utc)
+    events = [
+        (Path("one.jsonl"), now, now.isoformat(), TokenBreakdown(10, 20, 5), {
+            "_codexu_model": "gpt-5.6-terra", "_codexu_effort": "high", "_codexu_turn_id": "t1",
+        }),
+        (Path("one.jsonl"), now, now.isoformat(), TokenBreakdown(5, 10, 2), {
+            "_codexu_model": "gpt-5.6-terra", "_codexu_effort": "high", "_codexu_turn_id": "t2",
+        }),
+    ]
+    monkeypatch.setattr(codex_reader, "_cached", lambda _: None)
+    monkeypatch.setattr(codex_reader, "_store", lambda _key, value: value)
+    monkeypatch.setattr(codex_reader, "_iter_token_deltas", lambda days=180: iter(events))
+    result = codex_reader.read_model_usage()
+    assert len(result) == 1
+    assert result[0].name == "gpt-5.6-terra"
+    assert result[0].effort == "high"
+    assert result[0].token_total == 52
+    assert result[0].session_count == 1
+    assert result[0].turn_count == 2
+    assert result[0].daily_tokens[0].total == 52
+
+
 def test_snapshot_uses_detailed_daily_tokens_for_today_and_week(monkeypatch):
     configure_statistics_timezone("utc")
     today = datetime.now(timezone.utc)

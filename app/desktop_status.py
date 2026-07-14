@@ -114,7 +114,7 @@ class DesktopStatusPanel(QWidget):
             for label, quota in available:
                 value = quota.used_pct if self._display_mode == "used" else quota.remaining_pct
                 lines.append(f"{label} {mode_label} {value:.0f}% · {self._format_reset(quota) or '重置时间未知'}")
-            lines.extend((f"今日 {self._today}", "点击中心切换已用/剩余 · 双击打开主窗口"))
+            lines.extend((f"今日 {self._today}", "点击额度中心切换口径 · 点击其他区域打开主窗口"))
             tip = "\n".join(lines)
         self.setToolTip(tip)
 
@@ -140,6 +140,14 @@ class DesktopStatusPanel(QWidget):
         available = max(0, round(rect.width()) - 6)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, metrics.elidedText(text, Qt.TextElideMode.ElideRight, available))
 
+    @staticmethod
+    def _draw_text(painter: QPainter, rect: QRectF, text: str, font: QFont, color: QColor, alignment):
+        painter.setFont(font)
+        painter.setPen(color)
+        metrics = QFontMetrics(font)
+        available = max(0, round(rect.width()) - 4)
+        painter.drawText(rect, alignment, metrics.elidedText(text, Qt.TextElideMode.ElideRight, available))
+
     def _quota_value(self, quota):
         if quota is None:
             return None
@@ -149,10 +157,11 @@ class DesktopStatusPanel(QWidget):
     def _mode_label(self):
         return "已用" if self._display_mode == "used" else "剩余"
 
-    def _arc_direction(self):
-        # Keep the same visual grammar as the main quota dial: used grows from
-        # the top toward the left, remaining grows from the top toward the right.
-        return 1 if self._display_mode == "used" else -1
+    def _arc(self, value, degrees=360):
+        # Used starts at the bottom and grows up the left side. Remaining
+        # starts at the top and grows down the right side.
+        start = 270 if self._display_mode == "used" else 90
+        return start * 16, -int(degrees * 16 * value / 100)
 
     @staticmethod
     def _draw_track(painter, rect, value, color, track, width=7):
@@ -183,15 +192,18 @@ class DesktopStatusPanel(QWidget):
         painter.drawArc(ring, 0, 360 * 16)
         if value is not None:
             painter.setPen(QPen(color, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawArc(ring, 90 * 16, int(self._arc_direction() * 360 * 16 * value / 100))
+            painter.drawArc(ring, *self._arc(value))
         value_text = "--" if value is None else f"{value:.0f}%"
-        self._draw_centered(painter, ring.adjusted(5, 8, -5, -8), value_text, self._scaled_font("Segoe UI Variable Display", 18, QFont.Weight.Bold), text)
+        self._draw_centered(painter, ring.adjusted(5, 8, -5, -8), value_text, self._scaled_font("Segoe UI Variable Display", 19, QFont.Weight.Bold), text)
         content_left = ring.right() + 15
         content_width = panel.right() - content_left - 16
-        self._draw_centered(painter, QRectF(content_left, 18, content_width, 19), f"{self._runtime} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), text)
+        self._draw_text(painter, QRectF(content_left, 16, content_width, 20), self._runtime, self._scaled_font("Microsoft YaHei", 10, QFont.Weight.Bold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._draw_text(painter, QRectF(content_left, 16, content_width, 20), self._mode_label(), self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), color, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        summary = "  ·  ".join(f"{item_label} {self._quota_value(item_quota):.0f}%" for item_label, item_quota, _ in available) or "暂无额度"
+        self._draw_text(painter, QRectF(content_left, 37, content_width, 18), summary, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold), color, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         reset = self._format_reset(quota).replace("重置 ", "") or "暂无重置时间"
-        self._draw_centered(painter, QRectF(content_left, 40, content_width, 17), f"{label}  {reset}", self._scaled_font("Microsoft YaHei", 8), color)
-        self._draw_centered(painter, QRectF(content_left, 60, content_width, 16), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 8), muted)
+        self._draw_text(painter, QRectF(content_left, 55, content_width, 17), f"{label} 重置 {reset}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), muted, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._draw_text(painter, QRectF(content_left, 72, content_width, 14), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 8), muted, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def _paint_tracks(self, painter, surface, edge, track, primary, secondary, text, muted):
         panel = QRectF(5, 5, self.width() - 10, self.height() - 10)
@@ -210,17 +222,20 @@ class DesktopStatusPanel(QWidget):
         if not rows:
             self._draw_centered(painter, QRectF(18, 47, panel.width() - 26, 34), "暂无可验证额度", self._scaled_font("Microsoft YaHei", 9), muted)
         else:
-            start_y = 44 if len(rows) == 2 else 56
-            step = 35
+            start_y = 48 if len(rows) == 2 else 61
+            step = 32
             for index, (label, quota, color) in enumerate(rows):
                 y = start_y + index * step
                 value = self._quota_value(quota)
                 painter.setPen(color)
-                painter.setFont(self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold))
-                painter.drawText(QRectF(18, y - 10, 32, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                painter.setFont(self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold))
+                painter.drawText(QRectF(18, y - 12, 34, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
                 value_text = "--" if value is None else f"{value:.0f}%"
-                painter.drawText(QRectF(panel.right() - 52, y - 10, 38, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, value_text)
-                self._draw_track(painter, QRectF(53, y - 1, panel.width() - 115, 8), value, color, track, max(5, self.height() * 0.045))
+                painter.drawText(QRectF(panel.right() - 58, y - 12, 44, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, value_text)
+                self._draw_track(painter, QRectF(55, y - 2, panel.width() - 121, 8), value, color, track, max(6, self.height() * 0.05))
+                if len(rows) == 1:
+                    reset = self._format_reset(quota) or "重置时间未知"
+                    self._draw_text(painter, QRectF(55, y + 8, panel.width() - 72, 16), reset, self._scaled_font("Microsoft YaHei", 8), muted, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         painter.setPen(muted)
         painter.setFont(self._scaled_font("Microsoft YaHei", 8))
         painter.drawText(QRectF(18, panel.bottom() - 27, panel.width() - 32, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"今日 {self._today}")
@@ -270,12 +285,12 @@ class DesktopStatusPanel(QWidget):
             painter.drawArc(gauge, 0, 360 * 16)
             if active_value is not None:
                 painter.setPen(QPen(active_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawArc(gauge, 90 * 16, int(self._arc_direction() * 270 * 16 * active_value / 100))
+                painter.drawArc(gauge, *self._arc(active_value))
             self._draw_centered(painter, QRectF(diameter * 0.21, diameter * 0.27, diameter * 0.58, diameter * 0.13), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), active_color)
             value_text = "--" if active_value is None else f"{active_value:.0f}%"
             self._draw_centered(painter, QRectF(diameter * 0.16, diameter * 0.40, diameter * 0.68, diameter * 0.23), value_text, self._scaled_font("Segoe UI Variable Display", 28, QFont.Weight.Bold), text)
             reset = self._format_reset(active_quota).replace("重置 ", "") or "暂无重置时间"
-            self._draw_centered(painter, QRectF(diameter * 0.20, diameter * 0.66, diameter * 0.60, diameter * 0.12), reset, self._scaled_font("Microsoft YaHei", 8), muted)
+            self._draw_centered(painter, QRectF(diameter * 0.17, diameter * 0.65, diameter * 0.66, diameter * 0.14), reset, self._scaled_font("Microsoft YaHei", 10, QFont.Weight.DemiBold), muted)
         elif self._style == "halo":
             ring_width = diameter * 0.052
             if len(available) == 2:
@@ -293,16 +308,22 @@ class DesktopStatusPanel(QWidget):
                 painter.drawArc(ring, 0, 360 * 16)
                 value = self._quota_value(quota)
                 painter.setPen(QPen(color, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawArc(ring, 90 * 16, int(self._arc_direction() * 360 * 16 * value / 100))
+                painter.drawArc(ring, *self._arc(value))
             if len(available) == 2:
                 q5_value = self._quota_value(self._q5)
                 q7_value = self._quota_value(self._q7)
-                self._draw_centered(painter, QRectF(diameter * 0.28, diameter * 0.34, diameter * 0.44, diameter * 0.15), f"5H  {q5_value:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), secondary)
-                self._draw_centered(painter, QRectF(diameter * 0.28, diameter * 0.49, diameter * 0.44, diameter * 0.15), f"7D  {q7_value:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), primary)
+                self._draw_centered(painter, QRectF(diameter * 0.27, diameter * 0.29, diameter * 0.46, diameter * 0.15), f"5H  {q5_value:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), secondary)
+                self._draw_centered(painter, QRectF(diameter * 0.27, diameter * 0.44, diameter * 0.46, diameter * 0.15), f"7D  {q7_value:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), primary)
+                reset = self._format_reset(self._q7).replace("重置 ", "") or "--"
+                self._draw_centered(painter, QRectF(diameter * 0.25, diameter * 0.61, diameter * 0.50, diameter * 0.11), reset, self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), muted)
             else:
-                value_text = "--" if active_value is None else f"{active_label}  {active_value:.0f}%"
-                self._draw_centered(painter, QRectF(diameter * 0.22, diameter * 0.39, diameter * 0.56, diameter * 0.22), value_text, self._scaled_font("Segoe UI Variable Display", 18, QFont.Weight.Bold), text)
-            self._draw_centered(painter, QRectF(diameter * 0.30, diameter * 0.65, diameter * 0.40, diameter * 0.11), self._mode_label(), self._scaled_font("Microsoft YaHei", 8), muted)
+                value_text = "--" if active_value is None else f"{active_value:.0f}%"
+                self._draw_centered(painter, QRectF(diameter * 0.22, diameter * 0.38, diameter * 0.56, diameter * 0.22), value_text, self._scaled_font("Segoe UI Variable Display", 24, QFont.Weight.Bold), text)
+                self._draw_centered(painter, QRectF(diameter * 0.28, diameter * 0.28, diameter * 0.44, diameter * 0.12), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), active_color)
+                reset = self._format_reset(active_quota).replace("重置 ", "") or "--"
+                self._draw_centered(painter, QRectF(diameter * 0.22, diameter * 0.61, diameter * 0.56, diameter * 0.13), reset, self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), muted)
+            if len(available) == 2:
+                self._draw_centered(painter, QRectF(diameter * 0.30, diameter * 0.72, diameter * 0.40, diameter * 0.10), self._mode_label(), self._scaled_font("Microsoft YaHei", 8), muted)
         else:
             ring = bounds.adjusted(diameter * 0.12, diameter * 0.12, -diameter * 0.12, -diameter * 0.12)
             width = diameter * 0.068
@@ -311,8 +332,8 @@ class DesktopStatusPanel(QWidget):
             painter.drawArc(ring, 0, 360 * 16)
             if active_value is not None:
                 painter.setPen(QPen(active_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawArc(ring, 90 * 16, int(self._arc_direction() * 360 * 16 * active_value / 100))
-            self._draw_centered(painter, QRectF(0, diameter * 0.27, diameter, diameter * 0.16), active_label, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
+                painter.drawArc(ring, *self._arc(active_value))
+            self._draw_centered(painter, QRectF(0, diameter * 0.25, diameter, diameter * 0.18), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), active_color)
             value_text = "--" if active_value is None else f"{active_value:.0f}%"
             self._draw_centered(painter, QRectF(0, diameter * 0.42, diameter, diameter * 0.25), value_text, self._scaled_font("Segoe UI Variable Display", 20, QFont.Weight.Bold), text)
         painter.end()
@@ -365,10 +386,7 @@ class DesktopStatusPanel(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
             click_position = event.position().toPoint()
-            should_toggle = (
-                not self._dragged
-                and (click_position - self.rect().center()).manhattanLength() <= self.width() * 0.34
-            )
+            should_toggle = not self._dragged and self._mode_hit_test(click_position)
             self._drag_start = None
             self._press_position = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -378,13 +396,31 @@ class DesktopStatusPanel(QWidget):
                 self.mode_change_requested.emit(next_mode)
             elif self._dragged:
                 self.position_changed.emit(self.pos())
+            else:
+                self.show_main.emit()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.show_main.emit()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    def _mode_hit_test(self, position: QPoint) -> bool:
+        if self._style == "capsule":
+            center = QPoint(self.height() // 2, self.height() // 2)
+            radius = self.height() * 0.31
+            delta = position - center
+            return delta.x() ** 2 + delta.y() ** 2 <= radius ** 2
+        if self._style == "tracks":
+            zone = self.rect().adjusted(
+                round(self.width() * 0.28), round(self.height() * 0.25),
+                -round(self.width() * 0.28), -round(self.height() * 0.25),
+            )
+            return zone.contains(position)
+        center = self.rect().center()
+        delta = position - center
+        radius = min(self.width(), self.height()) * 0.30
+        return delta.x() ** 2 + delta.y() ** 2 <= radius ** 2

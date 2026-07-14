@@ -15,6 +15,7 @@ def test_settings_manager_default_values():
         assert manager.get_shortcut() == "Ctrl+U"
         assert manager.get_reduce_motion() is False
         assert manager.get_window_preferences() == (False, "tray")
+        assert manager.get_quota_alert_threshold() == 20
 
 def test_settings_manager_save_and_load():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -28,6 +29,7 @@ def test_settings_manager_save_and_load():
         manager.set_shortcut("Ctrl+Alt+K")
         manager.set_reduce_motion(True)
         manager.set_window_preferences(True, "minimize")
+        manager.set_quota_alert_threshold(30)
         manager.save()
         
         manager2 = SettingsManager(config_path)
@@ -40,6 +42,7 @@ def test_settings_manager_save_and_load():
         assert manager2.get_shortcut() == "Ctrl+Alt+K"
         assert manager2.get_reduce_motion() is True
         assert manager2.get_window_preferences() == (True, "minimize")
+        assert manager2.get_quota_alert_threshold() == 30
 
 def test_settings_manager_missing_file():
     with tempfile.TemporaryDirectory() as tmpdir:

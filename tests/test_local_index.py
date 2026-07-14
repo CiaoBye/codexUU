@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from app.data.local_index import iter_indexed_claude_events, local_index_status
+from app.data.local_index import clear_local_index, iter_indexed_claude_events, local_index_status
 
 
 def _write_event(path: Path, timestamp: str, *, tokens: int = 0, tool: str = "", skill: str = ""):
@@ -57,3 +57,15 @@ def test_local_index_is_incremental_and_stores_only_derived_events(tmp_path):
     assert status.available is True
     assert status.file_count == 1
     assert status.event_count == 2
+
+
+def test_clear_local_index_removes_database_and_sqlite_sidecars(tmp_path):
+    database = tmp_path / "analytics.sqlite"
+    for path in (database, tmp_path / "analytics.sqlite-wal", tmp_path / "analytics.sqlite-shm"):
+        path.write_text("derived data", encoding="utf-8")
+
+    clear_local_index(database)
+
+    assert not database.exists()
+    assert not (tmp_path / "analytics.sqlite-wal").exists()
+    assert not (tmp_path / "analytics.sqlite-shm").exists()

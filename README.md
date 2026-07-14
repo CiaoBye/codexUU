@@ -1,6 +1,6 @@
 # CodexUU
 
-当前预览版本：`0.1.04`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
+当前预览版本：`0.1.05`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
 
 CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，参考 [shanggqm/codexU](https://github.com/shanggqm/codexU) 的信息架构重新实现。
 
@@ -24,9 +24,11 @@ CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，
 - Windows 原生全局快捷键、主窗口置顶、关闭行为配置。
 - Windows 11 动态托盘额度环、详细状态 tooltip 与单击快速状态悬浮窗；通知区图标会按当前 Runtime 和额度已用/剩余口径更新。
 - 托盘快速状态悬浮窗，可快速查看 Codex / Claude Code 今日用量和额度。
+- 可配置低额度提醒阈值；每个 5h / 7d 窗口在同一重置周期内只提示一次。
 - GitHub Release 自动检查、手动检查、Release 页面和 Windows 安装包下载入口。
 - 数据源诊断：Codex app-server、SQLite、session 精细事件和 Claude transcript。
 - Claude transcript 增量索引：首次扫描后只重建变化文件；索引仅保存 Token、模型、工具和 Skill 等派生统计，不复制对话正文。
+- 设置页提供本机索引维护：只清除可自动重建的派生索引及其 SQLite 辅助文件，原始日志不会被删除。
 - 统计时区支持跟随系统、UTC 和固定 IANA 时区。
 - 刷新防重复执行，并提供刷新中、完成和失败反馈。
 
@@ -68,6 +70,8 @@ python main.py
 程序关闭主窗口后默认保留在系统托盘。默认全局快捷键为 `Ctrl+U`，可在设置中点击录制并修改；新组合键只有在 Windows 全局注册成功后才会保存。
 
 Windows 11 的通知区不允许第三方应用像 macOS 菜单栏一样常驻任意文本，因此 CodexUU 使用动态额度环图标、悬停详情和点击浮窗提供等价状态。若图标被收入 `^` 隐藏区，可在“设置 > 个性化 > 任务栏 > 其他系统托盘图标”中固定 CodexUU。
+
+托盘图标无可用几何信息时（例如被收纳到隐藏区），快速状态窗会按鼠标所在显示器的可用工作区定位并做边缘约束，避免多显示器时跑到主屏幕外。
 
 ## 设置说明
 

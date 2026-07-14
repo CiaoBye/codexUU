@@ -5,12 +5,13 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListView, QPushButton, QStyledItemDelegate, QTabWidget,
+    QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QListView, QMessageBox, QPushButton, QScrollArea, QStyledItemDelegate, QTabWidget,
     QVBoxLayout, QWidget, QApplication,
 )
 
 from app.constants import APP_REPO, APP_VERSION
+from app.data.local_index import clear_local_index, local_index_status
 from app.utils.data_diagnostics import diagnose_data_sources
 from app.utils.global_hotkey import parse_shortcut
 from app.utils.settings import SettingsManager
@@ -283,7 +284,15 @@ class SettingsDialog(QDialog):
 
     def _system_tab(self):
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 14, 8, 8)
         self.update_card, update_form = self._card("更新")
         update_card = self.update_card
@@ -345,7 +354,35 @@ class SettingsDialog(QDialog):
         self.diagnostic_button.clicked.connect(self._refresh_diagnostics)
         diagnostic_form.addRow(self.diagnostic_button)
         layout.addWidget(self.diagnostic_card)
+
+        self.alert_card, alert_form = self._card("额度提醒")
+        self.alert_form = alert_form
+        self.quota_alert_combo = StyledComboBox()
+        for label, value in (("关闭", 0), ("剩余 10%", 10), ("剩余 20%", 20), ("剩余 30%", 30), ("剩余 50%", 50)):
+            self.quota_alert_combo.addItem(label, value)
+        self.quota_alert_combo.setCurrentIndex(max(0, self.quota_alert_combo.findData(self.settings_manager.get_quota_alert_threshold())))
+        self.quota_alert_combo.currentIndexChanged.connect(self._save_quota_alert)
+        alert_form.addRow("提醒阈值", self.quota_alert_combo)
+        alert_note = QLabel("额度低于阈值时，每个额度窗口在本次重置周期内只通知一次。")
+        alert_note.setObjectName("caption")
+        alert_note.setWordWrap(True)
+        self.alert_note = alert_note
+        alert_form.addRow("说明", alert_note)
+        layout.addWidget(self.alert_card)
+
+        self.maintenance_card, maintenance_form = self._card("数据维护")
+        self.maintenance_form = maintenance_form
+        self.index_status_label = QLabel()
+        self.index_status_label.setObjectName("caption")
+        self.index_status_label.setWordWrap(True)
+        maintenance_form.addRow("本机索引", self.index_status_label)
+        self.clear_index_btn = QPushButton("清理并在下次读取时重建")
+        self.clear_index_btn.setObjectName("iconButton")
+        self.clear_index_btn.clicked.connect(self._clear_local_index)
+        maintenance_form.addRow("可重建数据", self.clear_index_btn)
+        layout.addWidget(self.maintenance_card)
         self._refresh_diagnostics()
+        self._refresh_index_maintenance()
         layout.addStretch()
         return tab
 
@@ -373,6 +410,10 @@ class SettingsDialog(QDialog):
     def _save_display_preferences(self):
         self.settings_manager.set_quota_display(self.quota_combo.currentData() or "remaining")
         self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())
+        self.settings_manager.save()
+
+    def _save_quota_alert(self):
+        self.settings_manager.set_quota_alert_threshold(self.quota_alert_combo.currentData() or 0)
         self.settings_manager.save()
 
     def _save_shortcut(self, shortcut=None):
@@ -421,6 +462,30 @@ class SettingsDialog(QDialog):
                 ("●  全局快捷键：已注册" if parent.hotkey_registered else "◆  全局快捷键：注册失败或被占用")
             )
         self.diagnostic_label.setText("\n".join(lines))
+        self._refresh_index_maintenance()
+
+    def _refresh_index_maintenance(self):
+        status = local_index_status()
+        if status.available:
+            self.index_status_label.setText(
+                f"{status.file_count} 个文件、{status.event_count} 条派生事件；清理后仅会重建索引，不会删除原始日志。"
+            )
+        else:
+            self.index_status_label.setText("尚未创建派生索引；不会影响 Codex 或 Claude Code 的原始日志。")
+
+    def _clear_local_index(self):
+        english = self.translation_manager.get_language() == "en"
+        answer = QMessageBox.question(
+            self,
+            "Clear local index" if english else "清理本机索引",
+            "Only derived analytics data will be removed. Raw logs stay untouched and the index rebuilds on next read. Continue?"
+            if english else "仅删除派生统计索引，不会删除原始日志；下次读取会自动重建。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            clear_local_index()
+            self._refresh_diagnostics()
 
     def _on_theme_changed(self):
         app = QApplication.instance()
@@ -513,6 +578,8 @@ class SettingsDialog(QDialog):
         self.update_card.setTitle("Updates" if english else "更新")
         self.timezone_card.setTitle("Statistics" if english else "统计口径")
         self.diagnostic_card.setTitle("Data source diagnostics" if english else "数据源诊断")
+        self.alert_card.setTitle("Quota alerts" if english else "额度提醒")
+        self.maintenance_card.setTitle("Data maintenance" if english else "数据维护")
         self.preference_form.labelForField(self.lang_combo).setText("Language" if english else "语言")
         self.preference_form.labelForField(self.runtime_combo).setText("Data source" if english else "数据源")
         self.auto_update_cb.setText("Auto-check GitHub Release updates" if english else "自动检查 GitHub Release 更新")
@@ -541,6 +608,15 @@ class SettingsDialog(QDialog):
         self.download_update_btn.setText("Download update" if english else "下载更新")
         self.open_release_btn.setText("Open release" if english else "打开 Release")
         self.diagnostic_button.setText("Check again" if english else "重新检测")
+        self.alert_form.labelForField(self.quota_alert_combo).setText("Alert threshold" if english else "提醒阈值")
+        self.alert_form.labelForField(self.alert_note).setText("About" if english else "说明")
+        self.alert_note.setText(
+            "Each quota window notifies once per reset cycle after remaining quota falls below this threshold."
+            if english else "额度低于阈值时，每个额度窗口在本次重置周期内只通知一次。"
+        )
+        self.maintenance_form.labelForField(self.index_status_label).setText("Local index" if english else "本机索引")
+        self.maintenance_form.labelForField(self.clear_index_btn).setText("Rebuildable data" if english else "可重建数据")
+        self.clear_index_btn.setText("Clear and rebuild on next read" if english else "清理并在下次读取时重建")
         self.diagnostic_form.labelForField(self.data_scope_label).setText("Scope" if english else "统计范围")
         self.data_scope_label.setText(
             "Usage, trends, and projects are local records only. The local index stores derived metrics, not transcript text."

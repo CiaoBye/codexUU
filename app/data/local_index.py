@@ -231,6 +231,10 @@ def local_index_status(database: Optional[Path] = None) -> LocalIndexStatus:
 def clear_local_index(database: Optional[Path] = None) -> None:
     """Delete only derived analytics records; raw Codex/Claude logs remain untouched."""
     path = _database_path(database)
-    if path.exists():
-        path.unlink()
+    for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            # The next read can still rebuild from source logs; a locked cache is not destructive.
+            continue
     _recent_sync.clear()

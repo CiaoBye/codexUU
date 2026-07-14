@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QRectF, Signal, QObject
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -110,6 +110,7 @@ class TrayManager(QObject):
         self.settings_manager = settings_manager
         self.data = MultiRuntimeUsageSnapshot()
         self._icon_key = None
+        self._quota_alerts: set[tuple[str, str, str]] = set()
         self.panel = TrayQuickPanel()
         self.panel.show_main.connect(self._open_main)
         self.panel.show_settings.connect(self._open_settings)
@@ -151,7 +152,10 @@ class TrayManager(QObject):
             return
         self.panel.adjustSize()
         tray_rect = self.tray_icon.geometry()
-        screen = QApplication.screenAt(tray_rect.center()) or QApplication.primaryScreen()
+        # Hidden notification icons often report an empty geometry. Prefer the mouse screen
+        # so the panel remains on the display the user is interacting with.
+        screen = QApplication.screenAt(tray_rect.center()) if not tray_rect.isEmpty() else None
+        screen = screen or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
         available = screen.availableGeometry()
         if tray_rect.isEmpty() or not available.contains(tray_rect.center()):
             x = available.right() - self.panel.width() - 10
@@ -161,6 +165,8 @@ class TrayManager(QObject):
             y = tray_rect.top() - self.panel.height() - 10
             if y < available.top():
                 y = tray_rect.bottom() + 10
+        x = min(max(available.left() + 8, x), available.right() - self.panel.width() - 8)
+        y = min(max(available.top() + 8, y), available.bottom() - self.panel.height() - 8)
         self.panel.move(x, y)
         self.panel.show()
         self.panel.raise_()
@@ -177,6 +183,34 @@ class TrayManager(QObject):
         self.data = data
         self.panel.update_data(data)
         self._refresh_status_icon()
+        self._notify_quota_alerts()
+
+    def _notify_quota_alerts(self):
+        threshold = self.settings_manager.get_quota_alert_threshold() if self.settings_manager else 0
+        if threshold <= 0:
+            self._quota_alerts.clear()
+            return
+        if not self.tray_icon.supportsMessages():
+            return
+        active: set[tuple[str, str, str]] = set()
+        for runtime, snapshot in (("codex", self.data.codex), ("claudeCode", self.data.claude_code)):
+            quota_name, quota = ("7d", snapshot.quota_7d) if snapshot.quota_7d else ("5h", snapshot.quota_5h)
+            if quota is None or quota.remaining_pct > threshold:
+                continue
+            reset = quota.reset_time.isoformat() if quota.reset_time else "unknown-reset"
+            key = (runtime, quota_name, reset)
+            active.add(key)
+            if key in self._quota_alerts:
+                continue
+            runtime_name = "Claude Code" if runtime == "claudeCode" else "Codex"
+            self.tray_icon.showMessage(
+                "CodexUU 额度提醒",
+                f"{runtime_name} {quota_name} 剩余 {quota.remaining_pct:.0f}%（提醒阈值 {threshold}%）。",
+                QSystemTrayIcon.MessageIcon.Warning,
+                10000,
+            )
+            self._quota_alerts.add(key)
+        self._quota_alerts.intersection_update(active)
 
     def _refresh_status_icon(self):
         runtime = self.settings_manager.get_active_runtime() if self.settings_manager else "codex"

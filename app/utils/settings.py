@@ -15,6 +15,7 @@ DEFAULT_SHORTCUT = "Ctrl+U"
 DEFAULT_REDUCE_MOTION = False
 DEFAULT_ALWAYS_ON_TOP = False
 DEFAULT_CLOSE_BEHAVIOR = "tray"
+DEFAULT_QUOTA_ALERT_THRESHOLD = 20
 
 class SettingsManager:
     def __init__(self, config_path: Path):
@@ -31,6 +32,7 @@ class SettingsManager:
         self.reduce_motion = DEFAULT_REDUCE_MOTION
         self.always_on_top = DEFAULT_ALWAYS_ON_TOP
         self.close_behavior = DEFAULT_CLOSE_BEHAVIOR
+        self.quota_alert_threshold = DEFAULT_QUOTA_ALERT_THRESHOLD
         self.listeners: list[Callable] = []
     
     def get_language(self) -> str:
@@ -60,6 +62,9 @@ class SettingsManager:
     def get_window_preferences(self) -> tuple[bool, str]:
         return self.always_on_top, self.close_behavior
 
+    def get_quota_alert_threshold(self) -> int:
+        return self.quota_alert_threshold
+
     def set_active_runtime(self, runtime: str):
         if runtime in ("codex", "claudeCode"):
             self.active_runtime = runtime
@@ -83,6 +88,14 @@ class SettingsManager:
     def set_window_preferences(self, always_on_top: bool, close_behavior: str):
         self.always_on_top = bool(always_on_top)
         self.close_behavior = close_behavior if close_behavior in ("tray", "minimize", "quit") else DEFAULT_CLOSE_BEHAVIOR
+        self._notify_listeners()
+
+    def set_quota_alert_threshold(self, threshold: int):
+        try:
+            value = int(threshold)
+        except (TypeError, ValueError):
+            value = DEFAULT_QUOTA_ALERT_THRESHOLD
+        self.quota_alert_threshold = value if value in (0, 10, 20, 30, 50) else DEFAULT_QUOTA_ALERT_THRESHOLD
         self._notify_listeners()
 
     def set_update_preferences(self, auto_update: bool, include_beta: bool):
@@ -123,6 +136,7 @@ class SettingsManager:
                 reduce_motion = data.get("reduce_motion", DEFAULT_REDUCE_MOTION)
                 always_on_top = data.get("always_on_top", DEFAULT_ALWAYS_ON_TOP)
                 close_behavior = data.get("close_behavior", DEFAULT_CLOSE_BEHAVIOR)
+                quota_alert_threshold = data.get("quota_alert_threshold", DEFAULT_QUOTA_ALERT_THRESHOLD)
                 self.language = language if language in ("zh", "en") else DEFAULT_LANGUAGE
                 self.theme = theme if theme in ("auto", "light", "dark") else DEFAULT_THEME
                 self.statistics_timezone = timezone_mode if timezone_mode in ("system", "utc", "fixed") else DEFAULT_STATISTICS_TIMEZONE
@@ -135,6 +149,7 @@ class SettingsManager:
                 self.reduce_motion = bool(reduce_motion)
                 self.always_on_top = bool(always_on_top)
                 self.close_behavior = close_behavior if close_behavior in ("tray", "minimize", "quit") else DEFAULT_CLOSE_BEHAVIOR
+                self.set_quota_alert_threshold(quota_alert_threshold)
             except (OSError, json.JSONDecodeError, TypeError):
                 self.language = DEFAULT_LANGUAGE
                 self.theme = DEFAULT_THEME
@@ -148,6 +163,7 @@ class SettingsManager:
                 self.reduce_motion = DEFAULT_REDUCE_MOTION
                 self.always_on_top = DEFAULT_ALWAYS_ON_TOP
                 self.close_behavior = DEFAULT_CLOSE_BEHAVIOR
+                self.quota_alert_threshold = DEFAULT_QUOTA_ALERT_THRESHOLD
     
     def save(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +180,7 @@ class SettingsManager:
             "reduce_motion": self.reduce_motion,
             "always_on_top": self.always_on_top,
             "close_behavior": self.close_behavior,
+            "quota_alert_threshold": self.quota_alert_threshold,
         }
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

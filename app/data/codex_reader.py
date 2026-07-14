@@ -489,7 +489,7 @@ def read_model_usage() -> list[ModelUsage]:
         return cached
     grouped = defaultdict(lambda: {
         "tokens": TokenBreakdown(), "sessions": set(), "turns": set(),
-        "last": None, "daily": {},
+        "last": None, "daily": {}, "session_activity": {}, "turn_activity": {},
     })
 
     def add(target: TokenBreakdown, value: TokenBreakdown):
@@ -507,6 +507,14 @@ def read_model_usage() -> list[ModelUsage]:
         if turn_id:
             item["turns"].add(turn_id)
         event_time = _event_date(timestamp, mtime)
+        session_key = str(path)
+        previous_session_time = item["session_activity"].get(session_key)
+        if previous_session_time is None or event_time > previous_session_time:
+            item["session_activity"][session_key] = event_time
+        if turn_id:
+            previous_turn_time = item["turn_activity"].get(turn_id)
+            if previous_turn_time is None or event_time > previous_turn_time:
+                item["turn_activity"][turn_id] = event_time
         if item["last"] is None or event_time > item["last"]:
             item["last"] = event_time
         day_key = event_time.date().isoformat()
@@ -540,6 +548,8 @@ def read_model_usage() -> list[ModelUsage]:
             turn_count=len(item["turns"]),
             last_active=item["last"],
             daily_tokens=sorted(item["daily"].values(), key=lambda daily: daily.date, reverse=True),
+            session_activity=item["session_activity"],
+            turn_activity=item["turn_activity"],
         ))
     return _store("model_usage", sorted(result, key=lambda item: item.token_total, reverse=True))
 

@@ -21,7 +21,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.data.models import DailyToken, ModelUsage, format_tokens
+from app.data.models import (
+    DailyToken,
+    ModelUsage,
+    TokenBreakdown,
+    estimate_model_api_value,
+    format_tokens,
+    model_provider,
+    pricing_source_for_model,
+    prices_for_model,
+)
 from app.ui.heatmap import TokenHeatmap
 from app.utils.statistics_timezone import get_statistics_timezone
 
@@ -46,6 +55,34 @@ def _item_date(item) -> date:
 def _month_shift(day: date, delta: int) -> date:
     month_index = day.year * 12 + day.month - 1 + delta
     return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def period_start(mode: str, today: date | None = None) -> date | None:
+    today = today or get_statistics_timezone().now_date()
+    if mode == "daily":
+        return today - timedelta(days=29)
+    if mode == "weekly":
+        return today - timedelta(days=today.weekday(), weeks=11)
+    if mode == "monthly":
+        return _month_shift(today.replace(day=1), -11)
+    return None
+
+
+def period_label(mode: str, english: bool) -> str:
+    values = {
+        "daily": ("近 30 天", "Last 30 days"),
+        "weekly": ("近 12 周", "Last 12 weeks"),
+        "monthly": ("近 12 个月", "Last 12 months"),
+        "cumulative": ("累计", "All time"),
+    }
+    return values[mode][1 if english else 0]
+
+
+def _in_period(value: datetime | None, start: date | None, end: date) -> bool:
+    if value is None:
+        return False
+    day = value.date() if hasattr(value, "date") else value
+    return day <= end and (start is None or day >= start)
 
 
 def aggregate_points(daily_tokens, mode: str, cumulative_total=None):
@@ -162,7 +199,7 @@ def _effort_label(effort: str, english: bool) -> str:
 class ModelUsageRow(QFrame):
     activated = Signal(object)
 
-    def __init__(self, model: ModelUsage, total: int, english: bool, parent=None):
+    def __init__(self, model: ModelUsage, total: int, english: bool, period_text: str, parent=None):
         super().__init__(parent)
         self.model = model
         self.setObjectName("modelUsageRow")
@@ -188,8 +225,8 @@ class ModelUsageRow(QFrame):
         progress.setFixedHeight(6)
         layout.addWidget(progress)
         detail = QLabel(
-            f"All-time {model.session_count} sessions · {model.turn_count} turns"
-            if english else f"累计 {model.session_count} 个会话 · {model.turn_count} 个回合"
+            f"{period_text} · {model.session_count} sessions · {model.turn_count} turns"
+            if english else f"{period_text} · {model.session_count} 个会话 · {model.turn_count} 个回合"
         )
         detail.setObjectName("metricHint")
         layout.addWidget(detail)
@@ -418,10 +455,32 @@ class UsageTrendWidget(QWidget):
         self.model_detail_value.setObjectName("modelUsageValue")
         detail_header.addWidget(self.model_detail_value)
         detail_layout.addLayout(detail_header)
+        self.model_detail_provider = QLabel("")
+        self.model_detail_provider.setObjectName("modelProviderBadge")
+        detail_layout.addWidget(self.model_detail_provider)
         self.model_detail_meta = QLabel("")
         self.model_detail_meta.setObjectName("metricHint")
         self.model_detail_meta.setWordWrap(True)
         detail_layout.addWidget(self.model_detail_meta)
+        metrics = QHBoxLayout()
+        metrics.setSpacing(7)
+        self.model_metric_labels = []
+        for object_name in ("uncachedMetric", "cachedMetric", "outputMetric"):
+            tile = QFrame()
+            tile.setObjectName("modelMetricTile")
+            tile.setProperty("tone", object_name)
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(9, 7, 9, 7)
+            tile_layout.setSpacing(1)
+            metric_value = QLabel("0")
+            metric_value.setObjectName("modelMetricValue")
+            metric_name = QLabel("")
+            metric_name.setObjectName("metricHint")
+            tile_layout.addWidget(metric_value)
+            tile_layout.addWidget(metric_name)
+            metrics.addWidget(tile, 1)
+            self.model_metric_labels.append((metric_value, metric_name))
+        detail_layout.addLayout(metrics)
         self.model_chart = UsagePlot()
         detail_layout.addWidget(self.model_chart, 1)
         columns.addWidget(detail, 1)
@@ -436,7 +495,7 @@ class UsageTrendWidget(QWidget):
         self.activity_title.setText("Token activity" if english else "Token 活动")
         self.overview_button.setText("Overview" if english else "概览")
         self.models_button.setText("Models" if english else "模型")
-        self.models_title.setText("Models and reasoning effort" if english else "模型与推理强度")
+        self.models_title.setText("Model usage" if english else "模型使用量")
         self._render()
 
     def _set_view(self, index):
@@ -491,17 +550,38 @@ class UsageTrendWidget(QWidget):
 
     def _period_model(self, model):
         points = aggregate_points(model.daily_tokens, self.mode, model.token_total)
-        total = points[-1][1] if self.mode == "cumulative" and points else sum(value for _, value in points)
+        today = get_statistics_timezone().now_date()
+        start = period_start(self.mode, today)
+        selected_days = [
+            item for item in model.daily_tokens
+            if _in_period(item.date, start, today)
+        ]
+        if self.mode == "cumulative":
+            tokens = model.tokens
+        else:
+            tokens = TokenBreakdown(
+                cached_input=sum(item.cached_input for item in selected_days),
+                uncached_input=sum(item.uncached_input for item in selected_days),
+                output=sum(item.output for item in selected_days),
+            )
+        total = tokens.total
+        priced = estimate_model_api_value(tokens, model.name)
+        sessions = sum(1 for active in model.session_activity.values() if _in_period(active, start, today))
+        turns = sum(1 for active in model.turn_activity.values() if _in_period(active, start, today))
+        if not model.session_activity and self.mode == "cumulative":
+            sessions = model.session_count
+        if not model.turn_activity and self.mode == "cumulative":
+            turns = model.turn_count
         return ModelUsage(
             name=model.name,
             effort=model.effort,
             runtime=model.runtime,
             token_total=total,
-            estimated_value=model.estimated_value,
-            pricing_coverage_pct=model.pricing_coverage_pct,
-            tokens=model.tokens,
-            session_count=model.session_count,
-            turn_count=model.turn_count,
+            estimated_value=priced or 0.0,
+            pricing_coverage_pct=100.0 if prices_for_model(model.name) and total else 0.0,
+            tokens=tokens,
+            session_count=sessions,
+            turn_count=turns,
             last_active=model.last_active,
             daily_tokens=model.daily_tokens,
         ), points
@@ -520,6 +600,7 @@ class UsageTrendWidget(QWidget):
     def _render_models(self):
         self._clear_model_rows()
         english = self.language == "en"
+        range_text = period_label(self.mode, english)
         period_models = []
         for original in self.model_usage:
             period, points = self._period_model(original)
@@ -535,6 +616,10 @@ class UsageTrendWidget(QWidget):
             self.model_detail_title.setText("Model details" if english else "模型详情")
             self.model_detail_meta.setText("")
             self.model_detail_value.setText("0")
+            self.model_detail_provider.setText("")
+            for value_label, name_label in self.model_metric_labels:
+                value_label.setText("0")
+                name_label.setText("")
             self.model_chart.set_points([])
             return
         originals = [item[0] for item in period_models]
@@ -542,19 +627,32 @@ class UsageTrendWidget(QWidget):
             self.selected_model = originals[0]
         selected = period_models[originals.index(self.selected_model)]
         for original, period, _points in period_models:
-            row = ModelUsageRow(period, total, english)
+            row = ModelUsageRow(period, total, english, range_text)
             row.setProperty("selected", original is self.selected_model)
             row.activated.connect(lambda _period, target=original: self._select_model(target))
             self.models_list_layout.insertWidget(self.models_list_layout.count() - 1, row)
         original, period, points = selected
         effort = _effort_label(original.effort, english)
         self.model_detail_title.setText(f"{_model_label(original.name)} · {effort}")
-        self.model_detail_value.setText(format_tokens(period.token_total))
-        coverage = f"{original.pricing_coverage_pct:.0f}%"
+        provider = model_provider(original.name)
+        source = pricing_source_for_model(original.name)
+        priced = prices_for_model(original.name) is not None
+        value_text = f"${period.estimated_value:,.2f}" if priced else ("Unpriced" if english else "未计价")
+        self.model_detail_value.setText(f"{format_tokens(period.token_total)} · {value_text}")
+        price_state = ("Official price matched" if english else "已匹配官方价格") if priced else ("Unpriced" if english else "未计价")
+        self.model_detail_provider.setText(f"{provider} · {price_state} · {range_text}")
+        self.model_detail_provider.setToolTip(source or ("No exact official price for this model ID" if english else "未找到与该模型 ID 精确匹配的官方价格"))
+        share = period.token_total / max(1, total) * 100
+        last_active = original.last_active.strftime("%m/%d %H:%M") if original.last_active else "--"
         self.model_detail_meta.setText(
-            f"All-time {original.session_count} sessions · {original.turn_count} turns · pricing coverage {coverage}"
-            if english else f"累计 {original.session_count} 个会话 · {original.turn_count} 个回合 · 计价覆盖 {coverage}"
+            f"{period.session_count} sessions · {period.turn_count} turns · {share:.1f}% share · last active {last_active}"
+            if english else f"{period.session_count} 个会话 · {period.turn_count} 个回合 · 占本期 {share:.1f}% · 最近活跃 {last_active}"
         )
+        metric_values = (period.tokens.uncached_input, period.tokens.cached_input, period.tokens.output)
+        metric_names = ("Uncached", "Cached", "Output") if english else ("未缓存", "缓存", "输出")
+        for (value_label, name_label), value, name in zip(self.model_metric_labels, metric_values, metric_names):
+            value_label.setText(format_tokens(value))
+            name_label.setText(name)
         self.model_chart.set_points(points)
 
     def _render(self):
@@ -569,12 +667,7 @@ class UsageTrendWidget(QWidget):
             self.activity_stack.setCurrentIndex(1)
             self.bars.set_points(points)
         total = points[-1][1] if self.mode == "cumulative" and points else sum(value for _, value in points)
-        mode_names = {
-            "daily": "近 30 天" if not english else "Last 30 days",
-            "weekly": "近 12 周" if not english else "Last 12 weeks",
-            "monthly": "近 12 个月" if not english else "Last 12 months",
-            "cumulative": "累计走势" if not english else "Cumulative",
-        }
+        mode_names = {mode: period_label(mode, english) for mode in MODES}
         self.summary.setText(f"{mode_names[self.mode]} · {format_tokens(total)}")
         self.trend_title.setText(("Trend · " if english else "趋势 · ") + mode_names[self.mode])
         self._render_models()

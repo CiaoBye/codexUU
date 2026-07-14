@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import threading
 import traceback
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -56,10 +57,14 @@ from app.data.codex_reader import (
     read_tool_usage,
 )
 from app.data.models import (
+    DailyToken,
     FULL_MONTHLY_VALUE,
     MultiRuntimeUsageSnapshot,
     RuntimeScope,
+    TokenBreakdown,
+    estimate_model_api_value,
     format_tokens,
+    is_gpt_model,
 )
 from app.ui.project_ranking import ProjectRankingWidget
 from app.ui.skill_usage import SkillUsageWidget
@@ -82,6 +87,92 @@ def icon_label(name: str, size: int = 16) -> QLabel:
         size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
     ))
     return label
+
+
+def _add_breakdown(target: TokenBreakdown, source) -> None:
+    target.cached_input += int(getattr(source, "cached_input", 0) or 0)
+    target.uncached_input += int(getattr(source, "uncached_input", 0) or 0)
+    target.output += int(getattr(source, "output", 0) or 0)
+
+
+def _model_scope_summary(models, runtime: RuntimeScope):
+    """Build every visible scope number from the same fine-grained model events."""
+    timezone = get_statistics_timezone()
+    today = timezone.now_date()
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    daily_parts = defaultdict(TokenBreakdown)
+    cumulative = TokenBreakdown()
+    for model in models:
+        _add_breakdown(cumulative, model.tokens)
+        for item in model.daily_tokens:
+            day = item.date.date() if hasattr(item.date, "date") else item.date
+            _add_breakdown(daily_parts[day], item)
+
+    daily = [
+        DailyToken(
+            date=datetime.combine(day, datetime.min.time()),
+            total=parts.total,
+            cached_input=parts.cached_input,
+            uncached_input=parts.uncached_input,
+            output=parts.output,
+            runtime=runtime,
+        )
+        for day, parts in sorted(daily_parts.items(), reverse=True)
+    ]
+
+    def breakdown(start=None, end=today):
+        result = TokenBreakdown()
+        for item in daily:
+            day = item.date.date()
+            if day <= end and (start is None or day >= start):
+                _add_breakdown(result, item)
+        return result
+
+    periods = {
+        "today": breakdown(today),
+        "week": breakdown(week_start),
+        "month": breakdown(month_start),
+        "cumulative": cumulative,
+    }
+
+    def priced_value(start=None):
+        value = 0.0
+        priced_tokens = 0
+        total_tokens = 0
+        for model in models:
+            tokens = TokenBreakdown()
+            if start is None:
+                _add_breakdown(tokens, model.tokens)
+            else:
+                for item in model.daily_tokens:
+                    day = item.date.date() if hasattr(item.date, "date") else item.date
+                    if start <= day <= today:
+                        _add_breakdown(tokens, item)
+            total_tokens += tokens.total
+            estimated = estimate_model_api_value(tokens, model.name)
+            if estimated is not None:
+                value += estimated
+                priced_tokens += tokens.total
+        coverage = priced_tokens / total_tokens * 100 if total_tokens else 0.0
+        return round(value, 2), coverage, total_tokens - priced_tokens
+
+    today_value, _today_coverage, _today_unpriced = priced_value(today)
+    week_value, _week_coverage, _week_unpriced = priced_value(week_start)
+    month_value, month_coverage, month_unpriced = priced_value(month_start)
+    cumulative_value, _all_coverage, _all_unpriced = priced_value()
+    return {
+        "daily": daily,
+        "periods": periods,
+        "values": {
+            "today": today_value,
+            "week": week_value,
+            "month": month_value,
+            "cumulative": cumulative_value,
+        },
+        "month_coverage": month_coverage,
+        "month_unpriced": month_unpriced,
+    }
 
 
 class Surface(QFrame):
@@ -322,8 +413,8 @@ class QuotaDial(QWidget):
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
             value = max(0.0, min(100.0, value))
             painter.setPen(QPen(color, 10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            start = 270 if self.display_mode == "used" else 90
-            painter.drawArc(rect, start * 16, -int(360 * 16 * value / 100))
+            direction = -1 if self.display_mode == "used" else 1
+            painter.drawArc(rect, 270 * 16, direction * int(360 * 16 * value / 100))
 
         painter.setPen(QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc"))
         painter.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
@@ -692,6 +783,7 @@ class DashboardWidget(QWidget):
         self.theme_manager = theme_manager
         runtime = settings_manager.get_active_runtime() if settings_manager else "codex"
         self.current_scope = RuntimeScope.CLAUDE_CODE if runtime == "claudeCode" else RuntimeScope.CODEX
+        self.current_model_scope = settings_manager.get_model_scope() if settings_manager else "all"
         self.data = MultiRuntimeUsageSnapshot()
         self._pending_result = None
         self._loading = False
@@ -733,6 +825,27 @@ class DashboardWidget(QWidget):
         brand.addWidget(name)
         header.addLayout(brand)
         header.addStretch()
+
+        model_scope_group = QFrame()
+        model_scope_group.setObjectName("topControlGroup")
+        model_scope_layout = QHBoxLayout(model_scope_group)
+        model_scope_layout.setContentsMargins(2, 2, 2, 2)
+        model_scope_layout.setSpacing(0)
+        self.model_scope_group = QButtonGroup(self)
+        self.model_scope_group.setExclusive(True)
+        self.model_scope_buttons = {}
+        for value, text, width in (("gpt", "GPT", 42), ("all", "全部", 46)):
+            button = QPushButton(text)
+            button.setObjectName("topToggleButton")
+            button.setCheckable(True)
+            button.setFixedSize(width, 28)
+            button.clicked.connect(lambda checked=False, scope=value: self._set_model_scope(scope))
+            self.model_scope_group.addButton(button)
+            self.model_scope_buttons[value] = button
+            model_scope_layout.addWidget(button)
+        current_model_scope = self.settings_manager.get_model_scope() if self.settings_manager else "all"
+        self.model_scope_buttons[current_model_scope].setChecked(True)
+        header.addWidget(model_scope_group)
 
         theme_group = QFrame()
         theme_group.setObjectName("topControlGroup")
@@ -903,6 +1016,14 @@ class DashboardWidget(QWidget):
             self.settings_manager.set_quota_display(mode)
             self.settings_manager.save()
 
+    def _set_model_scope(self, scope):
+        if self.settings_manager:
+            self.settings_manager.set_model_scope(scope)
+            self.settings_manager.save()
+        else:
+            self.current_model_scope = scope
+            self._update()
+
     def _on_settings_changed(self):
         if not self.settings_manager:
             return
@@ -911,9 +1032,15 @@ class DashboardWidget(QWidget):
         if scope != self.current_scope:
             self.current_scope = scope
             self._update()
+        model_scope = self.settings_manager.get_model_scope()
+        if model_scope != self.current_model_scope:
+            self.current_model_scope = model_scope
+            self._update()
         theme = self.settings_manager.get_theme()
         if theme in self.theme_buttons:
             self.theme_buttons[theme].setChecked(True)
+        if model_scope in self.model_scope_buttons:
+            self.model_scope_buttons[model_scope].setChecked(True)
         self.quota_card.set_display_mode(self.settings_manager.get_quota_display())
         reduce_motion = self.settings_manager.get_reduce_motion()
         self.stack.set_reduce_motion(reduce_motion)
@@ -928,6 +1055,14 @@ class DashboardWidget(QWidget):
 
     def update_text(self):
         english = bool(self.translation_manager and self.translation_manager.get_language() == "en")
+        self.model_scope_buttons["gpt"].setText("GPT")
+        self.model_scope_buttons["all"].setText("All" if english else "全部")
+        scope_tip = (
+            "Switch token cards, trends and model usage between GPT-only and all models"
+            if english else "切换顶部指标、用量趋势和模型统计：仅 GPT / 包含第三方模型"
+        )
+        for button in self.model_scope_buttons.values():
+            button.setToolTip(scope_tip)
         self.language_buttons["en" if english else "zh"].setChecked(True)
         self.quota_card.title.setText("Quota windows" if english else "额度窗口")
         self.today_card.title.setText("Today" if english else "今日")
@@ -1054,26 +1189,40 @@ class DashboardWidget(QWidget):
     def _update(self):
         snapshot = self.data.for_scope(self.current_scope)
         self.quota_card.update_quota(snapshot.quota_5h, snapshot.quota_7d)
-        self.today_card.update_value(snapshot.tokens.today, snapshot.today_api_equivalent_value)
-        self.week_card.update_value(snapshot.tokens.current_week, snapshot.current_week_api_equivalent_value)
-        self.month_card.update_value(snapshot.tokens.current_month, snapshot.monthly_api_equivalent_value)
-        self.cumulative_card.update_value(
-            snapshot.tokens.cumulative,
-            snapshot.api_equivalent_value,
-            snapshot.cumulative_index_total,
-        )
-        self.value_card.update_value(
-            snapshot.monthly_api_equivalent_value,
-            snapshot.pricing_coverage_pct,
-            snapshot.unpriced_token_total,
-        )
-
         tasks, daily, projects, tools, skills = self._visible_data()
         self.task_tab.update_tasks(tasks)
         models = [item for item in self.data.models if item.runtime == self.current_scope]
+        model_scope = self.current_model_scope
+        if model_scope == "gpt":
+            models = [item for item in models if is_gpt_model(item.name)]
+            scoped = _model_scope_summary(models, self.current_scope)
+            periods = scoped["periods"]
+            values = scoped["values"]
+            daily = scoped["daily"]
+            cumulative_total = periods["cumulative"].total
+            self.today_card.update_value(periods["today"], values["today"])
+            self.week_card.update_value(periods["week"], values["week"])
+            self.month_card.update_value(periods["month"], values["month"])
+            self.cumulative_card.update_value(periods["cumulative"], values["cumulative"])
+            self.value_card.update_value(values["month"], scoped["month_coverage"], scoped["month_unpriced"])
+        else:
+            cumulative_total = snapshot.cumulative_index_total or snapshot.tokens.cumulative.total
+            self.today_card.update_value(snapshot.tokens.today, snapshot.today_api_equivalent_value)
+            self.week_card.update_value(snapshot.tokens.current_week, snapshot.current_week_api_equivalent_value)
+            self.month_card.update_value(snapshot.tokens.current_month, snapshot.monthly_api_equivalent_value)
+            self.cumulative_card.update_value(
+                snapshot.tokens.cumulative,
+                snapshot.api_equivalent_value,
+                snapshot.cumulative_index_total,
+            )
+            self.value_card.update_value(
+                snapshot.monthly_api_equivalent_value,
+                snapshot.pricing_coverage_pct,
+                snapshot.unpriced_token_total,
+            )
         self.trend_tab.set_data(
             daily,
-            snapshot.cumulative_index_total or snapshot.tokens.cumulative.total,
+            cumulative_total,
             models,
         )
         self.project_tab.update_projects(projects)

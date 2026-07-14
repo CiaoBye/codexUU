@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QLineF, QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import QLineF, QPoint, QRectF, Qt, Signal, QTimer
 from PySide6.QtGui import (
     QActionGroup,
     QColor,
@@ -13,16 +13,17 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
 )
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from app.data.models import format_tokens
 from app.utils.statistics_timezone import get_statistics_timezone
 
 
 class DesktopStatusPanel(QWidget):
-    """可拖动的桌面额度窗；双击打开主窗，右键调整样式与尺寸。"""
+    """可拖动桌面额度窗；单击打开/切换口径，双击最小化主窗。"""
 
     show_main = Signal()
+    minimize_main = Signal()
     position_changed = Signal(QPoint)
     style_change_requested = Signal(str)
     size_change_requested = Signal(str)
@@ -69,6 +70,11 @@ class DesktopStatusPanel(QWidget):
         self._display_mode = "remaining"
         self._press_position: QPoint | None = None
         self._dragged = False
+        self._pending_click_center = False
+        self._suppress_release = False
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.timeout.connect(self._commit_single_click)
         self._apply_geometry()
 
     def set_style(self, style: str):
@@ -108,13 +114,13 @@ class DesktopStatusPanel(QWidget):
         available = [(label, quota) for label, quota in available if quota is not None]
         mode_label = "已用" if self._display_mode == "used" else "剩余"
         if not available:
-            tip = f"{self._runtime}\n暂无可验证额度窗口\n双击打开主窗口 · 右键调整样式"
+            tip = f"{self._runtime}\n暂无可验证额度窗口\n单击打开主窗口 · 双击最小化主窗口 · 右键调整样式"
         else:
             lines = [self._runtime]
             for label, quota in available:
                 value = quota.used_pct if self._display_mode == "used" else quota.remaining_pct
                 lines.append(f"{label} {mode_label} {value:.0f}% · {self._format_reset(quota) or '重置时间未知'}")
-            lines.extend((f"今日 {self._today}", "点击额度中心切换口径 · 点击其他区域打开主窗口"))
+            lines.extend((f"今日 {self._today}", "单击中心切换口径 · 单击其他区域打开 · 双击最小化主窗口"))
             tip = "\n".join(lines)
         self.setToolTip(tip)
 
@@ -158,10 +164,10 @@ class DesktopStatusPanel(QWidget):
         return "已用" if self._display_mode == "used" else "剩余"
 
     def _arc(self, value, degrees=360):
-        # Used starts at the bottom and grows up the left side. Remaining
-        # starts at the top and grows down the right side.
-        start = 270 if self._display_mode == "used" else 90
-        return start * 16, -int(degrees * 16 * value / 100)
+        # Both modes share the bottom origin: used grows along the left side,
+        # remaining grows along the right side.
+        direction = -1 if self._display_mode == "used" else 1
+        return 270 * 16, direction * int(degrees * 16 * value / 100)
 
     @staticmethod
     def _draw_track(painter, rect, value, color, track, width=7):
@@ -384,29 +390,44 @@ class DesktopStatusPanel(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton and self._suppress_release:
+            self._suppress_release = False
+            self._drag_start = None
+            self._press_position = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
             click_position = event.position().toPoint()
             should_toggle = not self._dragged and self._mode_hit_test(click_position)
             self._drag_start = None
             self._press_position = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
-            if should_toggle:
-                next_mode = "used" if self._display_mode == "remaining" else "remaining"
-                self.set_display_mode(next_mode)
-                self.mode_change_requested.emit(next_mode)
-            elif self._dragged:
+            if self._dragged:
                 self.position_changed.emit(self.pos())
             else:
-                self.show_main.emit()
+                self._pending_click_center = should_toggle
+                self._click_timer.start(QApplication.doubleClickInterval())
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            self._click_timer.stop()
+            self._suppress_release = True
+            self.minimize_main.emit()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    def _commit_single_click(self):
+        if self._pending_click_center:
+            next_mode = "used" if self._display_mode == "remaining" else "remaining"
+            self.set_display_mode(next_mode)
+            self.mode_change_requested.emit(next_mode)
+        else:
+            self.show_main.emit()
 
     def _mode_hit_test(self, position: QPoint) -> bool:
         if self._style == "capsule":

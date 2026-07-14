@@ -56,6 +56,7 @@ class CodexUApplication:
         self.tray = TrayManager(self.settings_manager, self.theme_manager)
 
         self.tray.show_main_window.connect(self._show_main)
+        self.tray.minimize_main_window.connect(self._minimize_main)
         self.tray.show_settings.connect(self._show_settings)
         self.tray.quit_app.connect(self.app.quit)
         self.window.dashboard.open_settings.connect(self._show_settings)
@@ -76,6 +77,11 @@ class CodexUApplication:
 
     def _show_main(self):
         self.window.show_and_activate()
+
+    def _minimize_main(self):
+        if not self.window.isVisible():
+            self.window.show()
+        self.window.showMinimized()
 
     def _finish_startup(self):
         self._show_main()

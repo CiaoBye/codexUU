@@ -122,6 +122,8 @@ class ModelUsage:
     turn_count: int = 0
     last_active: Optional[datetime] = None
     daily_tokens: list[DailyToken] = field(default_factory=list)
+    session_activity: dict[str, datetime] = field(default_factory=dict)
+    turn_activity: dict[str, datetime] = field(default_factory=dict)
 
 
 @dataclass
@@ -186,6 +188,22 @@ OPENAI_MODEL_PRICES = {
     "gpt-5-nano": {"uncached_input": 0.05, "cached_input": 0.005, "output": 0.40},
 }
 
+# Current official pay-as-you-go USD prices per 1M tokens.  Provider model
+# identifiers must match exactly before a price is applied; private gateway
+# aliases remain unpriced.
+THIRD_PARTY_MODEL_PRICES = {
+    "deepseek-v4-flash": {"uncached_input": 0.14, "cached_input": 0.0028, "output": 0.28},
+    "deepseek-v4-pro": {"uncached_input": 0.435, "cached_input": 0.003625, "output": 0.87},
+    "mimo-v2.5": {"uncached_input": 0.14, "cached_input": 0.0028, "output": 0.28},
+    "mimo-v2.5-pro": {"uncached_input": 0.435, "cached_input": 0.0036, "output": 0.87},
+}
+
+MODEL_PRICE_SOURCES = {
+    "OpenAI": "https://openai.com/api/pricing/",
+    "DeepSeek": "https://api-docs.deepseek.com/quick_start/pricing",
+    "Xiaomi MiMo": "https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go",
+}
+
 CLAUDE_PROMPT_PRICES = {
     "uncached_input": 3.00,
     "cached_input": 0.30,
@@ -221,11 +239,32 @@ def prices_for_model(model: str) -> Optional[dict[str, float]]:
         return None
     if normalized in OPENAI_MODEL_PRICES:
         return OPENAI_MODEL_PRICES[normalized]
+    if normalized in THIRD_PARTY_MODEL_PRICES:
+        return THIRD_PARTY_MODEL_PRICES[normalized]
     # Snapshot suffixes keep the base model's published price.
     for model_id in sorted(OPENAI_MODEL_PRICES, key=len, reverse=True):
         if normalized.startswith(model_id + "-"):
             return OPENAI_MODEL_PRICES[model_id]
     return None
+
+
+def model_provider(model: str) -> str:
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith("gpt-") or normalized.startswith("o") or normalized.startswith("codex-"):
+        return "OpenAI"
+    if normalized.startswith("deepseek-"):
+        return "DeepSeek"
+    if normalized.startswith("mimo-"):
+        return "Xiaomi MiMo"
+    return "Unknown"
+
+
+def is_gpt_model(model: str) -> bool:
+    return str(model or "").strip().lower().startswith("gpt-")
+
+
+def pricing_source_for_model(model: str) -> Optional[str]:
+    return MODEL_PRICE_SOURCES.get(model_provider(model)) if prices_for_model(model) else None
 
 
 def estimate_model_api_value(tokens: TokenBreakdown, model: str) -> Optional[float]:

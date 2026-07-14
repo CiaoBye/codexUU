@@ -13,6 +13,16 @@ def test_model_specific_official_price_is_used():
     assert estimate_model_api_value(tokens, "gpt-5.6-luna") == 7.1
 
 
-def test_unknown_model_is_not_assigned_an_openai_price():
-    assert prices_for_model("deepseek-v4-flash") is None
+def test_official_third_party_prices_require_exact_model_ids():
+    assert prices_for_model("deepseek-v4-flash") == {
+        "uncached_input": 0.14,
+        "cached_input": 0.0028,
+        "output": 0.28,
+    }
+    assert prices_for_model("mimo-v2.5-pro") == {
+        "uncached_input": 0.435,
+        "cached_input": 0.0036,
+        "output": 0.87,
+    }
+    assert prices_for_model("deepseek-v4-flash-private") is None
     assert estimate_model_api_value(TokenBreakdown(uncached_input=1_000_000), "internal-review") is None

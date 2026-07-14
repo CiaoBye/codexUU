@@ -12,6 +12,7 @@ from app.desktop_status import DesktopStatusPanel
 
 class TrayManager(QObject):
     show_main_window = Signal()
+    minimize_main_window = Signal()
     show_settings = Signal()
     quit_app = Signal()
     status_icon_changed = Signal(object)
@@ -25,6 +26,7 @@ class TrayManager(QObject):
         self._quota_alerts: set[tuple[str, str, str]] = set()
         self.desktop_panel = DesktopStatusPanel()
         self.desktop_panel.show_main.connect(self._open_main)
+        self.desktop_panel.minimize_main.connect(self.minimize_main_window.emit)
         self.desktop_panel.position_changed.connect(self._save_desktop_status_position)
         self.desktop_panel.style_change_requested.connect(self._set_desktop_status_style)
         self.desktop_panel.size_change_requested.connect(self._set_desktop_status_size)
@@ -225,8 +227,8 @@ class TrayManager(QObject):
             value = max(0.0, min(100.0, float(value)))
             color = QColor("#3296f3") if mode == "used" else QColor("#8668f2")
             painter.setPen(QPen(color, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            start = 270 if mode == "used" else 90
-            painter.drawArc(bounds, start * 16, -int(360 * 16 * value / 100))
+            direction = -1 if mode == "used" else 1
+            painter.drawArc(bounds, 270 * 16, direction * int(360 * 16 * value / 100))
             text = f"{value:.0f}"
         else:
             text = "U"

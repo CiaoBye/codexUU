@@ -180,6 +180,7 @@ def read_claude_model_usage() -> list[ModelUsage]:
         return cached
     grouped = defaultdict(lambda: {
         "tokens": TokenBreakdown(), "sessions": set(), "last": None, "daily": {},
+        "session_activity": {},
     })
     for event in _indexed_events():
         breakdown = TokenBreakdown(
@@ -193,6 +194,10 @@ def read_claude_model_usage() -> list[ModelUsage]:
         item = grouped[model]
         item["sessions"].add(event.path)
         event_time = event.timestamp or event.modified_at
+        session_key = str(event.path)
+        previous_session_time = item["session_activity"].get(session_key)
+        if previous_session_time is None or event_time > previous_session_time:
+            item["session_activity"][session_key] = event_time
         if item["last"] is None or event_time > item["last"]:
             item["last"] = event_time
         for field in ("cached_input", "uncached_input", "output"):
@@ -225,6 +230,7 @@ def read_claude_model_usage() -> list[ModelUsage]:
             session_count=len(item["sessions"]),
             last_active=item["last"],
             daily_tokens=sorted(item["daily"].values(), key=lambda daily: daily.date, reverse=True),
+            session_activity=item["session_activity"],
         ))
     return _store("model_usage", sorted(result, key=lambda item: item.token_total, reverse=True))
 

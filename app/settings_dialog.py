@@ -269,6 +269,8 @@ class SettingsDialog(QDialog):
         self.desktop_style_combo.addItem("圆环", "orb")
         self.desktop_style_combo.addItem("光晕双环", "halo")
         self.desktop_style_combo.addItem("极简圆形", "mini")
+        self.desktop_style_combo.addItem("状态胶囊", "capsule")
+        self.desktop_style_combo.addItem("双轨卡片", "tracks")
         self.desktop_style_combo.setCurrentIndex(max(0, self.desktop_style_combo.findData(self.settings_manager.get_desktop_status_style())))
         self.desktop_style_combo.currentIndexChanged.connect(self._save_window_preferences)
         window_form.addRow("桌面悬浮样式", self.desktop_style_combo)
@@ -735,7 +737,10 @@ class SettingsDialog(QDialog):
             (self.timezone_combo, (("Follow system", "UTC", "Fixed IANA zone") if english else ("跟随系统", "UTC", "固定 IANA 时区"))),
             (self.quota_combo, (("Show remaining", "Show used") if english else ("显示剩余", "显示已用"))),
             (self.close_combo, (("Hide to tray", "Minimize", "Quit application") if english else ("隐藏到托盘", "最小化", "退出程序"))),
-            (self.desktop_style_combo, (("Info dial", "Dual-ring gauge", "Minimal ring") if english else ("信息圆盘", "双环仪表", "极简圆环"))),
+            (self.desktop_style_combo, (
+                ("Info dial", "Dual-ring gauge", "Minimal ring", "Status capsule", "Dual-track card")
+                if english else ("信息圆盘", "双环仪表", "极简圆环", "状态胶囊", "双轨卡片")
+            )),
             (self.desktop_size_combo, (("Small", "Medium", "Large") if english else ("小", "中", "大"))),
         ):
             for index, label in enumerate(labels):

@@ -20,6 +20,7 @@ DEFAULT_DESKTOP_STATUS_ENABLED = True
 DEFAULT_DESKTOP_STATUS_STYLE = "orb"
 DEFAULT_DESKTOP_STATUS_SIZE = "medium"
 DEFAULT_LIGHTWEIGHT_MODE = True
+DESKTOP_STATUS_STYLES = ("orb", "halo", "mini", "capsule", "tracks")
 
 class SettingsManager:
     def __init__(self, config_path: Path):
@@ -128,7 +129,7 @@ class SettingsManager:
         self._notify_listeners()
 
     def set_desktop_status_style(self, style: str):
-        if style in ("orb", "halo", "mini"):
+        if style in DESKTOP_STATUS_STYLES:
             self.desktop_status_style = style
             self._notify_listeners()
 
@@ -204,7 +205,7 @@ class SettingsManager:
                     if isinstance(desktop_status_position, list) and len(desktop_status_position) == 2
                     else None
                 )
-                self.desktop_status_style = desktop_status_style if desktop_status_style in ("orb", "halo", "mini") else DEFAULT_DESKTOP_STATUS_STYLE
+                self.desktop_status_style = desktop_status_style if desktop_status_style in DESKTOP_STATUS_STYLES else DEFAULT_DESKTOP_STATUS_STYLE
                 self.desktop_status_size = desktop_status_size if desktop_status_size in ("small", "medium", "large") else DEFAULT_DESKTOP_STATUS_SIZE
                 self.lightweight_mode = bool(lightweight_mode)
             except (OSError, ValueError, json.JSONDecodeError, TypeError):

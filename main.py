@@ -75,9 +75,7 @@ class CodexUApplication:
         self.timer.start(60000)
 
     def _show_main(self):
-        self.window.show()
-        self.window.raise_()
-        self.window.activateWindow()
+        self.window.show_and_activate()
 
     def _finish_startup(self):
         self._show_main()
@@ -96,9 +94,7 @@ class CodexUApplication:
                 pass
         if not visible:
             self.window.hide()
-            self.window.showNormal()
-            self.window.raise_()
-            self.window.activateWindow()
+            self.window.show_and_activate()
 
     def _show_settings(self):
         if self.settings_dialog is None:

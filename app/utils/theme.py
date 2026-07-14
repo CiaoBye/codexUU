@@ -78,8 +78,6 @@ QLabel#statusPill { background: #1d2a3b; color: #9fc1ff; border: 1px solid #3043
 QLabel#positiveBadge { background: #16382d; color: #55d89a; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#negativeBadge { background: #40252b; color: #ff8190; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#neutralBadge { background: #252d3b; color: #aab6c8; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
-QFrame#trayPanel { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #1b2230,stop:1 #121720); border: 1px solid #334056; border-radius: 14px; }
-QFrame#trayRuntimeCard { background: #171d27; border: 1px solid #2b3546; border-radius: 9px; }
 QWidget#desktopStatusPanel { background: transparent; }
 QFrame#desktopStatusShell { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #1d2636,stop:0.65 #161d2a,stop:1 #151924); border: 1px solid #3a4c68; border-radius: 14px; }
 QLabel#desktopStatusValue { color: #f5f8ff; font-family: "Segoe UI Variable"; font-size: 22px; font-weight: 700; }
@@ -192,8 +190,6 @@ QLabel#statusPill { background: #e8f1ff; color: #285fbd; border: 1px solid #c8da
 QLabel#positiveBadge { background: #e3f7ee; color: #18845c; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#negativeBadge { background: #fff0f1; color: #c44756; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#neutralBadge { background: #edf2f9; color: #667085; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
-QFrame#trayPanel { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ffffff,stop:1 #f7f9fd); border: 1px solid #ced9e9; border-radius: 14px; }
-QFrame#trayRuntimeCard { background: #f7f9fd; border: 1px solid #dce4ef; border-radius: 9px; }
 QWidget#desktopStatusPanel { background: transparent; }
 QFrame#desktopStatusShell { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #ffffff,stop:0.65 #f5f8fe,stop:1 #eef3fb); border: 1px solid #bfd0e9; border-radius: 14px; }
 QLabel#desktopStatusValue { color: #172744; font-family: "Segoe UI Variable"; font-size: 22px; font-weight: 700; }

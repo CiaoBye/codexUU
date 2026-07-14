@@ -4,100 +4,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QRectF, Signal, QObject
 from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (
-    QApplication,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMenu,
-    QPushButton,
-    QSystemTrayIcon,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from app.data.models import MultiRuntimeUsageSnapshot, format_tokens
 from app.desktop_status import DesktopStatusPanel
-
-
-def _quota_text(quota, prefix):
-    return f"{prefix} {quota.remaining_pct:.0f}%" if quota else f"{prefix} --"
-
-
-class RuntimeQuickCard(QFrame):
-    def __init__(self, name, parent=None):
-        super().__init__(parent)
-        self.setObjectName("trayRuntimeCard")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(11, 9, 11, 9)
-        layout.setSpacing(5)
-        header = QHBoxLayout()
-        self.name = QLabel(name)
-        self.name.setObjectName("projectName")
-        header.addWidget(self.name)
-        header.addStretch()
-        self.today = QLabel("0")
-        self.today.setObjectName("projectToken")
-        header.addWidget(self.today)
-        layout.addLayout(header)
-        self.quota = QLabel("5h -- · 7d --")
-        self.quota.setObjectName("caption")
-        layout.addWidget(self.quota)
-
-    def set_snapshot(self, snapshot):
-        self.today.setText(f"今日 {format_tokens(snapshot.tokens.today.total)}")
-        self.quota.setText(
-            f"{_quota_text(snapshot.quota_5h, '5h')}  ·  {_quota_text(snapshot.quota_7d, '7d')}"
-        )
-
-
-class TrayQuickPanel(QWidget):
-    show_main = Signal()
-    show_settings = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setObjectName("trayQuickPanel")
-        self.setFixedWidth(330)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        shell = QFrame()
-        shell.setObjectName("trayPanel")
-        layout = QVBoxLayout(shell)
-        layout.setContentsMargins(14, 13, 14, 13)
-        layout.setSpacing(9)
-        header = QHBoxLayout()
-        logo = QLabel()
-        logo_path = Path(__file__).resolve().parents[1] / "resources" / "icons" / "codexu-logo.svg"
-        logo.setPixmap(QPixmap(str(logo_path)).scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        header.addWidget(logo)
-        title = QLabel("CodexUU")
-        title.setObjectName("brandName")
-        header.addWidget(title)
-        header.addStretch()
-        self.updated = QLabel("本机快速状态")
-        self.updated.setObjectName("caption")
-        header.addWidget(self.updated)
-        layout.addLayout(header)
-        self.codex = RuntimeQuickCard("Codex")
-        self.claude = RuntimeQuickCard("Claude Code")
-        layout.addWidget(self.codex)
-        layout.addWidget(self.claude)
-        actions = QHBoxLayout()
-        open_button = QPushButton("打开主窗口")
-        open_button.setObjectName("primaryButton")
-        open_button.clicked.connect(self.show_main.emit)
-        actions.addWidget(open_button)
-        settings_button = QPushButton("设置")
-        settings_button.setObjectName("iconButton")
-        settings_button.clicked.connect(self.show_settings.emit)
-        actions.addWidget(settings_button)
-        layout.addLayout(actions)
-        root.addWidget(shell)
-
-    def update_data(self, data):
-        self.codex.set_snapshot(data.codex)
-        self.claude.set_snapshot(data.claude_code)
 
 
 class TrayManager(QObject):
@@ -113,10 +23,7 @@ class TrayManager(QObject):
         self.data = MultiRuntimeUsageSnapshot()
         self._icon_key = None
         self._quota_alerts: set[tuple[str, str, str]] = set()
-        self.panel = TrayQuickPanel()
         self.desktop_panel = DesktopStatusPanel()
-        self.panel.show_main.connect(self._open_main)
-        self.panel.show_settings.connect(self._open_settings)
         self.desktop_panel.show_main.connect(self._open_main)
         self.desktop_panel.position_changed.connect(self._save_desktop_status_position)
         self.desktop_panel.style_change_requested.connect(self._set_desktop_status_style)
@@ -139,9 +46,6 @@ class TrayManager(QObject):
         show_action = QAction("打开主窗口", menu)
         show_action.triggered.connect(self._open_main)
         menu.addAction(show_action)
-        quick_action = QAction("快速状态", menu)
-        quick_action.triggered.connect(self.toggle_panel)
-        menu.addAction(quick_action)
         self.desktop_action = QAction("桌面悬浮状态", menu)
         self.desktop_action.setCheckable(True)
         self.desktop_action.toggled.connect(self._set_desktop_status_enabled)
@@ -158,42 +62,16 @@ class TrayManager(QObject):
         self.tray_icon.show()
 
     def _activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.toggle_panel()
-        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
             self._open_main()
 
-    def toggle_panel(self):
-        if self.panel.isVisible():
-            self.panel.hide()
-            return
-        self.panel.adjustSize()
-        tray_rect = self.tray_icon.geometry()
-        # Hidden notification icons often report an empty geometry. Prefer the mouse screen
-        # so the panel remains on the display the user is interacting with.
-        screen = QApplication.screenAt(tray_rect.center()) if not tray_rect.isEmpty() else None
-        screen = screen or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-        available = screen.availableGeometry()
-        if tray_rect.isEmpty() or not available.contains(tray_rect.center()):
-            x = available.right() - self.panel.width() - 10
-            y = available.bottom() - self.panel.height() - 10
-        else:
-            x = min(max(available.left() + 8, tray_rect.center().x() - self.panel.width() // 2), available.right() - self.panel.width() - 8)
-            y = tray_rect.top() - self.panel.height() - 10
-            if y < available.top():
-                y = tray_rect.bottom() + 10
-        x = min(max(available.left() + 8, x), available.right() - self.panel.width() - 8)
-        y = min(max(available.top() + 8, y), available.bottom() - self.panel.height() - 8)
-        self.panel.move(x, y)
-        self.panel.show()
-        self.panel.raise_()
-
     def _open_main(self):
-        self.panel.hide()
         self.show_main_window.emit()
 
     def _open_settings(self):
-        self.panel.hide()
         self.show_settings.emit()
 
     def _on_settings_changed(self):
@@ -277,7 +155,6 @@ class TrayManager(QObject):
 
     def update_data(self, data):
         self.data = data
-        self.panel.update_data(data)
         runtime = self.settings_manager.get_active_runtime() if self.settings_manager else "codex"
         snapshot = data.claude_code if runtime == "claudeCode" else data.codex
         self.desktop_panel.update_snapshot(runtime, snapshot)
@@ -331,7 +208,7 @@ class TrayManager(QObject):
         mode_text = "已用" if mode == "used" else "剩余"
         self.tray_icon.setToolTip(
             f"CodexUU\n{runtime_name} · {quota_name} {mode_text} {quota_text}\n"
-            f"今日 {format_tokens(snapshot.tokens.today.total)}\n单击查看快速状态"
+            f"今日 {format_tokens(snapshot.tokens.today.total)}\n单击打开主窗口"
         )
 
     @staticmethod

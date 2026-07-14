@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import QLineF, QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QActionGroup,
     QColor,
@@ -29,9 +29,21 @@ class DesktopStatusPanel(QWidget):
     mode_change_requested = Signal(str)
     hide_requested = Signal()
 
-    _BASE_SIZES = {"orb": 176, "halo": 188, "mini": 116}
+    _BASE_GEOMETRY = {
+        "orb": (176, 176),
+        "halo": (188, 188),
+        "mini": (116, 116),
+        "capsule": (270, 96),
+        "tracks": (252, 132),
+    }
     _SIZE_FACTORS = {"small": 0.86, "medium": 1.0, "large": 1.18}
-    _STYLE_LABELS = {"orb": "信息圆盘", "halo": "双环仪表", "mini": "极简圆环"}
+    _STYLE_LABELS = {
+        "orb": "信息圆盘",
+        "halo": "双环仪表",
+        "mini": "极简圆环",
+        "capsule": "状态胶囊",
+        "tracks": "双轨卡片",
+    }
     _SIZE_LABELS = {"small": "小", "medium": "中", "large": "大"}
 
     def __init__(self, parent=None):
@@ -60,7 +72,7 @@ class DesktopStatusPanel(QWidget):
         self._apply_geometry()
 
     def set_style(self, style: str):
-        self._style = style if style in self._BASE_SIZES else "orb"
+        self._style = style if style in self._BASE_GEOMETRY else "orb"
         self._apply_geometry()
 
     def set_display_size(self, size: str):
@@ -77,8 +89,9 @@ class DesktopStatusPanel(QWidget):
         self.update()
 
     def _apply_geometry(self):
-        diameter = round(self._BASE_SIZES[self._style] * self._SIZE_FACTORS[self._size])
-        self.setFixedSize(diameter, diameter)
+        base_width, base_height = self._BASE_GEOMETRY[self._style]
+        factor = self._SIZE_FACTORS[self._size]
+        self.setFixedSize(round(base_width * factor), round(base_height * factor))
         self.updateGeometry()
         self.update()
 
@@ -114,7 +127,8 @@ class DesktopStatusPanel(QWidget):
 
     def _scaled_font(self, family: str, pixels: float, weight=QFont.Weight.Normal) -> QFont:
         font = QFont(family)
-        font.setPixelSize(max(8, round(pixels * self.width() / self._BASE_SIZES[self._style])))
+        base_width, _ = self._BASE_GEOMETRY[self._style]
+        font.setPixelSize(max(8, round(pixels * self.width() / base_width)))
         font.setWeight(weight)
         return font
 
@@ -135,6 +149,82 @@ class DesktopStatusPanel(QWidget):
     def _mode_label(self):
         return "已用" if self._display_mode == "used" else "剩余"
 
+    def _arc_direction(self):
+        # Keep the same visual grammar as the main quota dial: used grows from
+        # the top toward the left, remaining grows from the top toward the right.
+        return 1 if self._display_mode == "used" else -1
+
+    @staticmethod
+    def _draw_track(painter, rect, value, color, track, width=7):
+        painter.setPen(QPen(track, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QLineF(rect.left(), rect.center().y(), rect.right(), rect.center().y()))
+        if value is None:
+            return
+        end = rect.left() + rect.width() * max(0.0, min(100.0, value)) / 100
+        painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QLineF(rect.left(), rect.center().y(), end, rect.center().y()))
+
+    def _paint_capsule(self, painter, surface, edge, track, primary, secondary, text, muted):
+        panel = QRectF(5, 5, self.width() - 10, self.height() - 10)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 50 if self._theme == "dark" else 24))
+        painter.drawRoundedRect(panel.translated(0, 2), panel.height() / 2, panel.height() / 2)
+        painter.setPen(QPen(edge, 1))
+        painter.setBrush(surface)
+        painter.drawRoundedRect(panel, panel.height() / 2, panel.height() / 2)
+        available = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
+        available = [item for item in available if item[1] is not None]
+        label, quota, color = available[-1] if available else ("--", None, primary)
+        value = self._quota_value(quota)
+        ring = QRectF(15, 14, self.height() - 28, self.height() - 28)
+        ring_width = max(6, self.height() * 0.075)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(track, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawArc(ring, 0, 360 * 16)
+        if value is not None:
+            painter.setPen(QPen(color, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(ring, 90 * 16, int(self._arc_direction() * 360 * 16 * value / 100))
+        value_text = "--" if value is None else f"{value:.0f}%"
+        self._draw_centered(painter, ring.adjusted(5, 8, -5, -8), value_text, self._scaled_font("Segoe UI Variable Display", 18, QFont.Weight.Bold), text)
+        content_left = ring.right() + 15
+        content_width = panel.right() - content_left - 16
+        self._draw_centered(painter, QRectF(content_left, 18, content_width, 19), f"{self._runtime} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), text)
+        reset = self._format_reset(quota).replace("重置 ", "") or "暂无重置时间"
+        self._draw_centered(painter, QRectF(content_left, 40, content_width, 17), f"{label}  {reset}", self._scaled_font("Microsoft YaHei", 8), color)
+        self._draw_centered(painter, QRectF(content_left, 60, content_width, 16), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 8), muted)
+
+    def _paint_tracks(self, painter, surface, edge, track, primary, secondary, text, muted):
+        panel = QRectF(5, 5, self.width() - 10, self.height() - 10)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 50 if self._theme == "dark" else 24))
+        painter.drawRoundedRect(panel.translated(0, 2), 18, 18)
+        painter.setPen(QPen(edge, 1))
+        painter.setBrush(surface)
+        painter.drawRoundedRect(panel, 18, 18)
+        painter.setPen(text)
+        painter.setFont(self._scaled_font("Microsoft YaHei", 10, QFont.Weight.Bold))
+        painter.drawText(QRectF(17, 13, panel.width() - 88, 22), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._runtime)
+        self._draw_centered(painter, QRectF(panel.right() - 66, 13, 52, 22), self._mode_label(), self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), primary)
+        rows = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
+        rows = [item for item in rows if item[1] is not None]
+        if not rows:
+            self._draw_centered(painter, QRectF(18, 47, panel.width() - 26, 34), "暂无可验证额度", self._scaled_font("Microsoft YaHei", 9), muted)
+        else:
+            start_y = 44 if len(rows) == 2 else 56
+            step = 35
+            for index, (label, quota, color) in enumerate(rows):
+                y = start_y + index * step
+                value = self._quota_value(quota)
+                painter.setPen(color)
+                painter.setFont(self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold))
+                painter.drawText(QRectF(18, y - 10, 32, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                value_text = "--" if value is None else f"{value:.0f}%"
+                painter.drawText(QRectF(panel.right() - 52, y - 10, 38, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, value_text)
+                self._draw_track(painter, QRectF(53, y - 1, panel.width() - 115, 8), value, color, track, max(5, self.height() * 0.045))
+        painter.setPen(muted)
+        painter.setFont(self._scaled_font("Microsoft YaHei", 8))
+        painter.drawText(QRectF(18, panel.bottom() - 27, panel.width() - 32, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"今日 {self._today}")
+
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -146,6 +236,15 @@ class DesktopStatusPanel(QWidget):
         secondary = QColor("#44a2ff") if dark else QColor("#3188e8")
         text = QColor("#f5f7fb") if dark else QColor("#18243a")
         muted = QColor("#9cabc1") if dark else QColor("#667995")
+
+        if self._style == "capsule":
+            self._paint_capsule(painter, surface, edge, track, primary, secondary, text, muted)
+            painter.end()
+            return
+        if self._style == "tracks":
+            self._paint_tracks(painter, surface, edge, track, primary, secondary, text, muted)
+            painter.end()
+            return
 
         diameter = min(self.width(), self.height())
         shadow = QRectF(7, 9, diameter - 14, diameter - 14)
@@ -168,10 +267,10 @@ class DesktopStatusPanel(QWidget):
             width = diameter * 0.065
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(track, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawArc(gauge, 225 * 16, -270 * 16)
+            painter.drawArc(gauge, 0, 360 * 16)
             if active_value is not None:
                 painter.setPen(QPen(active_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawArc(gauge, 225 * 16, -int(270 * 16 * active_value / 100))
+                painter.drawArc(gauge, 90 * 16, int(self._arc_direction() * 270 * 16 * active_value / 100))
             self._draw_centered(painter, QRectF(diameter * 0.21, diameter * 0.27, diameter * 0.58, diameter * 0.13), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), active_color)
             value_text = "--" if active_value is None else f"{active_value:.0f}%"
             self._draw_centered(painter, QRectF(diameter * 0.16, diameter * 0.40, diameter * 0.68, diameter * 0.23), value_text, self._scaled_font("Segoe UI Variable Display", 28, QFont.Weight.Bold), text)
@@ -194,7 +293,7 @@ class DesktopStatusPanel(QWidget):
                 painter.drawArc(ring, 0, 360 * 16)
                 value = self._quota_value(quota)
                 painter.setPen(QPen(color, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawArc(ring, 90 * 16, -int(360 * 16 * value / 100))
+                painter.drawArc(ring, 90 * 16, int(self._arc_direction() * 360 * 16 * value / 100))
             if len(available) == 2:
                 q5_value = self._quota_value(self._q5)
                 q7_value = self._quota_value(self._q7)
@@ -212,7 +311,7 @@ class DesktopStatusPanel(QWidget):
             painter.drawArc(ring, 0, 360 * 16)
             if active_value is not None:
                 painter.setPen(QPen(active_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawArc(ring, 90 * 16, -int(360 * 16 * active_value / 100))
+                painter.drawArc(ring, 90 * 16, int(self._arc_direction() * 360 * 16 * active_value / 100))
             self._draw_centered(painter, QRectF(0, diameter * 0.27, diameter, diameter * 0.16), active_label, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
             value_text = "--" if active_value is None else f"{active_value:.0f}%"
             self._draw_centered(painter, QRectF(0, diameter * 0.42, diameter, diameter * 0.25), value_text, self._scaled_font("Segoe UI Variable Display", 20, QFont.Weight.Bold), text)

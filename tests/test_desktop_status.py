@@ -47,4 +47,19 @@ def test_desktop_status_supports_dual_quota_and_center_mode_toggle():
     app.processEvents()
     QTest.mouseClick(panel, Qt.MouseButton.LeftButton, pos=panel.rect().center())
     assert panel._display_mode == "used"
+    assert panel._arc_direction() == 1
     assert spy.count() == 1
+
+
+def test_desktop_status_additional_styles_have_distinct_geometry():
+    app = QApplication.instance() or QApplication([])
+    panel = DesktopStatusPanel()
+    panel.set_style("capsule")
+    assert panel.size().width() == 270
+    assert panel.size().height() == 96
+    panel.set_style("tracks")
+    assert panel.size().width() == 252
+    assert panel.size().height() == 132
+    panel.set_display_mode("remaining")
+    assert panel._arc_direction() == -1
+    assert app is not None

@@ -78,12 +78,32 @@ class MainAppWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_windows_chrome)
 
     def toggle_visibility(self):
-        if self.isVisible():
+        if self.isVisible() and not self.isMinimized():
             self.hide()
         else:
+            self.show_and_activate()
+
+    def show_and_activate(self):
+        """Restore a hidden/minimized lightweight window and request foreground focus."""
+        if self.isMinimized():
+            self.showNormal()
+        else:
             self.show()
-            self.raise_()
-            self.activateWindow()
+        self.setWindowState(
+            (self.windowState() & ~Qt.WindowState.WindowMinimized)
+            | Qt.WindowState.WindowActive
+        )
+        self.raise_()
+        self.activateWindow()
+        if os.name == "nt":
+            try:
+                hwnd = int(self.winId())
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                ctypes.windll.user32.BringWindowToTop(hwnd)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+        QTimer.singleShot(80, self._apply_windows_chrome)
 
     def _apply_window_settings(self):
         if not self.settings_manager:

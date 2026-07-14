@@ -256,6 +256,13 @@ class SettingsDialog(QDialog):
         self.desktop_status_cb = _check("在桌面显示状态悬浮窗", desktop_enabled)
         self.desktop_status_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.desktop_status_cb)
+        self.desktop_style_combo = StyledComboBox()
+        self.desktop_style_combo.addItem("圆环", "orb")
+        self.desktop_style_combo.addItem("光晕双环", "halo")
+        self.desktop_style_combo.addItem("极简圆形", "mini")
+        self.desktop_style_combo.setCurrentIndex(max(0, self.desktop_style_combo.findData(self.settings_manager.get_desktop_status_style())))
+        self.desktop_style_combo.currentIndexChanged.connect(self._save_window_preferences)
+        window_form.addRow("桌面悬浮样式", self.desktop_style_combo)
         self.lightweight_mode_cb = _check("轻量模式（运行时不显示任务栏图标）", self.settings_manager.get_lightweight_mode())
         self.lightweight_mode_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.lightweight_mode_cb)
@@ -473,6 +480,7 @@ class SettingsDialog(QDialog):
             self.always_on_top_cb.isChecked(), self.close_combo.currentData() or "tray",
         )
         self.settings_manager.set_desktop_status_enabled(self.desktop_status_cb.isChecked())
+        self.settings_manager.set_desktop_status_style(self.desktop_style_combo.currentData() or "orb")
         self.settings_manager.set_lightweight_mode(self.lightweight_mode_cb.isChecked())
         self.settings_manager.set_quota_display(self.quota_combo.currentData() or "remaining")
         self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())
@@ -488,6 +496,16 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def reject(self):
+        if self._settings_dirty:
+            title = "放弃未保存的设置？" if self.translation_manager.get_language() == "zh" else "Discard unsaved settings?"
+            text = (
+                "这些更改尚未生效，确定放弃吗？"
+                if self.translation_manager.get_language() == "zh"
+                else "These changes have not been applied. Discard them?"
+            )
+            answer = QMessageBox.question(self, title, text, QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Discard:
+                return
         # 对话框会复用；取消时恢复为当前已保存配置，避免下次打开仍看到草稿。
         controls = (
             (self.lang_combo, 0 if self.settings_manager.get_language() == "zh" else 1),
@@ -515,6 +533,9 @@ class SettingsDialog(QDialog):
         self.always_on_top_cb.setChecked(always_on_top)
         desktop_enabled, _ = self.settings_manager.get_desktop_status_preferences()
         self.desktop_status_cb.setChecked(desktop_enabled)
+        self.desktop_style_combo.blockSignals(True)
+        self.desktop_style_combo.setCurrentIndex(max(0, self.desktop_style_combo.findData(self.settings_manager.get_desktop_status_style())))
+        self.desktop_style_combo.blockSignals(False)
         self.lightweight_mode_cb.setChecked(self.settings_manager.get_lightweight_mode())
         self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
         self.shortcut_status.setText("")
@@ -653,6 +674,7 @@ class SettingsDialog(QDialog):
         self.window_form.labelForField(self.shortcut_status).setText("Status" if english else "状态")
         self.always_on_top_cb.setText("Keep main window on top" if english else "主窗口始终置顶")
         self.desktop_status_cb.setText("Show desktop status panel" if english else "在桌面显示状态悬浮窗")
+        self.window_form.labelForField(self.desktop_style_combo).setText("Desktop panel style" if english else "桌面悬浮样式")
         self.lightweight_mode_cb.setText("Lightweight mode (hide taskbar icon)" if english else "轻量模式（运行时不显示任务栏图标）")
         self.window_form.labelForField(self.close_combo).setText("Close main window" if english else "关闭主窗口")
         self.appearance_form.labelForField(self.display_note).setText("About" if english else "说明")
@@ -692,6 +714,7 @@ class SettingsDialog(QDialog):
             (self.timezone_combo, (("Follow system", "UTC", "Fixed IANA zone") if english else ("跟随系统", "UTC", "固定 IANA 时区"))),
             (self.quota_combo, (("Show remaining", "Show used") if english else ("显示剩余", "显示已用"))),
             (self.close_combo, (("Hide to tray", "Minimize", "Quit application") if english else ("隐藏到托盘", "最小化", "退出程序"))),
+            (self.desktop_style_combo, (("Orb", "Halo rings", "Minimal circle") if english else ("圆环", "光晕双环", "极简圆形"))),
         ):
             for index, label in enumerate(labels):
                 combo.setItemText(index, label)

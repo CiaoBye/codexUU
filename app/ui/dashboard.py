@@ -382,11 +382,6 @@ class MilestoneProgress(QWidget):
         self.value = 0.0
         self.reduce_motion = False
         self._animation = None
-        self._wave_phase = 0.0
-        self._wave_timer = QTimer(self)
-        self._wave_timer.setTimerType(Qt.TimerType.CoarseTimer)
-        self._wave_timer.setInterval(650)
-        self._wave_timer.timeout.connect(self._advance_wave)
         self.setMinimumHeight(34)
 
     @staticmethod
@@ -402,7 +397,6 @@ class MilestoneProgress(QWidget):
 
     def set_value(self, value: float):
         target = max(0.0, value)
-        self._sync_wave_timer(target)
         if self.reduce_motion or self.value == 0:
             self.value = target
             self.update()
@@ -422,18 +416,6 @@ class MilestoneProgress(QWidget):
 
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
-        self._sync_wave_timer(self.value)
-        self.update()
-
-    def _sync_wave_timer(self, value):
-        if self.reduce_motion or value <= 0:
-            self._wave_timer.stop()
-            self._wave_phase = 0.0
-        elif not self._wave_timer.isActive():
-            self._wave_timer.start()
-
-    def _advance_wave(self):
-        self._wave_phase = (self._wave_phase + 0.17) % 1.0
         self.update()
 
     def paintEvent(self, event):
@@ -463,14 +445,6 @@ class MilestoneProgress(QWidget):
         if progress_x > previous_x:
             painter.setPen(QPen(previous_color, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawLine(int(previous_x), y, int(progress_x), y)
-        if progress_x > left and not self.reduce_motion:
-            wave_width = min(34.0, max(12.0, width * 0.07))
-            wave_x = left + (progress_x - left) * self._wave_phase
-            wave_left = max(float(left), wave_x - wave_width)
-            wave_right = min(progress_x, wave_x + wave_width)
-            if wave_right > wave_left:
-                painter.setPen(QPen(QColor(220, 235, 255, 150), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawLine(int(wave_left), y - 1, int(wave_right), y - 1)
         painter.setFont(QFont("Microsoft YaHei", 8))
         for label, amount in self.MILESTONES:
             x = left + width * self.position(amount)
@@ -640,7 +614,6 @@ class SlidingTabBar(QWidget):
 
 class DashboardWidget(QWidget):
     open_settings = Signal()
-    request_close = Signal()
     data_updated = Signal(object)
 
     def __init__(self, parent=None, settings_manager=None, translation_manager=None, theme_manager=None):
@@ -757,14 +730,6 @@ class DashboardWidget(QWidget):
         self.settings_button.setFixedSize(34, 34)
         self.settings_button.clicked.connect(self.open_settings.emit)
         header.addWidget(self.settings_button)
-        self.close_button = QPushButton()
-        self.close_button.setIcon(QIcon(icon_path("close.svg")))
-        self.close_button.setIconSize(QSize(16, 16))
-        self.close_button.setObjectName("iconButton")
-        self.close_button.setToolTip("隐藏窗口")
-        self.close_button.setFixedSize(34, 34)
-        self.close_button.clicked.connect(self.request_close.emit)
-        header.addWidget(self.close_button)
         return header
 
     def _build_summary(self):

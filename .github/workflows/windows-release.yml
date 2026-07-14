@@ -42,6 +42,15 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           .\scripts\build_windows.ps1 -Version $version -Installer
           Get-FileHash "dist\installer\CodexUU-$version-win-x64-setup.exe" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content "dist\installer\CodexUU-$version-win-x64-setup.exe.sha256"
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexUU-windows-installer
+          path: |
+            dist/installer/*.exe
+            dist/installer/*.sha256
+          if-no-files-found: error
+          retention-days: 14
       - name: Validate release inputs
         if: inputs.publish_release
         shell: pwsh

@@ -99,9 +99,10 @@ def read_quota_from_appserver() -> Optional[tuple[Optional[QuotaInfo], Optional[
     executable = shutil.which("codex")
     if not executable:
         return None
-    # The Microsoft Store desktop app exposes an execution alias under
-    # WindowsApps, but that alias cannot be used as a stdio app-server.
-    # Returning immediately avoids an eight-second timeout on every refresh.
+    # The Microsoft Store package can resolve its bundled executable here, but
+    # child processes are denied access on many installations.  Its persisted
+    # rate-limit snapshot is therefore the reliable local channel; returning
+    # immediately avoids a failed process launch on every 60-second refresh.
     if os.name == "nt" and "windowsapps" in executable.lower():
         return None
     try:
@@ -183,20 +184,58 @@ def _quota_pair_from_rate_limits(limits: dict) -> tuple[Optional[QuotaInfo], Opt
 
 
 def read_quota_from_session_events() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
-    """Use the newest official rate-limit snapshot embedded in token_count events."""
-    newest_timestamp = ""
-    newest_limits = None
-    for _, _, event in _iter_rollout_events(days=14):
-        payload = event.get("payload")
-        limits = payload.get("rate_limits") if isinstance(payload, dict) else None
-        timestamp = str(event.get("timestamp") or "")
-        if isinstance(limits, dict) and timestamp >= newest_timestamp:
-            newest_timestamp = timestamp
-            newest_limits = limits
-    if not newest_limits:
-        return None
-    result = _quota_pair_from_rate_limits(newest_limits)
-    return result if any(result) else None
+    """Read the newest persisted Codex rate-limit snapshot without a full history scan."""
+    cached = _cached("quota_session_events")
+    if cached is not None:
+        return cached
+    # The current quota is written into recent token_count events.  Sampling the
+    # newest files is both the most current local source available to the Store
+    # desktop app and avoids parsing months of unrelated session history.
+    for path, mtime, stat in _recent_rollout_files(days=14, limit=32):
+        for event in reversed(_read_rollout_file_events(path, stat, mtime)):
+            payload = event.get("payload")
+            limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+            if not isinstance(limits, dict):
+                continue
+            result = _quota_pair_from_rate_limits(limits)
+            if any(result):
+                return _store("quota_session_events", result)
+    return _store("quota_session_events", None)
+
+
+def _recent_rollout_files(days: int, limit: int) -> list[tuple[Path, datetime, os.stat_result]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    candidates: list[tuple[Path, datetime, os.stat_result]] = []
+    for root in (_sessions_dir(), _archived_dir()):
+        if not root.exists():
+            continue
+        for path in root.rglob("rollout-*.jsonl"):
+            try:
+                stat = path.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+                if mtime >= cutoff:
+                    candidates.append((path, mtime, stat))
+            except OSError:
+                continue
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    return candidates[:limit]
+
+
+def _read_rollout_file_events(path: Path, stat: os.stat_result, mtime: datetime) -> list[dict]:
+    cached_file = _rollout_file_cache.get(path)
+    if cached_file and cached_file[0] == stat.st_mtime_ns and cached_file[1] == stat.st_size:
+        return cached_file[3]
+    events: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                event = parse_jsonl_line(line)
+                if event:
+                    events.append(event)
+    except (OSError, UnicodeError):
+        return []
+    _rollout_file_cache[path] = (stat.st_mtime_ns, stat.st_size, mtime, events)
+    return events
 
 
 def _read_token_event(event: dict) -> Optional[tuple[str, TokenBreakdown, bool]]:
@@ -292,17 +331,7 @@ def _iter_rollout_events(days: int = 180) -> Iterator[tuple[Path, datetime, dict
                 if mtime < cutoff:
                     continue
                 seen_files.add(path)
-                cached_file = _rollout_file_cache.get(path)
-                if cached_file and cached_file[0] == stat.st_mtime_ns and cached_file[1] == stat.st_size:
-                    events = cached_file[3]
-                else:
-                    events = []
-                    with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                        for line in handle:
-                            event = parse_jsonl_line(line)
-                            if event:
-                                events.append(event)
-                    _rollout_file_cache[path] = (stat.st_mtime_ns, stat.st_size, mtime, events)
+                events = _read_rollout_file_events(path, stat, mtime)
                 records.extend((path, mtime, event) for event in events)
             except (OSError, UnicodeError):
                 continue

@@ -26,11 +26,11 @@ def diagnose_data_sources() -> list[DataSourceStatus]:
     archived_count = sum(1 for _ in archived.glob("*.jsonl")) if archived.exists() else 0
     executable = shutil.which("codex")
     if executable and not (os.name == "nt" and "windowsapps" in executable.lower()):
-        appserver = DataSourceStatus("Codex app-server", executable, "ok")
+        appserver = DataSourceStatus("Codex app-server", f"实时优先：{executable}", "ok")
     elif executable:
-        appserver = DataSourceStatus("Codex app-server", "检测到 WindowsApps 执行别名，将使用 session 额度回退", "warning")
+        appserver = DataSourceStatus("Codex app-server", "Windows 桌面版受系统启动限制；额度使用最新 session rate-limit 快照", "warning")
     else:
-        appserver = DataSourceStatus("Codex app-server", "未找到 CLI，将使用 session 额度回退", "warning")
+        appserver = DataSourceStatus("Codex app-server", "未找到独立 CLI；额度使用最新 session rate-limit 快照", "warning")
     claude = home / ".claude" / "projects"
     index = local_index_status()
     if index.available:

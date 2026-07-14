@@ -17,6 +17,7 @@ DEFAULT_ALWAYS_ON_TOP = False
 DEFAULT_CLOSE_BEHAVIOR = "tray"
 DEFAULT_QUOTA_ALERT_THRESHOLD = 20
 DEFAULT_DESKTOP_STATUS_ENABLED = True
+DEFAULT_DESKTOP_STATUS_STYLE = "orb"
 DEFAULT_LIGHTWEIGHT_MODE = True
 
 class SettingsManager:
@@ -37,6 +38,7 @@ class SettingsManager:
         self.quota_alert_threshold = DEFAULT_QUOTA_ALERT_THRESHOLD
         self.desktop_status_enabled = DEFAULT_DESKTOP_STATUS_ENABLED
         self.desktop_status_position: tuple[int, int] | None = None
+        self.desktop_status_style = DEFAULT_DESKTOP_STATUS_STYLE
         self.lightweight_mode = DEFAULT_LIGHTWEIGHT_MODE
         self.listeners: list[Callable] = []
     
@@ -75,6 +77,9 @@ class SettingsManager:
 
     def get_lightweight_mode(self) -> bool:
         return self.lightweight_mode
+
+    def get_desktop_status_style(self) -> str:
+        return self.desktop_status_style
 
     def set_active_runtime(self, runtime: str):
         if runtime in ("codex", "claudeCode"):
@@ -116,6 +121,11 @@ class SettingsManager:
     def set_desktop_status_position(self, x: int, y: int):
         self.desktop_status_position = (int(x), int(y))
         self._notify_listeners()
+
+    def set_desktop_status_style(self, style: str):
+        if style in ("orb", "halo", "mini"):
+            self.desktop_status_style = style
+            self._notify_listeners()
 
     def set_lightweight_mode(self, enabled: bool):
         self.lightweight_mode = bool(enabled)
@@ -162,6 +172,7 @@ class SettingsManager:
                 quota_alert_threshold = data.get("quota_alert_threshold", DEFAULT_QUOTA_ALERT_THRESHOLD)
                 desktop_status_enabled = data.get("desktop_status_enabled", DEFAULT_DESKTOP_STATUS_ENABLED)
                 desktop_status_position = data.get("desktop_status_position")
+                desktop_status_style = data.get("desktop_status_style", DEFAULT_DESKTOP_STATUS_STYLE)
                 lightweight_mode = data.get("lightweight_mode", DEFAULT_LIGHTWEIGHT_MODE)
                 self.language = language if language in ("zh", "en") else DEFAULT_LANGUAGE
                 self.theme = theme if theme in ("auto", "light", "dark") else DEFAULT_THEME
@@ -182,6 +193,7 @@ class SettingsManager:
                     if isinstance(desktop_status_position, list) and len(desktop_status_position) == 2
                     else None
                 )
+                self.desktop_status_style = desktop_status_style if desktop_status_style in ("orb", "halo", "mini") else DEFAULT_DESKTOP_STATUS_STYLE
                 self.lightweight_mode = bool(lightweight_mode)
             except (OSError, ValueError, json.JSONDecodeError, TypeError):
                 self.language = DEFAULT_LANGUAGE
@@ -199,6 +211,7 @@ class SettingsManager:
                 self.quota_alert_threshold = DEFAULT_QUOTA_ALERT_THRESHOLD
                 self.desktop_status_enabled = DEFAULT_DESKTOP_STATUS_ENABLED
                 self.desktop_status_position = None
+                self.desktop_status_style = DEFAULT_DESKTOP_STATUS_STYLE
                 self.lightweight_mode = DEFAULT_LIGHTWEIGHT_MODE
     
     def save(self):
@@ -219,6 +232,7 @@ class SettingsManager:
             "quota_alert_threshold": self.quota_alert_threshold,
             "desktop_status_enabled": self.desktop_status_enabled,
             "desktop_status_position": list(self.desktop_status_position) if self.desktop_status_position else None,
+            "desktop_status_style": self.desktop_status_style,
             "lightweight_mode": self.lightweight_mode,
         }
         with open(self.config_path, "w", encoding="utf-8") as f:

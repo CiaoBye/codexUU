@@ -87,6 +87,21 @@ def test_current_rate_limit_schema_can_honestly_return_only_seven_days():
     assert q7.remaining_pct == 73
 
 
+def test_session_quota_uses_the_newest_persisted_rate_limit_snapshot(monkeypatch):
+    newest = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(codex_reader, "_cached", lambda _: None)
+    monkeypatch.setattr(codex_reader, "_store", lambda _key, value: value)
+    monkeypatch.setattr(codex_reader, "_recent_rollout_files", lambda days, limit: [(Path("latest.jsonl"), datetime.now(timezone.utc), object())])
+    monkeypatch.setattr(codex_reader, "_read_rollout_file_events", lambda *_: [{
+        "timestamp": newest,
+        "payload": {"rate_limits": {"primary": {"usedPercent": 31, "windowDurationMins": 10080}}},
+    }])
+
+    q5, q7 = codex_reader.read_quota_from_session_events()
+    assert q5 is None
+    assert q7.remaining_pct == 69
+
+
 def test_tool_usage_counts_explicit_function_call_events(monkeypatch):
     events = [
         (None, None, {"payload": {"type": "function_call", "name": "shell_command"}}),

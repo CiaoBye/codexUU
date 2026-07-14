@@ -117,7 +117,6 @@ class TrayManager(QObject):
         self.panel.show_main.connect(self._open_main)
         self.panel.show_settings.connect(self._open_settings)
         self.desktop_panel.show_main.connect(self._open_main)
-        self.desktop_panel.hide_requested.connect(self._hide_desktop_status)
         self.desktop_panel.position_changed.connect(self._save_desktop_status_position)
         self._setup_tray()
         if self.settings_manager:
@@ -199,13 +198,6 @@ class TrayManager(QObject):
         self.settings_manager.set_desktop_status_enabled(enabled)
         self.settings_manager.save()
 
-    def _hide_desktop_status(self):
-        if self.settings_manager:
-            self.settings_manager.set_desktop_status_enabled(False)
-            self.settings_manager.save()
-        else:
-            self.desktop_panel.hide()
-
     def _save_desktop_status_position(self, position):
         if self.settings_manager:
             self.settings_manager.set_desktop_status_position(position.x(), position.y())
@@ -214,8 +206,11 @@ class TrayManager(QObject):
     def _sync_desktop_status(self):
         enabled = False
         position = None
+        style = "orb"
         if self.settings_manager:
             enabled, position = self.settings_manager.get_desktop_status_preferences()
+            style = self.settings_manager.get_desktop_status_style()
+        self.desktop_panel.set_style(style)
         if hasattr(self, "desktop_action"):
             blocked = self.desktop_action.blockSignals(True)
             self.desktop_action.setChecked(enabled)
@@ -226,6 +221,10 @@ class TrayManager(QObject):
         if not self.desktop_panel.isVisible():
             self._place_desktop_status(position)
             self.desktop_panel.show()
+        else:
+            # A style may change the circle diameter; clamp the persisted
+            # position again so it never overflows the current screen.
+            self._place_desktop_status(position or (self.desktop_panel.x(), self.desktop_panel.y()))
         self.desktop_panel.raise_()
 
     def _place_desktop_status(self, position):

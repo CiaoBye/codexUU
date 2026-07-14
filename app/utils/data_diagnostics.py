@@ -5,6 +5,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.data.local_index import local_index_status
+
 
 @dataclass
 class DataSourceStatus:
@@ -30,9 +32,17 @@ def diagnose_data_sources() -> list[DataSourceStatus]:
     else:
         appserver = DataSourceStatus("Codex app-server", "未找到 CLI，将使用 session 额度回退", "warning")
     claude = home / ".claude" / "projects"
+    index = local_index_status()
+    if index.available:
+        scan_time = index.last_scan.astimezone().strftime("%m/%d %H:%M") if index.last_scan else "等待首次扫描"
+        index_detail = f"{index.file_count} 文件 · {index.event_count} 条派生事件 · {scan_time}"
+        index_status = DataSourceStatus("CodexUU 本机索引", index_detail, "ok")
+    else:
+        index_status = DataSourceStatus("CodexUU 本机索引", "首次读取 Claude transcript 时创建；不保存对话正文", "warning")
     return [
         appserver,
         DataSourceStatus("Codex SQLite", str(state) if state.exists() else "state_5.sqlite 不存在", "ok" if state.exists() else "error"),
         DataSourceStatus("Codex 精细事件", f"{session_count} session · {archived_count} archived", "ok" if session_count + archived_count else "error"),
         DataSourceStatus("Claude Code", str(claude) if claude.exists() else "未启用或暂无 transcript", "ok" if claude.exists() else "warning"),
+        index_status,
     ]

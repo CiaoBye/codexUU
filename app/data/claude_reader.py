@@ -21,8 +21,8 @@ from app.data.models import (
     ToolUsage,
     UsageSnapshot,
     estimate_api_value,
-    parse_jsonl_line,
 )
+from app.data.local_index import iter_indexed_claude_events
 from app.utils.statistics_timezone import get_statistics_timezone
 
 
@@ -64,6 +64,10 @@ def _cache_dir() -> Path:
     return Path(os.path.expanduser("~")) / "Library" / "Caches" / "codexU" / "claude-code"
 
 
+def _indexed_events():
+    return iter_indexed_claude_events(_projects_dir())
+
+
 def read_claude_quota_snapshot() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
     path = _cache_dir() / "statusline-snapshot.json"
     if not path.exists():
@@ -98,64 +102,40 @@ def read_claude_token_history() -> Optional[TokenStats]:
     cached = _cached("token_history")
     if cached is not None:
         return cached
-    projects = _projects_dir()
-    if not projects.exists():
-        return None
-
     today = get_statistics_timezone().now_date()
     rolling_start = today - timedelta(days=6)
     week_start = today - timedelta(days=today.weekday())
     month_start = today.replace(day=1)
     today_bd, rolling_bd, week_bd = TokenBreakdown(), TokenBreakdown(), TokenBreakdown()
     month_bd, cumulative = TokenBreakdown(), TokenBreakdown()
-    for path in projects.rglob("*.jsonl"):
-        try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
-                    event = parse_jsonl_line(line)
-                    if not event:
-                        continue
-                    message = event.get("message", {})
-                    usage = message.get("usage") if isinstance(message, dict) else None
-                    if not isinstance(usage, dict):
-                        continue
-                    input_tokens = int(usage.get("input_tokens", 0) or 0)
-                    cached_input = int(usage.get("cached_input_tokens", 0) or 0)
-                    cached_input += int(usage.get("cache_read_input_tokens", 0) or 0)
-                    cached_input += int(usage.get("cache_creation_input_tokens", 0) or 0)
-                    output = int(usage.get("output_tokens", 0) or 0)
-                    breakdown = TokenBreakdown(
-                        cached_input=max(0, cached_input),
-                        uncached_input=max(0, input_tokens),
-                        output=max(0, output),
-                    )
-                    cumulative.cached_input += breakdown.cached_input
-                    cumulative.uncached_input += breakdown.uncached_input
-                    cumulative.output += breakdown.output
-                    timestamp = event.get("timestamp") or event.get("created_at")
-                    try:
-                        parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-                        day = get_statistics_timezone().date_for(parsed)
-                    except (TypeError, ValueError):
-                        day = get_statistics_timezone().date_for(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
-                    if day == today:
-                        today_bd.cached_input += breakdown.cached_input
-                        today_bd.uncached_input += breakdown.uncached_input
-                        today_bd.output += breakdown.output
-                    if day >= rolling_start:
-                        rolling_bd.cached_input += breakdown.cached_input
-                        rolling_bd.uncached_input += breakdown.uncached_input
-                        rolling_bd.output += breakdown.output
-                    if day >= week_start:
-                        week_bd.cached_input += breakdown.cached_input
-                        week_bd.uncached_input += breakdown.uncached_input
-                        week_bd.output += breakdown.output
-                    if day >= month_start:
-                        month_bd.cached_input += breakdown.cached_input
-                        month_bd.uncached_input += breakdown.uncached_input
-                        month_bd.output += breakdown.output
-        except (OSError, UnicodeError):
+    for event in _indexed_events():
+        breakdown = TokenBreakdown(
+            cached_input=event.cached_input,
+            uncached_input=event.uncached_input,
+            output=event.output,
+        )
+        if not breakdown.total:
             continue
+        cumulative.cached_input += breakdown.cached_input
+        cumulative.uncached_input += breakdown.uncached_input
+        cumulative.output += breakdown.output
+        day = get_statistics_timezone().date_for(event.timestamp or event.modified_at)
+        if day == today:
+            today_bd.cached_input += breakdown.cached_input
+            today_bd.uncached_input += breakdown.uncached_input
+            today_bd.output += breakdown.output
+        if day >= rolling_start:
+            rolling_bd.cached_input += breakdown.cached_input
+            rolling_bd.uncached_input += breakdown.uncached_input
+            rolling_bd.output += breakdown.output
+        if day >= week_start:
+            week_bd.cached_input += breakdown.cached_input
+            week_bd.uncached_input += breakdown.uncached_input
+            week_bd.output += breakdown.output
+        if day >= month_start:
+            month_bd.cached_input += breakdown.cached_input
+            month_bd.uncached_input += breakdown.uncached_input
+            month_bd.output += breakdown.output
     return _store("token_history", TokenStats(
         today=today_bd,
         last_7d=rolling_bd,
@@ -171,46 +151,22 @@ def read_claude_daily_tokens() -> list[DailyToken]:
     if cached is not None:
         return cached
     daily: dict[str, DailyToken] = {}
-    projects = _projects_dir()
-    if not projects.exists():
-        return []
-    for path in projects.rglob("*.jsonl"):
-        try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
-                    event = parse_jsonl_line(line)
-                    message = event.get("message", {}) if event else {}
-                    usage = message.get("usage") if isinstance(message, dict) else None
-                    if not isinstance(usage, dict):
-                        continue
-                    timestamp = event.get("timestamp") or event.get("created_at")
-                    try:
-                        parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-                    except (TypeError, ValueError):
-                        parsed = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-                    day = get_statistics_timezone().date_for(parsed)
-                    cached_input = int(usage.get("cached_input_tokens", 0) or 0)
-                    cached_input += int(usage.get("cache_read_input_tokens", 0) or 0)
-                    cached_input += int(usage.get("cache_creation_input_tokens", 0) or 0)
-                    breakdown = TokenBreakdown(
-                        cached_input=max(0, cached_input),
-                        uncached_input=max(0, int(usage.get("input_tokens", 0) or 0)),
-                        output=max(0, int(usage.get("output_tokens", 0) or 0)),
-                    )
-                    key = day.isoformat()
-                    item = daily.setdefault(
-                        key,
-                        DailyToken(
-                            date=datetime.combine(day, datetime.min.time(), tzinfo=get_statistics_timezone().tzinfo()),
-                            runtime=RuntimeScope.CLAUDE_CODE,
-                        ),
-                    )
-                    item.cached_input += breakdown.cached_input
-                    item.uncached_input += breakdown.uncached_input
-                    item.output += breakdown.output
-                    item.total = item.cached_input + item.uncached_input + item.output
-        except (OSError, UnicodeError):
+    for event in _indexed_events():
+        if not (event.cached_input or event.uncached_input or event.output):
             continue
+        day = get_statistics_timezone().date_for(event.timestamp or event.modified_at)
+        key = day.isoformat()
+        item = daily.setdefault(
+            key,
+            DailyToken(
+                date=datetime.combine(day, datetime.min.time(), tzinfo=get_statistics_timezone().tzinfo()),
+                runtime=RuntimeScope.CLAUDE_CODE,
+            ),
+        )
+        item.cached_input += event.cached_input
+        item.uncached_input += event.uncached_input
+        item.output += event.output
+        item.total = item.cached_input + item.uncached_input + item.output
     result = sorted(daily.values(), key=lambda item: item.date, reverse=True)[:180]
     return _store("daily_tokens", result)
 
@@ -266,50 +222,34 @@ def read_claude_projects() -> list[ProjectStats]:
     recent_start = today - timedelta(days=6)
     week_start = today - timedelta(days=today.weekday())
     month_start = today.replace(day=1)
-    projects = _projects_dir()
-    if not projects.exists():
-        return []
-    for path in projects.rglob("*.jsonl"):
-        try:
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-            parts = path.relative_to(projects).parts
-            name = parts[0] if len(parts) > 1 else "default"
+    seen_paths: set[Path] = set()
+    for event in _indexed_events():
+        name = event.project or "default"
+        if event.path not in seen_paths:
+            seen_paths.add(event.path)
             data[name]["threads"] += 1
-            if data[name]["last"] is None or mtime > data[name]["last"]:
-                data[name]["last"] = mtime
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
-                    event = parse_jsonl_line(line)
-                    message = event.get("message", {}) if event else {}
-                    usage = message.get("usage") if isinstance(message, dict) else None
-                    if isinstance(usage, dict):
-                        cached_input = int(usage.get("cached_input_tokens", 0) or 0)
-                        cached_input += int(usage.get("cache_read_input_tokens", 0) or 0)
-                        cached_input += int(usage.get("cache_creation_input_tokens", 0) or 0)
-                        breakdown = TokenBreakdown(
-                            cached_input=max(0, cached_input),
-                            uncached_input=max(0, int(usage.get("input_tokens", 0) or 0)),
-                            output=max(0, int(usage.get("output_tokens", 0) or 0)),
-                        )
-                        data[name]["tokens"] += breakdown.total
-                        for field in ("cached_input", "uncached_input", "output"):
-                            data[name]["breakdown"].__dict__[field] += getattr(breakdown, field)
-                        timestamp = event.get("timestamp") or event.get("created_at")
-                        try:
-                            event_day = get_statistics_timezone().date_for(datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")))
-                        except (TypeError, ValueError):
-                            event_day = get_statistics_timezone().date_for(mtime)
-                        if event_day >= recent_start:
-                            for field in ("cached_input", "uncached_input", "output"):
-                                data[name]["recent"].__dict__[field] += getattr(breakdown, field)
-                        if week_start <= event_day <= today:
-                            for field in ("cached_input", "uncached_input", "output"):
-                                data[name]["week"].__dict__[field] += getattr(breakdown, field)
-                        if month_start <= event_day <= today:
-                            for field in ("cached_input", "uncached_input", "output"):
-                                data[name]["month"].__dict__[field] += getattr(breakdown, field)
-        except (OSError, UnicodeError):
+        if data[name]["last"] is None or event.modified_at > data[name]["last"]:
+            data[name]["last"] = event.modified_at
+        breakdown = TokenBreakdown(
+            cached_input=event.cached_input,
+            uncached_input=event.uncached_input,
+            output=event.output,
+        )
+        if not breakdown.total:
             continue
+        data[name]["tokens"] += breakdown.total
+        for field in ("cached_input", "uncached_input", "output"):
+            data[name]["breakdown"].__dict__[field] += getattr(breakdown, field)
+        event_day = get_statistics_timezone().date_for(event.timestamp or event.modified_at)
+        if event_day >= recent_start:
+            for field in ("cached_input", "uncached_input", "output"):
+                data[name]["recent"].__dict__[field] += getattr(breakdown, field)
+        if week_start <= event_day <= today:
+            for field in ("cached_input", "uncached_input", "output"):
+                data[name]["week"].__dict__[field] += getattr(breakdown, field)
+        if month_start <= event_day <= today:
+            for field in ("cached_input", "uncached_input", "output"):
+                data[name]["month"].__dict__[field] += getattr(breakdown, field)
     result = [
         ProjectStats(
             name=name,
@@ -335,31 +275,14 @@ def read_claude_projects() -> list[ProjectStats]:
     return _store("projects", result[:20])
 
 
-def _content_blocks(event: dict):
-    message = event.get("message", {})
-    content = message.get("content", []) if isinstance(message, dict) else []
-    return content if isinstance(content, list) else []
-
-
 def read_claude_tool_usage() -> list[ToolUsage]:
+    cached = _cached("tool_usage")
+    if cached is not None:
+        return cached
     counts: defaultdict[str, int] = defaultdict(int)
-    projects = _projects_dir()
-    if not projects.exists():
-        return []
-    for path in projects.rglob("*.jsonl"):
-        try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
-                    event = parse_jsonl_line(line)
-                    if not event:
-                        continue
-                    for block in _content_blocks(event):
-                        if isinstance(block, dict):
-                            tool_use = block.get("tool_use")
-                            if isinstance(tool_use, dict) and isinstance(tool_use.get("name"), str):
-                                counts[tool_use["name"]] += 1
-        except (OSError, UnicodeError):
-            continue
+    for event in _indexed_events():
+        for tool in event.tools:
+            counts[tool] += 1
     def category(name: str) -> str:
         lowered = name.lower()
         if any(token in lowered for token in ("bash", "terminal", "shell", "exec")):
@@ -370,7 +293,7 @@ def read_claude_tool_usage() -> list[ToolUsage]:
             return "网络访问"
         return "其他"
 
-    return sorted(
+    return _store("tool_usage", sorted(
         [ToolUsage(
             name=name,
             call_count=count,
@@ -379,29 +302,22 @@ def read_claude_tool_usage() -> list[ToolUsage]:
         ) for name, count in counts.items()],
         key=lambda item: item.call_count,
         reverse=True,
-    )
+    ))
 
 
 def read_claude_skill_usage() -> list[SkillUsage]:
+    cached = _cached("skill_usage")
+    if cached is not None:
+        return cached
     counts: defaultdict[str, int] = defaultdict(int)
-    projects = _projects_dir()
-    if not projects.exists():
-        return []
-    for path in projects.rglob("*.jsonl"):
-        try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
-                    event = parse_jsonl_line(line)
-                    for block in _content_blocks(event or {}):
-                        if isinstance(block, dict) and isinstance(block.get("skill"), str):
-                            counts[block["skill"]] += 1
-        except (OSError, UnicodeError):
-            continue
-    return sorted(
+    for event in _indexed_events():
+        for skill in event.skills:
+            counts[skill] += 1
+    return _store("skill_usage", sorted(
         [SkillUsage(name=name, use_count=count, runtime=RuntimeScope.CLAUDE_CODE) for name, count in counts.items()],
         key=lambda item: item.use_count,
         reverse=True,
-    )
+    ))
 
 
 def read_claude_snapshot() -> UsageSnapshot:

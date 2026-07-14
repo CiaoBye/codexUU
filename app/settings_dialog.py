@@ -336,6 +336,10 @@ class SettingsDialog(QDialog):
         self.diagnostic_label.setObjectName("diagnosticText")
         self.diagnostic_label.setWordWrap(True)
         diagnostic_form.addRow(self.diagnostic_label)
+        self.data_scope_label = QLabel("所有用量、趋势和项目数字均来自本机记录；不会上传线程正文或项目路径。")
+        self.data_scope_label.setObjectName("caption")
+        self.data_scope_label.setWordWrap(True)
+        diagnostic_form.addRow("统计范围", self.data_scope_label)
         self.diagnostic_button = QPushButton("重新检测")
         self.diagnostic_button.setObjectName("iconButton")
         self.diagnostic_button.clicked.connect(self._refresh_diagnostics)
@@ -537,6 +541,11 @@ class SettingsDialog(QDialog):
         self.download_update_btn.setText("Download update" if english else "下载更新")
         self.open_release_btn.setText("Open release" if english else "打开 Release")
         self.diagnostic_button.setText("Check again" if english else "重新检测")
+        self.diagnostic_form.labelForField(self.data_scope_label).setText("Scope" if english else "统计范围")
+        self.data_scope_label.setText(
+            "Usage, trends, and projects are local records only. The local index stores derived metrics, not transcript text."
+            if english else "所有用量、趋势和项目数字均来自本机记录；本机索引只保存派生统计，不保存对话正文。"
+        )
         self.timezone_form.labelForField(self.timezone_combo).setText("Calendar day" if english else "自然日")
         self.timezone_form.labelForField(self.timezone_edit).setText("IANA zone" if english else "IANA 标识")
         for combo, labels in (

@@ -2,6 +2,26 @@
 
 本文件记录本地复刻项目的每次有效更新。每次代码更新完成后，需同步维护根目录 `AGENTS.md` 与本文件，并重启程序。
 
+## 2026-07-14 · 0.1.03 · 增量索引、数据可信度与 Windows 发布链路
+
+### 本机增量索引
+
+- 新增 `~/.codexU/analytics.sqlite`，首次读取 Claude transcript 后建立派生统计索引；后续刷新仅重新解析大小或修改时间变化的 JSONL 文件。
+- 索引只保存文件指纹、时间、模型、Token、工具和 Skill 名称；不保存消息正文、提示词、工具参数或项目文件内容。
+- Claude 的 Token、趋势、项目、工具和 Skill 统计统一改读索引，单轮仪表盘刷新不会重复扫描同一批 transcript。
+
+### 数据可信度与发布
+
+- 设置页“数据源诊断”新增 CodexUU 本机索引状态、文件数、派生事件数、最后扫描时间与本机数据范围说明。
+- 新增 Windows 发布脚本、Inno Setup 安装器定义和 GitHub Actions 工作流；推送 `v*` 标签后将自动构建 `.exe` 安装器与 SHA-256 校验文件并发布到 GitHub Release。
+
+### 验证
+
+- 增量索引测试覆盖首次扫描、文件变更重建、派生字段与不保存 transcript 正文。
+- `python -m compileall -q app main.py`：通过；`PYTHONPATH=. python -m pytest -q`：39 项通过。
+- Qt offscreen 验证设置页“系统”页、索引状态与本机数据范围说明可创建；实际本机无 Claude transcript 时索引正确显示为 0 文件 / 0 事件。
+- 已执行单实例重启，最终 `pythonw.exe main.py` 实例数为 1。
+
 ## 2026-07-13 · 0.1.02 · 任务口径、趋势排版与稳定性审计
 
 ### 必须修复

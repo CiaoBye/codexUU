@@ -11,10 +11,12 @@ from typing import Optional
 from app.data.models import (
     CLAUDE_PROMPT_PRICES,
     DailyToken,
+    ModelUsage,
     ProjectStats,
     QuotaInfo,
     RuntimeScope,
     SkillUsage,
+    SessionUsage,
     TaskItem,
     TokenBreakdown,
     TokenStats,
@@ -217,6 +219,8 @@ def read_claude_projects() -> list[ProjectStats]:
         "tokens": 0, "threads": 0, "last": None,
         "breakdown": TokenBreakdown(), "recent": TokenBreakdown(),
         "week": TokenBreakdown(), "month": TokenBreakdown(),
+        "models": defaultdict(TokenBreakdown),
+        "sessions": defaultdict(lambda: {"tokens": 0, "last": None, "models": defaultdict(TokenBreakdown)}),
     })
     today = get_statistics_timezone().now_date()
     recent_start = today - timedelta(days=6)
@@ -240,6 +244,16 @@ def read_claude_projects() -> list[ProjectStats]:
         data[name]["tokens"] += breakdown.total
         for field in ("cached_input", "uncached_input", "output"):
             data[name]["breakdown"].__dict__[field] += getattr(breakdown, field)
+        model = event.model or "未知模型"
+        for field in ("cached_input", "uncached_input", "output"):
+            data[name]["models"][model].__dict__[field] += getattr(breakdown, field)
+        session = data[name]["sessions"][event.path]
+        session["tokens"] += breakdown.total
+        session_time = event.timestamp or event.modified_at
+        if session["last"] is None or session_time > session["last"]:
+            session["last"] = session_time
+        for field in ("cached_input", "uncached_input", "output"):
+            session["models"][model].__dict__[field] += getattr(breakdown, field)
         event_day = get_statistics_timezone().date_for(event.timestamp or event.modified_at)
         if event_day >= recent_start:
             for field in ("cached_input", "uncached_input", "output"):
@@ -250,6 +264,28 @@ def read_claude_projects() -> list[ProjectStats]:
         if month_start <= event_day <= today:
             for field in ("cached_input", "uncached_input", "output"):
                 data[name]["month"].__dict__[field] += getattr(breakdown, field)
+    def model_usage(by_model):
+        return sorted(
+            [ModelUsage(
+                name=model or "未知模型",
+                token_total=tokens.total,
+                estimated_value=estimate_api_value(tokens, CLAUDE_PROMPT_PRICES),
+                pricing_coverage_pct=100.0 if tokens.total else 0.0,
+            ) for model, tokens in by_model.items() if tokens.total],
+            key=lambda item: item.token_total,
+            reverse=True,
+        )
+
+    def session_usage(by_path):
+        result = []
+        for path, session in by_path.items():
+            models = model_usage(session["models"])
+            result.append(SessionUsage(
+                session_id=path.stem[-12:], token_total=session["tokens"],
+                last_active=session["last"], model=models[0].name if models else "未知模型",
+            ))
+        return sorted(result, key=lambda item: item.last_active or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:100]
+
     result = [
         ProjectStats(
             name=name,
@@ -268,6 +304,8 @@ def read_claude_projects() -> list[ProjectStats]:
             current_month_pricing_coverage_pct=100.0 if item["month"].total else 0.0,
             pricing_coverage_pct=100.0 if item["tokens"] else 0.0,
             source_label="精细统计",
+            model_usage=model_usage(item["models"]),
+            sessions=session_usage(item["sessions"]),
         )
         for name, item in data.items()
     ]

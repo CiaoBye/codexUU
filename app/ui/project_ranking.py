@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.data.models import ProjectStats, format_tokens
+from app.ui.project_details import ProjectDetailDialog
 from app.utils.statistics_timezone import get_statistics_timezone
 
 
@@ -59,10 +60,14 @@ def _value_text(value: float, coverage: float, english=False):
 
 
 class ProjectUsageRow(QFrame):
+    clicked = Signal(object)
+
     def __init__(self, project, rank, mode, maximum, english=False, parent=None):
         super().__init__(parent)
+        self.project = project
         self.setObjectName("projectUsageRow")
         self.setFixedHeight(66)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         token_total, estimated_value, coverage = project_values(project, mode)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 7, 10, 7)
@@ -113,6 +118,11 @@ class ProjectUsageRow(QFrame):
         progress_row.addWidget(bar)
         layout.addLayout(progress_row)
 
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.project)
+        super().mouseReleaseEvent(event)
+
 
 class OverviewMetric(QFrame):
     def __init__(self, label, value, accent, parent=None):
@@ -137,10 +147,14 @@ class OverviewMetric(QFrame):
 
 
 class RecentProjectRow(QFrame):
+    clicked = Signal(object)
+
     def __init__(self, project, mode, english=False, parent=None):
         super().__init__(parent)
+        self.project = project
         self.setObjectName("recentProjectRow")
         self.setFixedHeight(47)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         token_total, _, _ = project_values(project, mode)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(9, 6, 9, 6)
@@ -168,6 +182,11 @@ class RecentProjectRow(QFrame):
         token.setObjectName("metricLabel")
         layout.addWidget(token)
 
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.project)
+        super().mouseReleaseEvent(event)
+
 
 class ProjectRankingWidget(QWidget):
     def __init__(self, parent=None):
@@ -175,6 +194,7 @@ class ProjectRankingWidget(QWidget):
         self._projects = []
         self.mode = "week"
         self.language = "zh"
+        self._detail_dialog = None
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
@@ -270,6 +290,15 @@ class ProjectRankingWidget(QWidget):
         self._projects = list(projects or [])
         self._render()
 
+    def _open_detail(self, project):
+        dialog = ProjectDetailDialog(project, self.mode, self.language == "en", self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, "_detail_dialog", None))
+        self._detail_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     @staticmethod
     def _clear(layout):
         while layout.count():
@@ -302,7 +331,9 @@ class ProjectRankingWidget(QWidget):
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.ranking_layout.addWidget(empty)
         for rank, project in enumerate(active[:20], 1):
-            self.ranking_layout.addWidget(ProjectUsageRow(project, rank, self.mode, maximum, english))
+            row = ProjectUsageRow(project, rank, self.mode, maximum, english)
+            row.clicked.connect(self._open_detail)
+            self.ranking_layout.addWidget(row)
 
         top1 = project_values(active[0], self.mode)[0] / total * 100 if total and active else 0
         top3 = sum(project_values(item, self.mode)[0] for item in active[:3]) / total * 100 if total else 0
@@ -326,7 +357,9 @@ class ProjectRankingWidget(QWidget):
             reverse=True,
         )
         for project in recent[:8]:
-            self.recent_layout.addWidget(RecentProjectRow(project, self.mode, english))
+            row = RecentProjectRow(project, self.mode, english)
+            row.clicked.connect(self._open_detail)
+            self.recent_layout.addWidget(row)
         if not recent:
             empty = QLabel("No recent projects" if english else "暂无最近项目")
             empty.setObjectName("caption")

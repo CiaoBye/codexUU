@@ -1,6 +1,6 @@
 # CodexUU
 
-当前预览版本：`0.1.03`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
+当前预览版本：`0.1.04`。版本从 `0.0.1` 起步，每段累计 10 轮后进一位：`0.0.10` 的下一版为 `0.1.01`，`0.1.10` 的下一版为 `0.2.01`。每完成一轮可验收的代码更新都必须同步更新 `VERSION`、README、`AGENTS.md` 和 `agents/changelog.md`。
 
 CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，参考 [shanggqm/codexU](https://github.com/shanggqm/codexU) 的信息架构重新实现。
 
@@ -17,6 +17,7 @@ CodexUU 是一个面向 Windows 的本机 Codex / Claude Code 用量仪表盘，
 - 今日任务看板：近 2 小时活跃、今日待处理、已启用自动任务、今日归档完成。
 - 每日、每周、每月、累计趋势；每日视图包含半年 Token 活动热力图。
 - 项目用量排行与项目活动概览，支持本周、本月、累计口径。
+- 点击项目可查看模型拆分、会话列表、筛选，并导出当前项目的 JSON / CSV 或复制 Markdown 摘要。
 - Skill 使用与明确工具调用事件统计。
 - Codex / Claude Code 数据源在设置页切换。
 - 自动、浅色、深色主题和中英文界面。

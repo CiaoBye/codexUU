@@ -103,6 +103,24 @@ class ProjectStats:
     current_month_pricing_coverage_pct: float = 0.0
     pricing_coverage_pct: float = 0.0
     source_label: str = ""
+    model_usage: list["ModelUsage"] = field(default_factory=list)
+    sessions: list["SessionUsage"] = field(default_factory=list)
+
+
+@dataclass
+class ModelUsage:
+    name: str
+    token_total: int = 0
+    estimated_value: float = 0.0
+    pricing_coverage_pct: float = 0.0
+
+
+@dataclass
+class SessionUsage:
+    session_id: str
+    token_total: int = 0
+    last_active: Optional[datetime] = None
+    model: str = ""
 
 
 @dataclass

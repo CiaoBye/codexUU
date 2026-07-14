@@ -14,10 +14,12 @@ from typing import Iterator, Optional
 
 from app.data.models import (
     DailyToken,
+    ModelUsage,
     ProjectStats,
     QuotaInfo,
     RuntimeScope,
     SkillUsage,
+    SessionUsage,
     TaskItem,
     TokenBreakdown,
     TokenStats,
@@ -586,6 +588,7 @@ def read_projects() -> list[ProjectStats]:
         "priced_tokens": 0,
         "week_priced_tokens": 0,
         "month_priced_tokens": 0,
+        "sessions": defaultdict(lambda: {"tokens": 0, "last": None, "models": defaultdict(TokenBreakdown)}),
     })
     seen_paths: set[Path] = set()
     path_projects = _thread_project_map()
@@ -617,6 +620,12 @@ def read_projects() -> list[ProjectStats]:
             item["last"] = mtime
         item["tokens"] += breakdown.total
         model = str(event.get("_codexu_model") or "")
+        session = item["sessions"][path]
+        session["tokens"] += breakdown.total
+        session_time = _event_date(timestamp, mtime)
+        if session["last"] is None or session_time > session["last"]:
+            session["last"] = session_time
+        add(session["models"][model], breakdown)
         day = _event_date(timestamp, mtime).date()
         add(item["breakdown"], breakdown)
         add(item["models"][model], breakdown)
@@ -635,6 +644,33 @@ def read_projects() -> list[ProjectStats]:
             add(item["month_models"][model], breakdown)
             if estimate_model_api_value(TokenBreakdown(), model) is not None:
                 item["month_priced_tokens"] += breakdown.total
+    def model_usage(by_model):
+        result = []
+        for model, tokens in by_model.items():
+            total = tokens.total
+            if not total:
+                continue
+            value = estimate_model_api_value(tokens, model)
+            result.append(ModelUsage(
+                name=model or "未知模型",
+                token_total=total,
+                estimated_value=value or 0.0,
+                pricing_coverage_pct=100.0 if value is not None else 0.0,
+            ))
+        return sorted(result, key=lambda item: item.token_total, reverse=True)
+
+    def session_usage(by_path):
+        result = []
+        for path, session in by_path.items():
+            models = model_usage(session["models"])
+            result.append(SessionUsage(
+                session_id=path.stem.replace("rollout-", "")[-12:],
+                token_total=session["tokens"],
+                last_active=session["last"],
+                model=models[0].name if models else "未知模型",
+            ))
+        return sorted(result, key=lambda item: item.last_active or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:100]
+
     result = [
         ProjectStats(
             name=name,
@@ -657,6 +693,8 @@ def read_projects() -> list[ProjectStats]:
             ),
             pricing_coverage_pct=item["priced_tokens"] / item["tokens"] * 100 if item["tokens"] else 0.0,
             source_label="精细统计",
+            model_usage=model_usage(item["models"]),
+            sessions=session_usage(item["sessions"]),
         )
         for name, item in data.items()
     ]

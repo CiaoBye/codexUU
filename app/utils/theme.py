@@ -23,6 +23,9 @@ QFrame#recentProjectRow { background: #121720; border: 0; border-radius: 6px; }
 QFrame#projectUsageRow { background: #1a202b; border: 1px solid #263142; border-radius: 8px; }
 QFrame#projectUsageRow:hover { background: #202a39; border-color: #3b5277; }
 QFrame#overviewMetric { background: #1a202b; border: 1px solid #263142; border-radius: 8px; }
+QDialog#projectDetailDialog { background: #111720; }
+QFrame#detailRow { background: #171d27; border: 1px solid #2b3546; border-radius: 8px; }
+QFrame#detailRow:hover { background: #202a39; border-color: #3b5277; }
 QLabel#projectRank { color: #748197; font-size: 10px; }
 QLabel#projectName { color: #f5f7fb; font-size: 11px; font-weight: 600; }
 QLabel#projectToken { color: #f8fafc; font-size: 12px; font-weight: 700; }
@@ -128,6 +131,9 @@ QFrame#recentProjectRow { background: #f8fafc; border: 0; border-radius: 6px; }
 QFrame#projectUsageRow { background: #f8faff; border: 1px solid #e2e8f2; border-radius: 8px; }
 QFrame#projectUsageRow:hover { background: #f2f6ff; border-color: #b7ccec; }
 QFrame#overviewMetric { background: #f8faff; border: 1px solid #e2e8f2; border-radius: 8px; }
+QDialog#projectDetailDialog { background: #f4f7fc; }
+QFrame#detailRow { background: #f8faff; border: 1px solid #e2e8f2; border-radius: 8px; }
+QFrame#detailRow:hover { background: #f2f6ff; border-color: #b7ccec; }
 QLabel#projectRank { color: #8a94a6; font-size: 10px; }
 QLabel#projectName { color: #26344b; font-size: 11px; font-weight: 600; }
 QLabel#projectToken { color: #172033; font-size: 12px; font-weight: 700; }

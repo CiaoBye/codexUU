@@ -90,9 +90,12 @@ class Surface(QFrame):
 
 
 class MetricCard(Surface):
+    activated = Signal()
+
     def __init__(self, label: str, icon: str, parent=None):
         super().__init__(parent=parent)
         self.setMinimumHeight(128)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(18)
         shadow.setOffset(0, 3)
@@ -203,6 +206,11 @@ class MetricCard(Surface):
                 f'<span style="color:#8d74ff">缓存 {values[1]}</span> · '
                 f'<span style="color:#e99a25">输出 {values[2]}</span>'
             )
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activated.emit()
+        super().mouseReleaseEvent(event)
 
 
 class QuotaDial(QWidget):
@@ -374,6 +382,11 @@ class MilestoneProgress(QWidget):
         self.value = 0.0
         self.reduce_motion = False
         self._animation = None
+        self._wave_phase = 0.0
+        self._wave_timer = QTimer(self)
+        self._wave_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._wave_timer.setInterval(650)
+        self._wave_timer.timeout.connect(self._advance_wave)
         self.setMinimumHeight(34)
 
     @staticmethod
@@ -389,6 +402,7 @@ class MilestoneProgress(QWidget):
 
     def set_value(self, value: float):
         target = max(0.0, value)
+        self._sync_wave_timer(target)
         if self.reduce_motion or self.value == 0:
             self.value = target
             self.update()
@@ -404,6 +418,22 @@ class MilestoneProgress(QWidget):
 
     def _set_animated_value(self, value):
         self.value = float(value)
+        self.update()
+
+    def set_reduce_motion(self, enabled):
+        self.reduce_motion = bool(enabled)
+        self._sync_wave_timer(self.value)
+        self.update()
+
+    def _sync_wave_timer(self, value):
+        if self.reduce_motion or value <= 0:
+            self._wave_timer.stop()
+            self._wave_phase = 0.0
+        elif not self._wave_timer.isActive():
+            self._wave_timer.start()
+
+    def _advance_wave(self):
+        self._wave_phase = (self._wave_phase + 0.17) % 1.0
         self.update()
 
     def paintEvent(self, event):
@@ -433,6 +463,14 @@ class MilestoneProgress(QWidget):
         if progress_x > previous_x:
             painter.setPen(QPen(previous_color, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawLine(int(previous_x), y, int(progress_x), y)
+        if progress_x > left and not self.reduce_motion:
+            wave_width = min(34.0, max(12.0, width * 0.07))
+            wave_x = left + (progress_x - left) * self._wave_phase
+            wave_left = max(float(left), wave_x - wave_width)
+            wave_right = min(progress_x, wave_x + wave_width)
+            if wave_right > wave_left:
+                painter.setPen(QPen(QColor(220, 235, 255, 150), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawLine(int(wave_left), y - 1, int(wave_right), y - 1)
         painter.setFont(QFont("Microsoft YaHei", 8))
         for label, amount in self.MILESTONES:
             x = left + width * self.position(amount)
@@ -484,7 +522,7 @@ class ValueCard(Surface):
         self._update_hint()
 
     def set_reduce_motion(self, enabled):
-        self.bar.reduce_motion = bool(enabled)
+        self.bar.set_reduce_motion(enabled)
 
     def _update_hint(self):
         if self.unpriced_tokens:
@@ -750,6 +788,14 @@ class DashboardWidget(QWidget):
         self.week_card = MetricCard("本周", "metric-week.svg")
         self.month_card = MetricCard("本月", "metric-month.svg")
         self.cumulative_card = MetricCard("累计", "metric-all.svg")
+        for card, mode in (
+            (self.today_card, "daily"),
+            (self.week_card, "weekly"),
+            (self.month_card, "monthly"),
+            (self.cumulative_card, "cumulative"),
+        ):
+            card.activated.connect(lambda value=mode: self._open_usage_mode(value))
+            card.setToolTip("点击查看对应 Token 用量")
         cards.addWidget(self.today_card, 1)
         cards.addWidget(self.week_card, 1)
         cards.addWidget(self.month_card, 1)
@@ -798,6 +844,10 @@ class DashboardWidget(QWidget):
         self.tab_bar.set_index(index)
         self.stack.animate_to(index)
         self._update_tab_summary()
+
+    def _open_usage_mode(self, mode):
+        self.trend_tab.set_mode(mode)
+        self._show_tab(1)
 
     def _set_theme(self, theme):
         if self.theme_manager:

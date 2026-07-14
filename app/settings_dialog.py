@@ -43,6 +43,10 @@ class StyledComboBox(QComboBox):
         self.setView(view)
         self.setMaxVisibleItems(7)
 
+    def wheelEvent(self, event):
+        # 设置项只允许通过点击后选择，避免滚轮经过时误改配置。
+        event.ignore()
+
 
 class ShortcutRecorder(QPushButton):
     sequence_changed = Signal(str)
@@ -147,6 +151,7 @@ class SettingsDialog(QDialog):
         self._update_thread = None
         self._update_worker = None
         self._latest_release = None
+        self._settings_dirty = False
 
         self.setObjectName("settingsDialog")
         self.setWindowTitle("CodexUU 设置")
@@ -177,11 +182,16 @@ class SettingsDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch()
-        self.close_btn = QPushButton("关闭")
-        self.close_btn.setObjectName("primaryButton")
-        self.close_btn.setMinimumWidth(96)
-        self.close_btn.clicked.connect(self.accept)
-        footer.addWidget(self.close_btn)
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setObjectName("iconButton")
+        self.cancel_btn.setMinimumWidth(84)
+        self.cancel_btn.clicked.connect(self.reject)
+        footer.addWidget(self.cancel_btn)
+        self.save_btn = QPushButton("保存设置")
+        self.save_btn.setObjectName("primaryButton")
+        self.save_btn.setMinimumWidth(104)
+        self.save_btn.clicked.connect(self._apply_settings)
+        footer.addWidget(self.save_btn)
         root.addLayout(footer)
         self._retranslate_ui()
 
@@ -246,6 +256,9 @@ class SettingsDialog(QDialog):
         self.desktop_status_cb = _check("在桌面显示状态悬浮窗", desktop_enabled)
         self.desktop_status_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.desktop_status_cb)
+        self.lightweight_mode_cb = _check("轻量模式（运行时不显示任务栏图标）", self.settings_manager.get_lightweight_mode())
+        self.lightweight_mode_cb.stateChanged.connect(self._save_window_preferences)
+        window_form.addRow(self.lightweight_mode_cb)
         self.close_combo = StyledComboBox()
         self.close_combo.addItem("隐藏到托盘", "tray")
         self.close_combo.addItem("最小化", "minimize")
@@ -391,34 +404,22 @@ class SettingsDialog(QDialog):
         return tab
 
     def _on_language_index(self, index):
-        language = "zh" if index == 0 else "en"
-        self.translation_manager.set_language(language)
-        self.settings_manager.set_language(language)
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _on_theme_index(self, index):
-        theme = {0: "auto", 1: "light", 2: "dark"}.get(index, "dark")
-        self.theme_manager.set_theme(theme)
-        self.settings_manager.set_theme(theme)
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _on_runtime_index(self, index):
-        runtime = self.runtime_combo.itemData(index) or "codex"
-        self.settings_manager.set_active_runtime(runtime)
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _save_update_preferences(self):
-        self.settings_manager.set_update_preferences(self.auto_update_cb.isChecked(), self.beta_cb.isChecked())
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _save_display_preferences(self):
-        self.settings_manager.set_quota_display(self.quota_combo.currentData() or "remaining")
-        self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _save_quota_alert(self):
-        self.settings_manager.set_quota_alert_threshold(self.quota_alert_combo.currentData() or 0)
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _save_shortcut(self, shortcut=None):
         shortcut = shortcut or self.shortcut_edit.sequence()
@@ -429,34 +430,96 @@ class SettingsDialog(QDialog):
                 else "请使用修饰键 + 字母、数字或 F 功能键。"
             )
             return
-        parent = self.parent()
-        if parent is not None and hasattr(parent, "try_register_shortcut"):
-            registered = parent.try_register_shortcut(shortcut)
-            if not registered:
-                self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
-                self.shortcut_status.setText(
-                    "Shortcut is occupied; choose another."
-                    if self.translation_manager.get_language() == "en"
-                    else "快捷键被占用，请更换组合。"
-                )
-                return
-        else:
-            registered = True
         self.shortcut_edit.set_sequence(shortcut)
-        self.settings_manager.set_shortcut(shortcut)
-        self.settings_manager.save()
         self.shortcut_status.setText(
-            ("Saved; active globally." if self.translation_manager.get_language() == "en" else "已保存并全局生效。")
-            if registered else
-            ("Shortcut is occupied; choose another." if self.translation_manager.get_language() == "en" else "快捷键被占用，请更换组合。")
+            "Will apply after saving." if self.translation_manager.get_language() == "en" else "保存设置后才会注册并生效。"
         )
+        self._mark_pending()
 
     def _save_window_preferences(self):
+        self._mark_pending()
+
+    def _mark_pending(self):
+        self._settings_dirty = True
+        self.save_btn.setEnabled(True)
+
+    def _apply_settings(self):
+        shortcut = self.shortcut_edit.sequence()
+        english = self.translation_manager.get_language() == "en"
+        if not parse_shortcut(shortcut):
+            self.shortcut_status.setText(
+                "Use a modifier plus a letter, number, or F-key." if english
+                else "请使用修饰键 + 字母、数字或 F 功能键。"
+            )
+            return
+        parent = self.parent()
+        if shortcut != self.settings_manager.get_shortcut() and parent is not None and hasattr(parent, "try_register_shortcut"):
+            if not parent.try_register_shortcut(shortcut):
+                self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
+                self.shortcut_status.setText(
+                    "Shortcut is occupied; choose another." if english else "快捷键被占用，请更换组合。"
+                )
+                return
+
+        language = "zh" if self.lang_combo.currentIndex() == 0 else "en"
+        theme = {0: "auto", 1: "light", 2: "dark"}.get(self.theme_combo.currentIndex(), "dark")
+        timezone_mode = self.timezone_combo.currentData() or "system"
+        timezone_identifier = self.timezone_edit.text().strip() or DEFAULT_FIXED_ZONE
+        self.settings_manager.set_language(language)
+        self.settings_manager.set_active_runtime(self.runtime_combo.currentData() or "codex")
+        self.settings_manager.set_update_preferences(self.auto_update_cb.isChecked(), self.beta_cb.isChecked())
+        self.settings_manager.set_shortcut(shortcut)
         self.settings_manager.set_window_preferences(
             self.always_on_top_cb.isChecked(), self.close_combo.currentData() or "tray",
         )
         self.settings_manager.set_desktop_status_enabled(self.desktop_status_cb.isChecked())
+        self.settings_manager.set_lightweight_mode(self.lightweight_mode_cb.isChecked())
+        self.settings_manager.set_quota_display(self.quota_combo.currentData() or "remaining")
+        self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())
+        self.settings_manager.set_quota_alert_threshold(self.quota_alert_combo.currentData() or 0)
+        self.settings_manager.set_statistics_timezone(timezone_mode, timezone_identifier)
+        configure_statistics_timezone(timezone_mode, timezone_identifier)
+        self.settings_manager.set_theme(theme)
+        self.translation_manager.set_language(language)
+        self.theme_manager.set_theme(theme)
+        self.theme_manager.apply_theme(QApplication.instance())
         self.settings_manager.save()
+        self._settings_dirty = False
+        self.accept()
+
+    def reject(self):
+        # 对话框会复用；取消时恢复为当前已保存配置，避免下次打开仍看到草稿。
+        controls = (
+            (self.lang_combo, 0 if self.settings_manager.get_language() == "zh" else 1),
+            (self.runtime_combo, max(0, self.runtime_combo.findData(self.settings_manager.get_active_runtime()))),
+            (self.theme_combo, {"auto": 0, "light": 1, "dark": 2}.get(self.settings_manager.get_theme(), 2)),
+            (self.quota_combo, 0 if self.settings_manager.get_quota_display() == "remaining" else 1),
+            (self.close_combo, max(0, self.close_combo.findData(self.settings_manager.get_window_preferences()[1]))),
+            (self.quota_alert_combo, max(0, self.quota_alert_combo.findData(self.settings_manager.get_quota_alert_threshold()))),
+        )
+        for combo, index in controls:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        mode, identifier = self.settings_manager.get_statistics_timezone()
+        self.timezone_combo.blockSignals(True)
+        self.timezone_combo.setCurrentIndex({"system": 0, "utc": 1, "fixed": 2}.get(mode, 0))
+        self.timezone_combo.blockSignals(False)
+        self.timezone_edit.setText(identifier)
+        self.timezone_edit.setEnabled(mode == "fixed")
+        auto_update, include_beta = self.settings_manager.get_update_preferences()
+        self.auto_update_cb.setChecked(auto_update)
+        self.beta_cb.setChecked(include_beta)
+        self.reduce_motion_cb.setChecked(self.settings_manager.get_reduce_motion())
+        always_on_top, _ = self.settings_manager.get_window_preferences()
+        self.always_on_top_cb.setChecked(always_on_top)
+        desktop_enabled, _ = self.settings_manager.get_desktop_status_preferences()
+        self.desktop_status_cb.setChecked(desktop_enabled)
+        self.lightweight_mode_cb.setChecked(self.settings_manager.get_lightweight_mode())
+        self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
+        self.shortcut_status.setText("")
+        self._settings_dirty = False
+        super().reject()
 
     def _refresh_diagnostics(self):
         symbols = {"ok": "●", "warning": "◆", "error": "×"}
@@ -500,19 +563,11 @@ class SettingsDialog(QDialog):
 
     def _on_timezone_index(self, index):
         mode = self.timezone_combo.itemData(index) or "system"
-        identifier = self.timezone_edit.text().strip() or DEFAULT_FIXED_ZONE
         self.timezone_edit.setEnabled(mode == "fixed")
-        self.settings_manager.set_statistics_timezone(mode, identifier)
-        configure_statistics_timezone(mode, identifier)
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _on_timezone_text_changed(self):
-        if self.timezone_combo.currentData() != "fixed":
-            return
-        identifier = self.timezone_edit.text().strip() or DEFAULT_FIXED_ZONE
-        self.settings_manager.set_statistics_timezone("fixed", identifier)
-        configure_statistics_timezone("fixed", identifier)
-        self.settings_manager.save()
+        self._mark_pending()
 
     def _check_for_update(self):
         if self._update_thread is not None:
@@ -576,7 +631,8 @@ class SettingsDialog(QDialog):
         self.tabs.setTabText(0, tr("general"))
         self.tabs.setTabText(1, tr("display"))
         self.tabs.setTabText(2, tr("system"))
-        self.close_btn.setText(tr("close"))
+        self.cancel_btn.setText("Cancel" if english else "取消")
+        self.save_btn.setText("Save settings" if english else "保存设置")
         self.preference_card.setTitle("Preferences" if english else "偏好")
         self.window_card.setTitle("Window & shortcut" if english else "窗口与快捷键")
         self.appearance_card.setTitle("Appearance" if english else "外观")
@@ -597,6 +653,7 @@ class SettingsDialog(QDialog):
         self.window_form.labelForField(self.shortcut_status).setText("Status" if english else "状态")
         self.always_on_top_cb.setText("Keep main window on top" if english else "主窗口始终置顶")
         self.desktop_status_cb.setText("Show desktop status panel" if english else "在桌面显示状态悬浮窗")
+        self.lightweight_mode_cb.setText("Lightweight mode (hide taskbar icon)" if english else "轻量模式（运行时不显示任务栏图标）")
         self.window_form.labelForField(self.close_combo).setText("Close main window" if english else "关闭主窗口")
         self.appearance_form.labelForField(self.display_note).setText("About" if english else "说明")
         self.display_note.setText(

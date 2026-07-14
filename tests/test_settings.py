@@ -17,6 +17,7 @@ def test_settings_manager_default_values():
         assert manager.get_window_preferences() == (False, "tray")
         assert manager.get_quota_alert_threshold() == 20
         assert manager.get_desktop_status_preferences() == (True, None)
+        assert manager.get_lightweight_mode() is True
 
 def test_settings_manager_save_and_load():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -33,6 +34,7 @@ def test_settings_manager_save_and_load():
         manager.set_quota_alert_threshold(30)
         manager.set_desktop_status_enabled(True)
         manager.set_desktop_status_position(120, 240)
+        manager.set_lightweight_mode(False)
         manager.save()
         
         manager2 = SettingsManager(config_path)
@@ -47,6 +49,7 @@ def test_settings_manager_save_and_load():
         assert manager2.get_window_preferences() == (True, "minimize")
         assert manager2.get_quota_alert_threshold() == 30
         assert manager2.get_desktop_status_preferences() == (True, (120, 240))
+        assert manager2.get_lightweight_mode() is False
 
 def test_settings_manager_missing_file():
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -45,6 +45,7 @@ class MainAppWindow(QMainWindow):
         self.hotkey_registered = False
         self._applied_shortcut = ""
         self._always_on_top = False
+        self._lightweight_mode = False
         if self.theme_manager:
             self.theme_manager.add_listener(self._apply_manager_theme)
         if self.settings_manager:
@@ -68,12 +69,16 @@ class MainAppWindow(QMainWindow):
         if not self.settings_manager:
             return
         always_on_top, _ = self.settings_manager.get_window_preferences()
-        if always_on_top != self._always_on_top:
+        lightweight_mode = self.settings_manager.get_lightweight_mode()
+        if always_on_top != self._always_on_top or lightweight_mode != self._lightweight_mode:
             was_visible = self.isVisible()
             flags = self.windowFlags()
+            flags &= ~Qt.WindowType.WindowType_Mask
+            flags |= Qt.WindowType.Tool if lightweight_mode else Qt.WindowType.Window
             flags = flags | Qt.WindowType.WindowStaysOnTopHint if always_on_top else flags & ~Qt.WindowType.WindowStaysOnTopHint
             self.setWindowFlags(flags)
             self._always_on_top = always_on_top
+            self._lightweight_mode = lightweight_mode
             if was_visible:
                 self.show()
         shortcut = self.settings_manager.get_shortcut()

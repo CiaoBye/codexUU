@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QRectF, Signal, QObject
+from PySide6.QtCore import QPoint, Qt, QRectF, Signal, QObject
 from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.data.models import MultiRuntimeUsageSnapshot, format_tokens
+from app.desktop_status import DesktopStatusPanel
 
 
 def _quota_text(quota, prefix):
@@ -112,11 +113,16 @@ class TrayManager(QObject):
         self._icon_key = None
         self._quota_alerts: set[tuple[str, str, str]] = set()
         self.panel = TrayQuickPanel()
+        self.desktop_panel = DesktopStatusPanel()
         self.panel.show_main.connect(self._open_main)
         self.panel.show_settings.connect(self._open_settings)
+        self.desktop_panel.show_main.connect(self._open_main)
+        self.desktop_panel.hide_requested.connect(self._hide_desktop_status)
+        self.desktop_panel.position_changed.connect(self._save_desktop_status_position)
         self._setup_tray()
         if self.settings_manager:
-            self.settings_manager.add_listener(self._refresh_status_icon)
+            self.settings_manager.add_listener(self._on_settings_changed)
+        self._sync_desktop_status()
 
     def _setup_tray(self):
         icon_path = Path(__file__).resolve().parents[1] / "resources" / "icons" / "codexu-logo.svg"
@@ -129,6 +135,10 @@ class TrayManager(QObject):
         quick_action = QAction("快速状态", menu)
         quick_action.triggered.connect(self.toggle_panel)
         menu.addAction(quick_action)
+        self.desktop_action = QAction("桌面悬浮状态", menu)
+        self.desktop_action.setCheckable(True)
+        self.desktop_action.toggled.connect(self._set_desktop_status_enabled)
+        menu.addAction(self.desktop_action)
         settings_action = QAction("设置", menu)
         settings_action.triggered.connect(self._open_settings)
         menu.addAction(settings_action)
@@ -179,9 +189,64 @@ class TrayManager(QObject):
         self.panel.hide()
         self.show_settings.emit()
 
+    def _on_settings_changed(self):
+        self._refresh_status_icon()
+        self._sync_desktop_status()
+
+    def _set_desktop_status_enabled(self, enabled):
+        if not self.settings_manager:
+            return
+        self.settings_manager.set_desktop_status_enabled(enabled)
+        self.settings_manager.save()
+
+    def _hide_desktop_status(self):
+        if self.settings_manager:
+            self.settings_manager.set_desktop_status_enabled(False)
+            self.settings_manager.save()
+        else:
+            self.desktop_panel.hide()
+
+    def _save_desktop_status_position(self, position):
+        if self.settings_manager:
+            self.settings_manager.set_desktop_status_position(position.x(), position.y())
+            self.settings_manager.save()
+
+    def _sync_desktop_status(self):
+        enabled = False
+        position = None
+        if self.settings_manager:
+            enabled, position = self.settings_manager.get_desktop_status_preferences()
+        if hasattr(self, "desktop_action"):
+            blocked = self.desktop_action.blockSignals(True)
+            self.desktop_action.setChecked(enabled)
+            self.desktop_action.blockSignals(blocked)
+        if not enabled:
+            self.desktop_panel.hide()
+            return
+        if not self.desktop_panel.isVisible():
+            self._place_desktop_status(position)
+            self.desktop_panel.show()
+        self.desktop_panel.raise_()
+
+    def _place_desktop_status(self, position):
+        point = QPoint(*position) if position is not None else QCursor.pos()
+        screen = QApplication.screenAt(point) or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        available = screen.availableGeometry()
+        if position is None:
+            x = available.right() - self.desktop_panel.width() - 18
+            y = available.top() + 56
+        else:
+            x, y = position
+        x = min(max(available.left() + 8, x), available.right() - self.desktop_panel.width() - 8)
+        y = min(max(available.top() + 8, y), available.bottom() - self.desktop_panel.height() - 8)
+        self.desktop_panel.move(x, y)
+
     def update_data(self, data):
         self.data = data
         self.panel.update_data(data)
+        runtime = self.settings_manager.get_active_runtime() if self.settings_manager else "codex"
+        snapshot = data.claude_code if runtime == "claudeCode" else data.codex
+        self.desktop_panel.update_snapshot(runtime, snapshot)
         self._refresh_status_icon()
         self._notify_quota_alerts()
 

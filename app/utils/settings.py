@@ -16,6 +16,7 @@ DEFAULT_REDUCE_MOTION = False
 DEFAULT_ALWAYS_ON_TOP = False
 DEFAULT_CLOSE_BEHAVIOR = "tray"
 DEFAULT_QUOTA_ALERT_THRESHOLD = 20
+DEFAULT_DESKTOP_STATUS_ENABLED = True
 
 class SettingsManager:
     def __init__(self, config_path: Path):
@@ -33,6 +34,8 @@ class SettingsManager:
         self.always_on_top = DEFAULT_ALWAYS_ON_TOP
         self.close_behavior = DEFAULT_CLOSE_BEHAVIOR
         self.quota_alert_threshold = DEFAULT_QUOTA_ALERT_THRESHOLD
+        self.desktop_status_enabled = DEFAULT_DESKTOP_STATUS_ENABLED
+        self.desktop_status_position: tuple[int, int] | None = None
         self.listeners: list[Callable] = []
     
     def get_language(self) -> str:
@@ -65,6 +68,9 @@ class SettingsManager:
     def get_quota_alert_threshold(self) -> int:
         return self.quota_alert_threshold
 
+    def get_desktop_status_preferences(self) -> tuple[bool, tuple[int, int] | None]:
+        return self.desktop_status_enabled, self.desktop_status_position
+
     def set_active_runtime(self, runtime: str):
         if runtime in ("codex", "claudeCode"):
             self.active_runtime = runtime
@@ -96,6 +102,14 @@ class SettingsManager:
         except (TypeError, ValueError):
             value = DEFAULT_QUOTA_ALERT_THRESHOLD
         self.quota_alert_threshold = value if value in (0, 10, 20, 30, 50) else DEFAULT_QUOTA_ALERT_THRESHOLD
+        self._notify_listeners()
+
+    def set_desktop_status_enabled(self, enabled: bool):
+        self.desktop_status_enabled = bool(enabled)
+        self._notify_listeners()
+
+    def set_desktop_status_position(self, x: int, y: int):
+        self.desktop_status_position = (int(x), int(y))
         self._notify_listeners()
 
     def set_update_preferences(self, auto_update: bool, include_beta: bool):
@@ -137,6 +151,8 @@ class SettingsManager:
                 always_on_top = data.get("always_on_top", DEFAULT_ALWAYS_ON_TOP)
                 close_behavior = data.get("close_behavior", DEFAULT_CLOSE_BEHAVIOR)
                 quota_alert_threshold = data.get("quota_alert_threshold", DEFAULT_QUOTA_ALERT_THRESHOLD)
+                desktop_status_enabled = data.get("desktop_status_enabled", DEFAULT_DESKTOP_STATUS_ENABLED)
+                desktop_status_position = data.get("desktop_status_position")
                 self.language = language if language in ("zh", "en") else DEFAULT_LANGUAGE
                 self.theme = theme if theme in ("auto", "light", "dark") else DEFAULT_THEME
                 self.statistics_timezone = timezone_mode if timezone_mode in ("system", "utc", "fixed") else DEFAULT_STATISTICS_TIMEZONE
@@ -150,7 +166,13 @@ class SettingsManager:
                 self.always_on_top = bool(always_on_top)
                 self.close_behavior = close_behavior if close_behavior in ("tray", "minimize", "quit") else DEFAULT_CLOSE_BEHAVIOR
                 self.set_quota_alert_threshold(quota_alert_threshold)
-            except (OSError, json.JSONDecodeError, TypeError):
+                self.desktop_status_enabled = bool(desktop_status_enabled)
+                self.desktop_status_position = (
+                    (int(desktop_status_position[0]), int(desktop_status_position[1]))
+                    if isinstance(desktop_status_position, list) and len(desktop_status_position) == 2
+                    else None
+                )
+            except (OSError, ValueError, json.JSONDecodeError, TypeError):
                 self.language = DEFAULT_LANGUAGE
                 self.theme = DEFAULT_THEME
                 self.statistics_timezone = DEFAULT_STATISTICS_TIMEZONE
@@ -164,6 +186,8 @@ class SettingsManager:
                 self.always_on_top = DEFAULT_ALWAYS_ON_TOP
                 self.close_behavior = DEFAULT_CLOSE_BEHAVIOR
                 self.quota_alert_threshold = DEFAULT_QUOTA_ALERT_THRESHOLD
+                self.desktop_status_enabled = DEFAULT_DESKTOP_STATUS_ENABLED
+                self.desktop_status_position = None
     
     def save(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,6 +205,8 @@ class SettingsManager:
             "always_on_top": self.always_on_top,
             "close_behavior": self.close_behavior,
             "quota_alert_threshold": self.quota_alert_threshold,
+            "desktop_status_enabled": self.desktop_status_enabled,
+            "desktop_status_position": list(self.desktop_status_position) if self.desktop_status_position else None,
         }
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

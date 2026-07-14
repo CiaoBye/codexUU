@@ -1,10 +1,22 @@
 name: Windows Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "要构建的 Git ref（分支、提交或标签）"
+        required: true
+        default: "main"
+        type: string
+      publish_release:
+        description: "构建完成后发布 GitHub Release"
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: "发布 Release 时使用的标签，例如 v0.1.06"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -14,6 +26,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -28,9 +42,19 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           .\scripts\build_windows.ps1 -Version $version -Installer
           Get-FileHash "dist\installer\CodexUU-$version-win-x64-setup.exe" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content "dist\installer\CodexUU-$version-win-x64-setup.exe.sha256"
+      - name: Validate release inputs
+        if: inputs.publish_release
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace("${{ inputs.release_tag }}")) {
+            throw "发布 Release 时必须填写 release_tag。"
+          }
       - name: Publish GitHub Release
+        if: inputs.publish_release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag }}
+          target_commitish: ${{ inputs.ref }}
           generate_release_notes: true
           files: |
             dist/installer/*.exe

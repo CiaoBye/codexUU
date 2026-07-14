@@ -242,6 +242,10 @@ class SettingsDialog(QDialog):
         self.always_on_top_cb = _check("主窗口始终置顶", always_on_top)
         self.always_on_top_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.always_on_top_cb)
+        desktop_enabled, _ = self.settings_manager.get_desktop_status_preferences()
+        self.desktop_status_cb = _check("在桌面显示状态悬浮窗", desktop_enabled)
+        self.desktop_status_cb.stateChanged.connect(self._save_window_preferences)
+        window_form.addRow(self.desktop_status_cb)
         self.close_combo = StyledComboBox()
         self.close_combo.addItem("隐藏到托盘", "tray")
         self.close_combo.addItem("最小化", "minimize")
@@ -451,6 +455,7 @@ class SettingsDialog(QDialog):
         self.settings_manager.set_window_preferences(
             self.always_on_top_cb.isChecked(), self.close_combo.currentData() or "tray",
         )
+        self.settings_manager.set_desktop_status_enabled(self.desktop_status_cb.isChecked())
         self.settings_manager.save()
 
     def _refresh_diagnostics(self):
@@ -591,6 +596,7 @@ class SettingsDialog(QDialog):
         self.shortcut_reset.setText("Reset" if english else "恢复默认")
         self.window_form.labelForField(self.shortcut_status).setText("Status" if english else "状态")
         self.always_on_top_cb.setText("Keep main window on top" if english else "主窗口始终置顶")
+        self.desktop_status_cb.setText("Show desktop status panel" if english else "在桌面显示状态悬浮窗")
         self.window_form.labelForField(self.close_combo).setText("Close main window" if english else "关闭主窗口")
         self.appearance_form.labelForField(self.display_note).setText("About" if english else "说明")
         self.display_note.setText(

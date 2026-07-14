@@ -80,6 +80,12 @@ QLabel#negativeBadge { background: #40252b; color: #ff8190; border: 0; border-ra
 QLabel#neutralBadge { background: #252d3b; color: #aab6c8; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QFrame#trayPanel { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #1b2230,stop:1 #121720); border: 1px solid #334056; border-radius: 14px; }
 QFrame#trayRuntimeCard { background: #171d27; border: 1px solid #2b3546; border-radius: 9px; }
+QWidget#desktopStatusPanel { background: transparent; }
+QFrame#desktopStatusShell { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #1d2636,stop:0.65 #161d2a,stop:1 #151924); border: 1px solid #3a4c68; border-radius: 14px; }
+QLabel#desktopStatusValue { color: #f5f8ff; font-family: "Segoe UI Variable"; font-size: 22px; font-weight: 700; }
+QLabel#desktopStatusQuota { color: #a9c2eb; background: #111721; border: 1px solid #2c3b52; border-radius: 7px; padding: 7px 8px; }
+QPushButton#desktopStatusButton { background: #263650; color: #dce8ff; border: 1px solid #3f5678; border-radius: 6px; padding: 4px 8px; font-size: 10px; }
+QPushButton#desktopStatusButton:hover { background: #34517e; border-color: #5e91f4; }
 QLabel#diagnosticText { color: #aab6c8; background: #121720; border: 1px solid #283142; border-radius: 8px; padding: 10px; line-height: 1.4; }
 QPushButton#iconButton, QToolButton#iconButton { background: #171d27; color: #aab6c8; border: 1px solid #2b3546; border-radius: 7px; padding: 6px; }
 QPushButton#iconButton:hover, QToolButton#iconButton:hover { background: #243044; color: #ffffff; }
@@ -188,6 +194,12 @@ QLabel#negativeBadge { background: #fff0f1; color: #c44756; border: 0; border-ra
 QLabel#neutralBadge { background: #edf2f9; color: #667085; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QFrame#trayPanel { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ffffff,stop:1 #f7f9fd); border: 1px solid #ced9e9; border-radius: 14px; }
 QFrame#trayRuntimeCard { background: #f7f9fd; border: 1px solid #dce4ef; border-radius: 9px; }
+QWidget#desktopStatusPanel { background: transparent; }
+QFrame#desktopStatusShell { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #ffffff,stop:0.65 #f5f8fe,stop:1 #eef3fb); border: 1px solid #bfd0e9; border-radius: 14px; }
+QLabel#desktopStatusValue { color: #172744; font-family: "Segoe UI Variable"; font-size: 22px; font-weight: 700; }
+QLabel#desktopStatusQuota { color: #55719e; background: #edf3fc; border: 1px solid #d1deef; border-radius: 7px; padding: 7px 8px; }
+QPushButton#desktopStatusButton { background: #eef4ff; color: #28569e; border: 1px solid #c9d9f1; border-radius: 6px; padding: 4px 8px; font-size: 10px; }
+QPushButton#desktopStatusButton:hover { background: #dceaff; border-color: #75a1e4; }
 QLabel#diagnosticText { color: #526071; background: #f8fafc; border: 1px solid #dfe5ee; border-radius: 8px; padding: 10px; line-height: 1.4; }
 QPushButton#iconButton, QToolButton#iconButton { background: #ffffff; color: #667085; border: 1px solid #d7dfeb; border-radius: 7px; padding: 6px; }
 QPushButton#iconButton:hover, QToolButton#iconButton:hover { background: #edf2f9; color: #26344b; }

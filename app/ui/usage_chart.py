@@ -27,7 +27,6 @@ from app.data.models import (
     TokenBreakdown,
     estimate_model_api_value,
     format_tokens,
-    model_provider,
     pricing_source_for_model,
     prices_for_model,
 )
@@ -455,9 +454,6 @@ class UsageTrendWidget(QWidget):
         self.model_detail_value.setObjectName("modelUsageValue")
         detail_header.addWidget(self.model_detail_value)
         detail_layout.addLayout(detail_header)
-        self.model_detail_provider = QLabel("")
-        self.model_detail_provider.setObjectName("modelProviderBadge")
-        detail_layout.addWidget(self.model_detail_provider)
         self.model_detail_meta = QLabel("")
         self.model_detail_meta.setObjectName("metricHint")
         self.model_detail_meta.setWordWrap(True)
@@ -616,7 +612,6 @@ class UsageTrendWidget(QWidget):
             self.model_detail_title.setText("Model details" if english else "模型详情")
             self.model_detail_meta.setText("")
             self.model_detail_value.setText("0")
-            self.model_detail_provider.setText("")
             for value_label, name_label in self.model_metric_labels:
                 value_label.setText("0")
                 name_label.setText("")
@@ -634,14 +629,11 @@ class UsageTrendWidget(QWidget):
         original, period, points = selected
         effort = _effort_label(original.effort, english)
         self.model_detail_title.setText(f"{_model_label(original.name)} · {effort}")
-        provider = model_provider(original.name)
         source = pricing_source_for_model(original.name)
         priced = prices_for_model(original.name) is not None
         value_text = f"${period.estimated_value:,.2f}" if priced else ("Unpriced" if english else "未计价")
         self.model_detail_value.setText(f"{format_tokens(period.token_total)} · {value_text}")
-        price_state = ("Official price matched" if english else "已匹配官方价格") if priced else ("Unpriced" if english else "未计价")
-        self.model_detail_provider.setText(f"{provider} · {price_state} · {range_text}")
-        self.model_detail_provider.setToolTip(source or ("No exact official price for this model ID" if english else "未找到与该模型 ID 精确匹配的官方价格"))
+        self.model_detail_value.setToolTip(source or ("No exact official price for this model ID" if english else "未找到与该模型 ID 精确匹配的官方价格"))
         share = period.token_total / max(1, total) * 100
         last_active = original.last_active.strftime("%m/%d %H:%M") if original.last_active else "--"
         self.model_detail_meta.setText(

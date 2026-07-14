@@ -53,7 +53,6 @@ QFrame#modelUsageRow:hover { background: #1d2736; border-color: #425a80; }
 QFrame#modelUsageRow[selected="true"] { background: #202d45; border-color: #5e91f4; }
 QLabel#modelUsageName { color: #f3f6fb; font-size: 11px; font-weight: 650; }
 QLabel#modelUsageValue { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 13px; font-weight: 700; }
-QLabel#modelProviderBadge { color: #9db8e8; background: #1d2940; border: 1px solid #304465; border-radius: 7px; padding: 4px 8px; }
 QFrame#modelMetricTile { background: #131a25; border: 1px solid #283246; border-radius: 8px; }
 QFrame#modelMetricTile[tone="uncachedMetric"] { border-left: 3px solid #3f95ff; }
 QFrame#modelMetricTile[tone="cachedMetric"] { border-left: 3px solid #8d74ff; }
@@ -178,7 +177,6 @@ QFrame#modelUsageRow:hover { background: #f1f6ff; border-color: #b7ccec; }
 QFrame#modelUsageRow[selected="true"] { background: #eaf2ff; border-color: #6d9dff; }
 QLabel#modelUsageName { color: #26344b; font-size: 11px; font-weight: 650; }
 QLabel#modelUsageValue { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 13px; font-weight: 700; }
-QLabel#modelProviderBadge { color: #42618f; background: #eef4ff; border: 1px solid #d5e2f5; border-radius: 7px; padding: 4px 8px; }
 QFrame#modelMetricTile { background: #f8faff; border: 1px solid #dfe6f2; border-radius: 8px; }
 QFrame#modelMetricTile[tone="uncachedMetric"] { border-left: 3px solid #3f95ff; }
 QFrame#modelMetricTile[tone="cachedMetric"] { border-left: 3px solid #8d74ff; }

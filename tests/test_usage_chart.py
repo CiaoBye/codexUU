@@ -49,6 +49,7 @@ def test_model_period_counts_and_tokens_follow_selected_mode():
         turn_activity={"new": now, "old": old},
     )
     widget = UsageTrendWidget()
+    assert not hasattr(widget, "model_detail_provider")
     widget.mode = "daily"
     period, _points = widget._period_model(model)
     assert period.token_total == 100

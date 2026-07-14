@@ -2,21 +2,37 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QRadialGradient
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QPoint, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QActionGroup,
+    QColor,
+    QContextMenuEvent,
+    QFont,
+    QFontMetrics,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QRadialGradient,
+)
+from PySide6.QtWidgets import QMenu, QWidget
 
 from app.data.models import format_tokens
 from app.utils.statistics_timezone import get_statistics_timezone
 
 
 class DesktopStatusPanel(QWidget):
-    """可拖动的圆形桌面状态窗，只呈现当前 Runtime 的本机可验证状态。"""
+    """可拖动的桌面额度窗；双击打开主窗，右键调整样式与尺寸。"""
 
     show_main = Signal()
     position_changed = Signal(QPoint)
+    style_change_requested = Signal(str)
+    size_change_requested = Signal(str)
+    hide_requested = Signal()
 
-    _SIZES = {"orb": 158, "halo": 174, "mini": 108}
+    _BASE_SIZES = {"orb": 176, "halo": 188, "mini": 116}
+    _SIZE_FACTORS = {"small": 0.86, "medium": 1.0, "large": 1.18}
+    _STYLE_LABELS = {"orb": "信息圆盘", "halo": "双环仪表", "mini": "极简圆环"}
+    _SIZE_LABELS = {"small": "小", "medium": "中", "large": "大"}
 
     def __init__(self, parent=None):
         flags = (
@@ -32,17 +48,31 @@ class DesktopStatusPanel(QWidget):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._drag_start: QPoint | None = None
         self._style = "orb"
+        self._size = "medium"
+        self._theme = "dark"
         self._runtime = "Codex"
         self._today = "0"
         self._quota = None
         self._quota_label = "--"
         self._reset_label = ""
-        self.set_style(self._style)
+        self._apply_geometry()
 
     def set_style(self, style: str):
-        self._style = style if style in self._SIZES else "orb"
-        size = self._SIZES[self._style]
-        self.setFixedSize(size, size)
+        self._style = style if style in self._BASE_SIZES else "orb"
+        self._apply_geometry()
+
+    def set_display_size(self, size: str):
+        self._size = size if size in self._SIZE_FACTORS else "medium"
+        self._apply_geometry()
+
+    def set_theme(self, theme: str):
+        self._theme = "light" if theme == "light" else "dark"
+        self.update()
+
+    def _apply_geometry(self):
+        diameter = round(self._BASE_SIZES[self._style] * self._SIZE_FACTORS[self._size])
+        self.setFixedSize(diameter, diameter)
+        self.updateGeometry()
         self.update()
 
     def update_snapshot(self, runtime: str, snapshot):
@@ -53,11 +83,12 @@ class DesktopStatusPanel(QWidget):
         self._quota_label = "7D" if snapshot.quota_7d else "5H" if snapshot.quota_5h else "--"
         self._reset_label = self._format_reset(quota)
         if quota is None:
-            tip = f"{self._runtime}\n暂无可验证额度窗口\n双击打开主窗口"
+            tip = f"{self._runtime}\n暂无可验证额度窗口\n双击打开主窗口 · 右键调整样式"
         else:
             tip = (
                 f"{self._runtime}\n{self._quota_label} 剩余 {quota.remaining_pct:.0f}%"
-                f"\n今日 {self._today}\n{self._reset_label or '重置时间未知'}\n双击打开主窗口"
+                f"\n今日 {self._today}\n{self._reset_label or '重置时间未知'}"
+                "\n双击打开主窗口 · 右键调整样式"
             )
         self.setToolTip(tip)
         self.update()
@@ -69,67 +100,109 @@ class DesktopStatusPanel(QWidget):
         local_time: datetime = quota.reset_time.astimezone(get_statistics_timezone().tzinfo())
         return f"重置 {local_time.strftime('%m/%d %H:%M')}"
 
-    def _is_dark(self) -> bool:
-        return self.palette().color(self.backgroundRole()).lightness() < 128
+    def _scaled_font(self, family: str, pixels: float, weight=QFont.Weight.Normal) -> QFont:
+        font = QFont(family)
+        font.setPixelSize(max(8, round(pixels * self.width() / self._BASE_SIZES[self._style])))
+        font.setWeight(weight)
+        return font
+
+    @staticmethod
+    def _draw_centered(painter: QPainter, rect: QRectF, text: str, font: QFont, color: QColor):
+        painter.setFont(font)
+        painter.setPen(color)
+        metrics = QFontMetrics(font)
+        available = max(0, round(rect.width()) - 6)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, metrics.elidedText(text, Qt.TextElideMode.ElideRight, available))
 
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        dark = self._is_dark()
-        surface = QColor("#182131") if dark else QColor("#f8fbff")
-        edge = QColor("#3a4860") if dark else QColor("#c8d7ec")
-        track = QColor("#2b3547") if dark else QColor("#e5eaf2")
-        primary = QColor("#8b6df5")
-        secondary = QColor("#3b9df5")
-        text = QColor("#f3f6fc") if dark else QColor("#16233a")
-        muted = QColor("#95a5be") if dark else QColor("#637998")
+        dark = self._theme == "dark"
+        surface = QColor("#151d2b") if dark else QColor("#ffffff")
+        inner = QColor("#1b2536") if dark else QColor("#f7f9fd")
+        edge = QColor("#354258") if dark else QColor("#d6e0ee")
+        track = QColor("#2c3749") if dark else QColor("#e7ebf2")
+        primary = QColor("#8b72ff") if dark else QColor("#705cf2")
+        secondary = QColor("#44a2ff") if dark else QColor("#3188e8")
+        text = QColor("#f5f7fb") if dark else QColor("#18243a")
+        muted = QColor("#9cabc1") if dark else QColor("#667995")
 
-        size = min(self.width(), self.height())
-        bounds = self.rect().adjusted(5, 5, -5, -5)
+        diameter = min(self.width(), self.height())
+        shadow = QRectF(7, 9, diameter - 14, diameter - 14)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 55 if dark else 28))
+        painter.drawEllipse(shadow.translated(0, 2))
+
+        bounds = QRectF(6, 6, diameter - 12, diameter - 12)
         if self._style == "halo":
-            gradient = QRadialGradient(bounds.center(), size * 0.58)
-            gradient.setColorAt(0, QColor("#514397") if dark else QColor("#e9e1ff"))
-            gradient.setColorAt(0.62, surface)
-            gradient.setColorAt(1, QColor(surface.red(), surface.green(), surface.blue(), 0))
-            painter.setBrush(gradient)
-            painter.setPen(Qt.PenStyle.NoPen)
+            glow = QRadialGradient(bounds.center(), diameter * 0.56)
+            glow.setColorAt(0, QColor(94, 74, 190, 100 if dark else 45))
+            glow.setColorAt(0.72, QColor(surface.red(), surface.green(), surface.blue(), 245))
+            glow.setColorAt(1, QColor(surface.red(), surface.green(), surface.blue(), 0))
+            painter.setBrush(glow)
             painter.drawEllipse(bounds)
 
         painter.setBrush(surface)
-        painter.setPen(QPen(edge, 1))
-        painter.drawEllipse(bounds)
-        ring_margin = 19 if self._style != "mini" else 13
+        painter.setPen(QPen(edge, max(1.0, diameter / 180)))
+        painter.drawEllipse(bounds.adjusted(2, 2, -2, -2))
+
+        ring_margin = diameter * (0.105 if self._style != "mini" else 0.12)
         ring = bounds.adjusted(ring_margin, ring_margin, -ring_margin, -ring_margin)
-        ring_width = 10 if self._style != "mini" else 8
+        ring_width = diameter * (0.055 if self._style != "mini" else 0.065)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(track, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawArc(ring, 0, 360 * 16)
         if self._quota is not None:
             painter.setPen(QPen(primary, ring_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawArc(ring, 90 * 16, -int(360 * 16 * self._quota.remaining_pct / 100))
         if self._style == "halo" and self._quota is not None:
-            outer = ring.adjusted(-12, -12, 12, 12)
-            painter.setPen(QPen(QColor(secondary.red(), secondary.green(), secondary.blue(), 125), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawArc(outer, 98 * 16, -int(300 * 16 * self._quota.remaining_pct / 100))
+            outer = ring.adjusted(-diameter * 0.07, -diameter * 0.07, diameter * 0.07, diameter * 0.07)
+            painter.setPen(QPen(QColor(secondary.red(), secondary.green(), secondary.blue(), 150), max(2.0, diameter * 0.018), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(outer, 90 * 16, -int(360 * 16 * self._quota.remaining_pct / 100))
 
-        if self._style != "mini":
-            painter.setPen(muted)
-            painter.setFont(QFont("Segoe UI Variable", 8, QFont.Weight.DemiBold))
-            painter.drawText(bounds.adjusted(0, 14, 0, 0), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, self._runtime)
+        inner_bounds = ring.adjusted(ring_width * 0.55, ring_width * 0.55, -ring_width * 0.55, -ring_width * 0.55)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(inner)
+        painter.drawEllipse(inner_bounds)
+
         value = "--" if self._quota is None else f"{self._quota.remaining_pct:.0f}%"
-        painter.setPen(text)
-        painter.setFont(QFont("Segoe UI Variable Display", 18 if self._style != "mini" else 15, QFont.Weight.Bold))
-        value_rect = bounds.adjusted(0, -8 if self._style != "mini" else -2, 0, 10)
-        painter.drawText(value_rect, Qt.AlignmentFlag.AlignCenter, value)
-        painter.setPen(muted)
-        painter.setFont(QFont("Segoe UI Variable", 8, QFont.Weight.DemiBold))
-        label_rect = bounds.adjusted(0, 25 if self._style != "mini" else 17, 0, 0)
-        painter.drawText(label_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, self._quota_label)
-        if self._style != "mini":
-            painter.setFont(QFont("Microsoft YaHei", 8))
-            painter.drawText(bounds.adjusted(0, 0, 0, -25), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, f"今日 {self._today}")
-            painter.setFont(QFont("Microsoft YaHei", 7))
-            painter.drawText(bounds.adjusted(0, 0, 0, -10), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, self._reset_label)
+        if self._style == "mini":
+            self._draw_centered(painter, QRectF(0, diameter * 0.24, diameter, diameter * 0.18), self._quota_label, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold), muted)
+            self._draw_centered(painter, QRectF(0, diameter * 0.40, diameter, diameter * 0.28), value, self._scaled_font("Segoe UI Variable Display", 22, QFont.Weight.Bold), text)
+        else:
+            self._draw_centered(painter, QRectF(diameter * 0.19, diameter * 0.18, diameter * 0.62, diameter * 0.13), self._runtime, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold), muted)
+            self._draw_centered(painter, QRectF(diameter * 0.19, diameter * 0.31, diameter * 0.62, diameter * 0.12), self._quota_label, self._scaled_font("Segoe UI Variable", 9, QFont.Weight.Bold), primary)
+            self._draw_centered(painter, QRectF(diameter * 0.16, diameter * 0.40, diameter * 0.68, diameter * 0.22), value, self._scaled_font("Segoe UI Variable Display", 24, QFont.Weight.Bold), text)
+            self._draw_centered(painter, QRectF(diameter * 0.20, diameter * 0.62, diameter * 0.60, diameter * 0.12), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), muted)
+            reset = self._reset_label or "重置时间未知"
+            self._draw_centered(painter, QRectF(diameter * 0.15, diameter * 0.73, diameter * 0.70, diameter * 0.12), reset, self._scaled_font("Microsoft YaHei", 7), muted)
         painter.end()
+
+    def contextMenuEvent(self, event: QContextMenuEvent):
+        menu = QMenu(self)
+        style_menu = menu.addMenu("显示样式")
+        style_group = QActionGroup(style_menu)
+        style_group.setExclusive(True)
+        for key, label in self._STYLE_LABELS.items():
+            action = style_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == self._style)
+            action.triggered.connect(lambda _checked=False, value=key: self.style_change_requested.emit(value))
+            style_group.addAction(action)
+        size_menu = menu.addMenu("悬浮窗大小")
+        size_group = QActionGroup(size_menu)
+        size_group.setExclusive(True)
+        for key, label in self._SIZE_LABELS.items():
+            action = size_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == self._size)
+            action.triggered.connect(lambda _checked=False, value=key: self.size_change_requested.emit(value))
+            size_group.addAction(action)
+        menu.addSeparator()
+        menu.addAction("打开主窗口", self.show_main.emit)
+        menu.addAction("隐藏悬浮窗", self.hide_requested.emit)
+        menu.exec(event.globalPos())
+        event.accept()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:

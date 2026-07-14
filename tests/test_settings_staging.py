@@ -23,12 +23,15 @@ def test_setting_controls_apply_only_after_save(tmp_path):
     dialog.quota_alert_combo.setCurrentIndex(dialog.quota_alert_combo.findData(30))
     dialog.desktop_status_cb.setChecked(False)
     dialog.desktop_style_combo.setCurrentIndex(dialog.desktop_style_combo.findData("mini"))
+    dialog.desktop_size_combo.setCurrentIndex(dialog.desktop_size_combo.findData("large"))
     assert manager.get_quota_alert_threshold() == 20
     assert manager.get_desktop_status_preferences()[0] is True
     assert manager.get_desktop_status_style() == "orb"
+    assert manager.get_desktop_status_size() == "medium"
 
     dialog._apply_settings()
     assert manager.get_quota_alert_threshold() == 30
     assert manager.get_desktop_status_preferences()[0] is False
     assert manager.get_desktop_status_style() == "mini"
+    assert manager.get_desktop_status_size() == "large"
     assert app is not None

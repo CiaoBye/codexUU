@@ -1,4 +1,6 @@
 from __future__ import annotations
+import ctypes
+import os
 import sys
 import threading
 from pathlib import Path
@@ -51,7 +53,7 @@ class CodexUApplication:
             translation_manager=self.translation_manager,
             theme_manager=self.theme_manager,
         )
-        self.tray = TrayManager(self.settings_manager)
+        self.tray = TrayManager(self.settings_manager, self.theme_manager)
 
         self.tray.show_main_window.connect(self._show_main)
         self.tray.show_settings.connect(self._show_settings)
@@ -60,7 +62,10 @@ class CodexUApplication:
         self.window.dashboard.data_updated.connect(self.tray.update_data)
         self.tray.status_icon_changed.connect(self.window.setWindowIcon)
 
-        self.window.show()
+        # Let the Windows event dispatcher start before exposing native Qt
+        # windows.  Showing during object construction can leave pythonw alive
+        # with no HWND on some Windows 11 / Qt startup sequences.
+        QTimer.singleShot(0, self._finish_startup)
         QTimer.singleShot(300, self._refresh)
         QTimer.singleShot(1800, self._auto_check_update)
 
@@ -73,6 +78,27 @@ class CodexUApplication:
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()
+
+    def _finish_startup(self):
+        self._show_main()
+        QTimer.singleShot(1200, self._ensure_startup_window)
+
+    def _ensure_startup_window(self):
+        visible = self.window.isVisible()
+        if os.name == "nt":
+            try:
+                hwnd = int(self.window.winId())
+                visible = bool(
+                    ctypes.windll.user32.IsWindow(hwnd)
+                    and ctypes.windll.user32.IsWindowVisible(hwnd)
+                )
+            except Exception:
+                pass
+        if not visible:
+            self.window.hide()
+            self.window.showNormal()
+            self.window.raise_()
+            self.window.activateWindow()
 
     def _show_settings(self):
         if self.settings_dialog is None:

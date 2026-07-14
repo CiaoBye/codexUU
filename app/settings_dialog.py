@@ -155,8 +155,8 @@ class SettingsDialog(QDialog):
 
         self.setObjectName("settingsDialog")
         self.setWindowTitle("CodexUU 设置")
-        self.setMinimumSize(620, 560)
-        self.resize(660, 640)
+        self.setMinimumSize(660, 600)
+        self.resize(700, 680)
         self.settings_manager.add_listener(self._on_settings_changed)
         self.translation_manager.add_listener(self._retranslate_ui)
         self.theme_manager.add_listener(self._on_theme_changed)
@@ -205,7 +205,16 @@ class SettingsDialog(QDialog):
 
     def _general_tab(self):
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 14, 8, 8)
         self.preference_card, form = self._card("偏好")
         card = self.preference_card
@@ -263,6 +272,13 @@ class SettingsDialog(QDialog):
         self.desktop_style_combo.setCurrentIndex(max(0, self.desktop_style_combo.findData(self.settings_manager.get_desktop_status_style())))
         self.desktop_style_combo.currentIndexChanged.connect(self._save_window_preferences)
         window_form.addRow("桌面悬浮样式", self.desktop_style_combo)
+        self.desktop_size_combo = StyledComboBox()
+        self.desktop_size_combo.addItem("小", "small")
+        self.desktop_size_combo.addItem("中", "medium")
+        self.desktop_size_combo.addItem("大", "large")
+        self.desktop_size_combo.setCurrentIndex(max(0, self.desktop_size_combo.findData(self.settings_manager.get_desktop_status_size())))
+        self.desktop_size_combo.currentIndexChanged.connect(self._save_window_preferences)
+        window_form.addRow("悬浮窗大小", self.desktop_size_combo)
         self.lightweight_mode_cb = _check("轻量模式（运行时不显示任务栏图标）", self.settings_manager.get_lightweight_mode())
         self.lightweight_mode_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.lightweight_mode_cb)
@@ -481,6 +497,7 @@ class SettingsDialog(QDialog):
         )
         self.settings_manager.set_desktop_status_enabled(self.desktop_status_cb.isChecked())
         self.settings_manager.set_desktop_status_style(self.desktop_style_combo.currentData() or "orb")
+        self.settings_manager.set_desktop_status_size(self.desktop_size_combo.currentData() or "medium")
         self.settings_manager.set_lightweight_mode(self.lightweight_mode_cb.isChecked())
         self.settings_manager.set_quota_display(self.quota_combo.currentData() or "remaining")
         self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())
@@ -536,6 +553,9 @@ class SettingsDialog(QDialog):
         self.desktop_style_combo.blockSignals(True)
         self.desktop_style_combo.setCurrentIndex(max(0, self.desktop_style_combo.findData(self.settings_manager.get_desktop_status_style())))
         self.desktop_style_combo.blockSignals(False)
+        self.desktop_size_combo.blockSignals(True)
+        self.desktop_size_combo.setCurrentIndex(max(0, self.desktop_size_combo.findData(self.settings_manager.get_desktop_status_size())))
+        self.desktop_size_combo.blockSignals(False)
         self.lightweight_mode_cb.setChecked(self.settings_manager.get_lightweight_mode())
         self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
         self.shortcut_status.setText("")
@@ -675,6 +695,7 @@ class SettingsDialog(QDialog):
         self.always_on_top_cb.setText("Keep main window on top" if english else "主窗口始终置顶")
         self.desktop_status_cb.setText("Show desktop status panel" if english else "在桌面显示状态悬浮窗")
         self.window_form.labelForField(self.desktop_style_combo).setText("Desktop panel style" if english else "桌面悬浮样式")
+        self.window_form.labelForField(self.desktop_size_combo).setText("Desktop panel size" if english else "悬浮窗大小")
         self.lightweight_mode_cb.setText("Lightweight mode (hide taskbar icon)" if english else "轻量模式（运行时不显示任务栏图标）")
         self.window_form.labelForField(self.close_combo).setText("Close main window" if english else "关闭主窗口")
         self.appearance_form.labelForField(self.display_note).setText("About" if english else "说明")
@@ -714,7 +735,8 @@ class SettingsDialog(QDialog):
             (self.timezone_combo, (("Follow system", "UTC", "Fixed IANA zone") if english else ("跟随系统", "UTC", "固定 IANA 时区"))),
             (self.quota_combo, (("Show remaining", "Show used") if english else ("显示剩余", "显示已用"))),
             (self.close_combo, (("Hide to tray", "Minimize", "Quit application") if english else ("隐藏到托盘", "最小化", "退出程序"))),
-            (self.desktop_style_combo, (("Orb", "Halo rings", "Minimal circle") if english else ("圆环", "光晕双环", "极简圆形"))),
+            (self.desktop_style_combo, (("Info dial", "Dual-ring gauge", "Minimal ring") if english else ("信息圆盘", "双环仪表", "极简圆环"))),
+            (self.desktop_size_combo, (("Small", "Medium", "Large") if english else ("小", "中", "大"))),
         ):
             for index, label in enumerate(labels):
                 combo.setItemText(index, label)

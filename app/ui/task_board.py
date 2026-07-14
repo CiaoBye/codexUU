@@ -25,6 +25,18 @@ STATUS_LABELS = {
 STATUS_LABELS_EN = {
     "running": "Active", "pending": "Pending", "scheduled": "Scheduled", "completed": "Done",
 }
+STATUS_TOOLTIPS = {
+    "running": "进行中 = 今天有活动且最后活动时间在近 2 小时内的未归档线程",
+    "pending": "待处理 = 今天有活动、超过 2 小时未更新且尚未归档的线程",
+    "scheduled": "定时 = 本机 ~/.codex/automations 中当前启用的自动任务",
+    "completed": "完成 = 今天在 Codex 中明确归档的线程；停止输出不等于完成",
+}
+STATUS_TOOLTIPS_EN = {
+    "running": "Active = unarchived threads updated within the last 2 hours today",
+    "pending": "Pending = unarchived threads active earlier today but idle for over 2 hours",
+    "scheduled": "Scheduled = enabled tasks in local ~/.codex/automations",
+    "completed": "Done = threads explicitly archived in Codex today; stopped output is not completion",
+}
 EMPTY_LABELS = {
     "running": "当前没有近 2 小时活跃的线程",
     "pending": "今天没有待处理线程",
@@ -121,8 +133,7 @@ class TaskColumn(QFrame):
         self.label = QLabel(STATUS_LABELS.get(status, status))
         self.label.setFont(QFont(FONT, 10, QFont.Weight.Bold))
         self.label.setStyleSheet(f"color: {color};")
-        if status == "completed":
-            self.label.setToolTip("完成 = 今天在 Codex 中归档的线程")
+        self.label.setToolTip(STATUS_TOOLTIPS.get(status, ""))
         header.addWidget(self.label)
         self.count_label = QLabel("0")
         self.count_label.setFont(QFont(FONT, 10))
@@ -165,12 +176,9 @@ class TaskColumn(QFrame):
     def set_language(self, language):
         self.language = language
         labels = STATUS_LABELS_EN if language == "en" else STATUS_LABELS
+        tooltips = STATUS_TOOLTIPS_EN if language == "en" else STATUS_TOOLTIPS
         self.label.setText(labels.get(self.status, self.status))
-        if self.status == "completed":
-            self.label.setToolTip(
-                "Done = threads archived in Codex today"
-                if language == "en" else "完成 = 今天在 Codex 中归档的线程"
-            )
+        self.label.setToolTip(tooltips.get(self.status, ""))
 
 
 class TaskBoardWidget(QWidget):

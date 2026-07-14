@@ -106,9 +106,10 @@ class TrayManager(QObject):
     quit_app = Signal()
     status_icon_changed = Signal(object)
 
-    def __init__(self, settings_manager=None, parent=None):
+    def __init__(self, settings_manager=None, theme_manager=None, parent=None):
         super().__init__(parent)
         self.settings_manager = settings_manager
+        self.theme_manager = theme_manager
         self.data = MultiRuntimeUsageSnapshot()
         self._icon_key = None
         self._quota_alerts: set[tuple[str, str, str]] = set()
@@ -118,9 +119,15 @@ class TrayManager(QObject):
         self.panel.show_settings.connect(self._open_settings)
         self.desktop_panel.show_main.connect(self._open_main)
         self.desktop_panel.position_changed.connect(self._save_desktop_status_position)
+        self.desktop_panel.style_change_requested.connect(self._set_desktop_status_style)
+        self.desktop_panel.size_change_requested.connect(self._set_desktop_status_size)
+        self.desktop_panel.hide_requested.connect(lambda: self._set_desktop_status_enabled(False))
         self._setup_tray()
         if self.settings_manager:
             self.settings_manager.add_listener(self._on_settings_changed)
+        if self.theme_manager:
+            self.theme_manager.add_listener(self._on_theme_changed)
+            self.desktop_panel.set_theme(self.theme_manager.get_effective_theme())
         self._sync_desktop_status()
 
     def _setup_tray(self):
@@ -192,6 +199,10 @@ class TrayManager(QObject):
         self._refresh_status_icon()
         self._sync_desktop_status()
 
+    def _on_theme_changed(self):
+        if self.theme_manager:
+            self.desktop_panel.set_theme(self.theme_manager.get_effective_theme())
+
     def _set_desktop_status_enabled(self, enabled):
         if not self.settings_manager:
             return
@@ -203,14 +214,29 @@ class TrayManager(QObject):
             self.settings_manager.set_desktop_status_position(position.x(), position.y())
             self.settings_manager.save()
 
+    def _set_desktop_status_style(self, style):
+        if self.settings_manager:
+            self.settings_manager.set_desktop_status_style(style)
+            self.settings_manager.save()
+
+    def _set_desktop_status_size(self, size):
+        if self.settings_manager:
+            self.settings_manager.set_desktop_status_size(size)
+            self.settings_manager.save()
+
     def _sync_desktop_status(self):
         enabled = False
         position = None
         style = "orb"
+        size = "medium"
         if self.settings_manager:
             enabled, position = self.settings_manager.get_desktop_status_preferences()
             style = self.settings_manager.get_desktop_status_style()
+            size = self.settings_manager.get_desktop_status_size()
         self.desktop_panel.set_style(style)
+        self.desktop_panel.set_display_size(size)
+        if self.theme_manager:
+            self.desktop_panel.set_theme(self.theme_manager.get_effective_theme())
         if hasattr(self, "desktop_action"):
             blocked = self.desktop_action.blockSignals(True)
             self.desktop_action.setChecked(enabled)

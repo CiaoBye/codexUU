@@ -31,11 +31,11 @@ class DesktopStatusPanel(QWidget):
     hide_requested = Signal()
 
     _BASE_GEOMETRY = {
-        "orb": (176, 176),
-        "halo": (188, 188),
-        "mini": (116, 116),
-        "capsule": (300, 104),
-        "tracks": (280, 140),
+        "orb": (280, 230),
+        "halo": (270, 280),
+        "mini": (285, 200),
+        "capsule": (320, 120),
+        "tracks": (280, 170),
     }
     _SIZE_FACTORS = {"small": 0.86, "medium": 1.0, "large": 1.18}
     _STYLE_LABELS = {
@@ -133,6 +133,13 @@ class DesktopStatusPanel(QWidget):
         local_time: datetime = quota.reset_time.astimezone(get_statistics_timezone().tzinfo())
         return f"重置 {local_time.strftime('%m/%d %H:%M')}"
 
+    @staticmethod
+    def _short_reset(label: str, quota) -> str:
+        if quota is None or quota.reset_time is None:
+            return "--"
+        local_time: datetime = quota.reset_time.astimezone(get_statistics_timezone().tzinfo())
+        return local_time.strftime("%H:%M" if label == "5H" else "%m/%d %H:%M")
+
     def _scaled_font(self, family: str, pixels: float, weight=QFont.Weight.Normal) -> QFont:
         font = QFont(family)
         base_width, _ = self._BASE_GEOMETRY[self._style]
@@ -203,73 +210,169 @@ class DesktopStatusPanel(QWidget):
         painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QLineF(rect.left(), rect.center().y(), end, rect.center().y()))
 
-    def _paint_capsule(self, painter, surface, edge, track, primary, secondary, text, muted):
-        panel = QRectF(5, 5, self.width() - 10, self.height() - 10)
+    def _draw_panel(self, painter, surface, edge, radius=18):
+        panel = QRectF(7, 7, self.width() - 14, self.height() - 14)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 50 if self._theme == "dark" else 24))
-        painter.drawRoundedRect(panel.translated(0, 2), panel.height() / 2, panel.height() / 2)
+        painter.setBrush(QColor(0, 0, 0, 56 if self._theme == "dark" else 25))
+        painter.drawRoundedRect(panel.translated(0, 3), radius, radius)
         painter.setPen(QPen(edge, 1))
         painter.setBrush(surface)
-        painter.drawRoundedRect(panel, panel.height() / 2, panel.height() / 2)
-        ring_bounds = QRectF(12, 12, self.height() - 24, self.height() - 24)
+        painter.drawRoundedRect(panel, radius, radius)
+        return panel
+
+    def _draw_badge(self, painter, rect, value, text, muted, edge):
+        fill = QColor("#202b3e") if self._theme == "dark" else QColor("#f5f7fb")
+        painter.setPen(QPen(edge, 1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 6, 6)
+        self._draw_centered(painter, rect, value, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), text if value != "--" else muted)
+
+    def _draw_tone_badge(self, painter, rect, value, color, edge):
+        fill = QColor(color)
+        fill.setAlpha(34 if self._theme == "dark" else 20)
+        border = QColor(color)
+        border.setAlpha(105 if self._theme == "dark" else 70)
+        painter.setPen(QPen(border if border.isValid() else edge, 1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 6, 6)
+        self._draw_centered(painter, rect, value, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.Bold), color)
+
+    def _draw_rings(self, painter, bounds, primary, secondary, track, width):
+        rings = self._ring_layout(bounds, primary, secondary)
+        for ring, quota, color, _label in rings:
+            self._draw_ring(painter, ring, quota, color, track, width)
+        return rings
+
+    def _available_quotas(self, secondary, primary):
+        return [item for item in (("5H", self._q5, secondary), ("7D", self._q7, primary)) if item[1] is not None]
+
+    def _paint_orb(self, painter, surface, edge, track, primary, secondary, text, muted):
+        """信息圆盘 A：双额度左右分栏，单额度居中。"""
+        panel = self._draw_panel(painter, surface, edge, 18)
+        available = self._available_quotas(secondary, primary)
+        if len(available) == 2:
+            ring_bounds = QRectF(panel.left() + 10, panel.top() + 23, 166, 166)
+            self._draw_rings(painter, ring_bounds, primary, secondary, track, 8)
+            info_left = ring_bounds.right() + 5
+            for index, (label, quota, color) in enumerate(available):
+                y = panel.top() + 29 + index * 79
+                value = self._quota_value(quota)
+                self._draw_text(painter, QRectF(info_left, y, 70, 21), label, self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), color, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                self._draw_text(painter, QRectF(info_left, y + 19, 76, 31), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 22, QFont.Weight.Bold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                self._draw_badge(painter, QRectF(info_left, y + 51, 76, 22), self._short_reset(label, quota), text, muted, edge)
+            self._draw_text(painter, QRectF(panel.left() + 16, panel.bottom() - 34, 145, 23), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 11, QFont.Weight.DemiBold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        elif available:
+            label, quota, color = available[0]
+            ring_bounds = QRectF(panel.center().x() - 92, panel.top() + 13, 184, 184)
+            self._draw_rings(painter, ring_bounds, primary, secondary, track, 10)
+            value = self._quota_value(quota)
+            self._draw_centered(painter, QRectF(panel.center().x() - 55, panel.top() + 59, 110, 22), label, self._scaled_font("Segoe UI Variable", 12, QFont.Weight.Bold), color)
+            self._draw_centered(painter, QRectF(panel.center().x() - 70, panel.top() + 80, 140, 46), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 31, QFont.Weight.Bold), text)
+            self._draw_badge(painter, QRectF(panel.center().x() - 50, panel.top() + 132, 100, 23), self._short_reset(label, quota), text, muted, edge)
+            self._draw_text(painter, QRectF(panel.left() + 16, panel.bottom() - 34, 150, 23), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 11, QFont.Weight.DemiBold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        else:
+            self._draw_centered(painter, panel, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+
+    def _paint_halo(self, painter, surface, edge, track, primary, secondary, text, muted):
+        """双环仪表 A：纵向仪表、图例与今日用量。"""
+        panel = self._draw_panel(painter, surface, edge, 18)
+        available = self._available_quotas(secondary, primary)
+        ring_bounds = QRectF(panel.center().x() - 100, panel.top() + 10, 200, 200)
+        rings = self._draw_rings(painter, ring_bounds, primary, secondary, track, 9)
+        if len(rings) == 2:
+            q5, q7 = self._quota_value(self._q5), self._quota_value(self._q7)
+            self._draw_centered(painter, QRectF(panel.center().x() - 65, panel.top() + 61, 130, 21), "5H", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), secondary)
+            self._draw_centered(painter, QRectF(panel.center().x() - 70, panel.top() + 81, 140, 32), f"{q5:.0f}%", self._scaled_font("Segoe UI Variable Display", 23, QFont.Weight.Bold), secondary)
+            self._draw_centered(painter, QRectF(panel.center().x() - 65, panel.top() + 116, 130, 21), "7D", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), primary)
+            self._draw_centered(painter, QRectF(panel.center().x() - 70, panel.top() + 136, 140, 32), f"{q7:.0f}%", self._scaled_font("Segoe UI Variable Display", 23, QFont.Weight.Bold), primary)
+        elif available:
+            label, quota, color = available[0]
+            value = self._quota_value(quota)
+            self._draw_centered(painter, QRectF(panel.center().x() - 65, panel.top() + 72, 130, 23), label, self._scaled_font("Segoe UI Variable", 12, QFont.Weight.Bold), color)
+            self._draw_centered(painter, QRectF(panel.center().x() - 75, panel.top() + 98, 150, 48), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 32, QFont.Weight.Bold), color)
+        else:
+            self._draw_centered(painter, ring_bounds, "暂无额度", self._scaled_font("Microsoft YaHei", 11), muted)
+        divider_y = panel.bottom() - 51
+        painter.setPen(QPen(edge, 1))
+        painter.drawLine(QLineF(panel.left() + 24, divider_y, panel.right() - 24, divider_y))
+        if available:
+            reset_text = "   ".join(f"{label}  {self._short_reset(label, quota)}" for label, quota, _ in available)
+            self._draw_centered(painter, QRectF(panel.left() + 12, divider_y + 3, panel.width() - 24, 20), reset_text, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
+        self._draw_centered(painter, QRectF(panel.left() + 12, panel.bottom() - 26, panel.width() - 24, 20), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 10, QFont.Weight.DemiBold), text)
+
+    def _paint_mini(self, painter, surface, edge, track, primary, secondary, text, muted):
+        """极简圆环 B：左侧额度，右侧今日用量。"""
+        panel = self._draw_panel(painter, surface, edge, 18)
+        available = self._available_quotas(secondary, primary)
+        ring_bounds = QRectF(panel.left() + 8, panel.center().y() - 78, 156, 156)
+        rings = self._draw_rings(painter, ring_bounds, primary, secondary, track, 8)
+        if len(rings) == 2:
+            self._draw_centered(painter, QRectF(panel.left() + 38, panel.top() + 55, 96, 28), f"{self._quota_value(self._q5):.0f}%", self._scaled_font("Segoe UI Variable Display", 19, QFont.Weight.Bold), secondary)
+            self._draw_centered(painter, QRectF(panel.left() + 38, panel.top() + 96, 96, 28), f"{self._quota_value(self._q7):.0f}%", self._scaled_font("Segoe UI Variable Display", 19, QFont.Weight.Bold), primary)
+        elif available:
+            label, quota, color = available[0]
+            self._draw_centered(painter, QRectF(panel.left() + 28, panel.center().y() - 25, 116, 50), f"{self._quota_value(quota):.0f}%", self._scaled_font("Segoe UI Variable Display", 29, QFont.Weight.Bold), text)
+            self._draw_badge(painter, QRectF(panel.left() + 43, panel.center().y() + 29, 86, 22), self._short_reset(label, quota), text, muted, edge)
+        else:
+            self._draw_centered(painter, ring_bounds.adjusted(26, 26, -26, -26), "暂无额度", self._scaled_font("Microsoft YaHei", 9), muted)
+        divider_x = panel.left() + 171
+        painter.setPen(QPen(edge, 1))
+        painter.drawLine(QLineF(divider_x, panel.top() + 24, divider_x, panel.bottom() - 24))
+        self._draw_centered(painter, QRectF(divider_x + 9, panel.top() + 47, panel.right() - divider_x - 18, 25), "今日", self._scaled_font("Microsoft YaHei", 11, QFont.Weight.DemiBold), muted)
+        self._draw_centered(painter, QRectF(divider_x + 7, panel.top() + 74, panel.right() - divider_x - 14, 39), self._today, self._scaled_font("Segoe UI Variable Display", 23, QFont.Weight.Bold), text)
+        if len(available) == 2:
+            badge_width = panel.right() - divider_x - 18
+            self._draw_badge(painter, QRectF(divider_x + 9, panel.top() + 119, badge_width, 22), self._short_reset("5H", self._q5), text, muted, edge)
+            self._draw_badge(painter, QRectF(divider_x + 9, panel.top() + 146, badge_width, 22), self._short_reset("7D", self._q7), text, muted, edge)
+
+    def _paint_capsule(self, painter, surface, edge, track, primary, secondary, text, muted):
+        panel = self._draw_panel(painter, surface, edge, 28)
+        ring_bounds = QRectF(panel.left() + 7, panel.top() + 7, panel.height() - 14, panel.height() - 14)
         rings = self._ring_layout(ring_bounds, primary, secondary)
-        ring_width = max(5, self.height() * 0.052)
+        ring_width = max(5, self.height() * 0.048)
         for ring, quota, color, _label in rings:
             self._draw_ring(painter, ring, quota, color, track, ring_width)
-        active = self._q7 or self._q5
-        active_value = self._quota_value(active)
-        self._draw_centered(
-            painter, ring_bounds.adjusted(12, 17, -12, -17),
-            "--" if active_value is None else f"{active_value:.0f}%",
-            self._scaled_font("Segoe UI Variable Display", 18, QFont.Weight.Bold), text,
-        )
+        if len(rings) == 2:
+            self._draw_centered(painter, QRectF(ring_bounds.left() + 16, ring_bounds.top() + 25, ring_bounds.width() - 32, 24), f"5H {self._quota_value(self._q5):.0f}%", self._scaled_font("Segoe UI Variable", 8, QFont.Weight.Bold), secondary)
+            self._draw_centered(painter, QRectF(ring_bounds.left() + 16, ring_bounds.top() + 51, ring_bounds.width() - 32, 24), f"7D {self._quota_value(self._q7):.0f}%", self._scaled_font("Segoe UI Variable", 9, QFont.Weight.Bold), primary)
+        else:
+            active = self._q7 or self._q5
+            active_value = self._quota_value(active)
+            self._draw_centered(
+                painter, ring_bounds.adjusted(12, 17, -12, -17),
+                "--" if active_value is None else f"{active_value:.0f}%",
+                self._scaled_font("Segoe UI Variable Display", 18, QFont.Weight.Bold), text,
+            )
 
-        content_left = ring_bounds.right() + 13
+        content_left = ring_bounds.right() + 16
         content_width = panel.right() - content_left - 14
         self._draw_text(
-            painter, QRectF(content_left, 13, content_width - 34, 25), f"今日 {self._today}",
-            self._scaled_font("Microsoft YaHei", 14, QFont.Weight.Bold), text,
+            painter, QRectF(content_left, panel.top() + 10, content_width - 34, 29), f"今日 {self._today}",
+            self._scaled_font("Microsoft YaHei", 15, QFont.Weight.Bold), text,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
         )
         self._draw_text(
-            painter, QRectF(panel.right() - 50, 15, 34, 18), self._mode_label(),
+            painter, QRectF(panel.right() - 50, panel.top() + 13, 34, 18), self._mode_label(),
             self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), primary,
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
         available = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
         available = [item for item in available if item[1] is not None]
-        row_y = 43 if len(available) == 2 else 57
-        row_step = 23
+        row_y = panel.top() + (43 if len(available) == 2 else 57)
+        row_step = 27
         for index, (label, quota, color) in enumerate(available):
             y = row_y + index * row_step
             value = self._quota_value(quota)
-            reset = self._format_reset(quota).replace("重置 ", "") or "--"
-            self._draw_text(
-                painter, QRectF(content_left, y, 74, 18), f"{label} {value:.0f}%",
-                self._scaled_font("Segoe UI Variable", 9, QFont.Weight.DemiBold), color,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            )
-            self._draw_text(
-                painter, QRectF(content_left + 76, y, content_width - 76, 18), reset,
-                self._scaled_font("Microsoft YaHei", 8), muted,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            )
+            self._draw_tone_badge(painter, QRectF(content_left, y, 76, 22), f"{label} {value:.0f}%", color, edge)
+            self._draw_badge(painter, QRectF(content_left + 82, y, content_width - 82, 22), self._short_reset(label, quota), text, muted, edge)
 
     def _paint_tracks(self, painter, surface, edge, track, primary, secondary, text, muted):
-        panel = QRectF(5, 5, self.width() - 10, self.height() - 10)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 50 if self._theme == "dark" else 24))
-        painter.drawRoundedRect(panel.translated(0, 2), 18, 18)
-        painter.setPen(QPen(edge, 1))
-        painter.setBrush(surface)
-        painter.drawRoundedRect(panel, 18, 18)
-        divider_x = panel.left() + 88
+        panel = self._draw_panel(painter, surface, edge, 18)
+        divider_x = panel.left() + 102
         painter.setPen(QPen(edge, 1))
         painter.drawLine(QLineF(divider_x, panel.top() + 16, divider_x, panel.bottom() - 16))
-        self._draw_text(painter, QRectF(panel.left() + 14, 35, 65, 18), "今日", self._scaled_font("Microsoft YaHei", 9), muted, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._draw_text(painter, QRectF(panel.left() + 14, 55, 68, 31), self._today, self._scaled_font("Segoe UI Variable Display", 19, QFont.Weight.Bold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._draw_text(painter, QRectF(panel.left() + 14, 15, 65, 17), self._runtime, self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._draw_text(painter, QRectF(panel.left() + 14, 91, 65, 17), self._mode_label(), self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), primary, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._draw_centered(painter, QRectF(panel.left() + 12, panel.top() + 38, 78, 24), "今日", self._scaled_font("Microsoft YaHei", 10), muted)
+        self._draw_centered(painter, QRectF(panel.left() + 10, panel.top() + 66, 82, 42), self._today, self._scaled_font("Segoe UI Variable Display", 25, QFont.Weight.Bold), text)
         rows = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
         rows = [item for item in rows if item[1] is not None]
         if not rows:
@@ -277,15 +380,14 @@ class DesktopStatusPanel(QWidget):
         else:
             content_left = divider_x + 17
             content_width = panel.right() - content_left - 16
-            start_y = 32 if len(rows) == 2 else 53
-            step = 49
+            start_y = panel.top() + (34 if len(rows) == 2 else 68)
+            step = 68
             for index, (label, quota, color) in enumerate(rows):
                 y = start_y + index * step
                 value = self._quota_value(quota)
-                self._draw_text(painter, QRectF(content_left, y - 11, content_width, 18), f"{label}  {value:.0f}%", self._scaled_font("Segoe UI Variable", 10, QFont.Weight.Bold), color, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                self._draw_track(painter, QRectF(content_left, y + 11, content_width, 8), value, color, track, max(6, self.height() * 0.05))
-                reset = self._format_reset(quota).replace("重置 ", "") or "--"
-                self._draw_text(painter, QRectF(content_left, y + 20, content_width, 16), reset, self._scaled_font("Microsoft YaHei", 8), muted, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                self._draw_text(painter, QRectF(content_left, y - 12, content_width, 22), f"{label}  {value:.0f}%", self._scaled_font("Segoe UI Variable", 12, QFont.Weight.Bold), color, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                self._draw_track(painter, QRectF(content_left, y + 14, content_width, 8), value, color, track, max(7, self.height() * 0.045))
+                self._draw_badge(painter, QRectF(content_left, y + 27, min(106, content_width), 22), self._short_reset(label, quota), text, muted, edge)
 
     def paintEvent(self, _event):
         painter = QPainter(self)
@@ -303,6 +405,18 @@ class DesktopStatusPanel(QWidget):
         text = QColor("#f5f7fb") if dark else QColor("#18243a")
         muted = QColor("#9cabc1") if dark else QColor("#667995")
 
+        if self._style == "orb":
+            self._paint_orb(painter, surface, edge, track, primary, secondary, text, muted)
+            painter.end()
+            return
+        if self._style == "halo":
+            self._paint_halo(painter, surface, edge, track, primary, secondary, text, muted)
+            painter.end()
+            return
+        if self._style == "mini":
+            self._paint_mini(painter, surface, edge, track, primary, secondary, text, muted)
+            painter.end()
+            return
         if self._style == "capsule":
             self._paint_capsule(painter, surface, edge, track, primary, secondary, text, muted)
             painter.end()
@@ -312,77 +426,6 @@ class DesktopStatusPanel(QWidget):
             painter.end()
             return
 
-        diameter = min(self.width(), self.height())
-        shadow = QRectF(7, 9, diameter - 14, diameter - 14)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 55 if dark else 28))
-        painter.drawEllipse(shadow.translated(0, 2))
-
-        bounds = QRectF(6, 6, diameter - 12, diameter - 12)
-        painter.setBrush(surface)
-        painter.setPen(QPen(edge, max(1.0, diameter / 180)))
-        painter.drawEllipse(bounds.adjusted(2, 2, -2, -2))
-
-        available = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
-        available = [item for item in available if item[1] is not None]
-        active_label, active_quota, active_color = available[-1] if available else ("--", None, primary)
-        active_value = self._quota_value(active_quota)
-
-        if self._style == "orb":
-            rings = self._ring_layout(bounds, primary, secondary)
-            ring_width = diameter * (0.045 if len(rings) == 2 else 0.06)
-            for ring, quota, color, _label in rings:
-                self._draw_ring(painter, ring, quota, color, track, ring_width)
-            if len(rings) == 2:
-                q5, q7 = self._quota_value(self._q5), self._quota_value(self._q7)
-                self._draw_centered(painter, QRectF(diameter*.25, diameter*.25, diameter*.50, diameter*.13), f"5H  {q5:.0f}%", self._scaled_font("Segoe UI Variable", 10, QFont.Weight.Bold), secondary)
-                self._draw_centered(painter, QRectF(diameter*.25, diameter*.43, diameter*.50, diameter*.13), f"7D  {q7:.0f}%", self._scaled_font("Segoe UI Variable", 12, QFont.Weight.Bold), primary)
-                reset5 = self._format_reset(self._q5).replace("重置 ", "") or "--"
-                reset7 = self._format_reset(self._q7).replace("重置 ", "") or "--"
-                self._draw_centered(painter, QRectF(diameter*.20, diameter*.36, diameter*.60, diameter*.09), reset5, self._scaled_font("Microsoft YaHei", 7), muted)
-                self._draw_centered(painter, QRectF(diameter*.17, diameter*.56, diameter*.66, diameter*.10), reset7, self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), muted)
-                self._draw_centered(painter, QRectF(diameter*.26, diameter*.70, diameter*.48, diameter*.09), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), text)
-            else:
-                value_text = "--" if active_value is None else f"{active_value:.0f}%"
-                self._draw_centered(painter, QRectF(diameter*.22, diameter*.28, diameter*.56, diameter*.13), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), active_color)
-                self._draw_centered(painter, QRectF(diameter*.15, diameter*.40, diameter*.70, diameter*.20), value_text, self._scaled_font("Segoe UI Variable Display", 27, QFont.Weight.Bold), text)
-                reset = self._format_reset(active_quota).replace("重置 ", "") or "--"
-                self._draw_centered(painter, QRectF(diameter*.18, diameter*.61, diameter*.64, diameter*.11), reset, self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), muted)
-                self._draw_centered(painter, QRectF(diameter*.27, diameter*.73, diameter*.46, diameter*.08), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 7), muted)
-        elif self._style == "halo":
-            rings = self._ring_layout(bounds, primary, secondary)
-            ring_width = diameter * 0.052
-            for ring, quota, color, _label in rings:
-                self._draw_ring(painter, ring, quota, color, track, ring_width)
-            if len(rings) == 2:
-                q5, q7 = self._quota_value(self._q5), self._quota_value(self._q7)
-                self._draw_centered(painter, QRectF(diameter*.27, diameter*.29, diameter*.46, diameter*.14), f"5H  {q5:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), secondary)
-                self._draw_centered(painter, QRectF(diameter*.27, diameter*.44, diameter*.46, diameter*.14), f"7D  {q7:.0f}%", self._scaled_font("Segoe UI Variable", 11, QFont.Weight.Bold), primary)
-                reset5 = self._format_reset(self._q5).replace("重置 ", "") or "--"
-                reset7 = self._format_reset(self._q7).replace("重置 ", "") or "--"
-                self._draw_centered(painter, QRectF(diameter*.18, diameter*.61, diameter*.64, diameter*.10), f"{reset5} · {reset7}", self._scaled_font("Microsoft YaHei", 7, QFont.Weight.DemiBold), muted)
-                self._draw_centered(painter, QRectF(diameter*.31, diameter*.72, diameter*.38, diameter*.09), self._mode_label(), self._scaled_font("Microsoft YaHei", 8), muted)
-            else:
-                value_text = "--" if active_value is None else f"{active_value:.0f}%"
-                self._draw_centered(painter, QRectF(diameter*.28, diameter*.29, diameter*.44, diameter*.12), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), active_color)
-                self._draw_centered(painter, QRectF(diameter*.20, diameter*.40, diameter*.60, diameter*.20), value_text, self._scaled_font("Segoe UI Variable Display", 24, QFont.Weight.Bold), text)
-                reset = self._format_reset(active_quota).replace("重置 ", "") or "--"
-                self._draw_centered(painter, QRectF(diameter*.20, diameter*.61, diameter*.60, diameter*.12), reset, self._scaled_font("Microsoft YaHei", 9, QFont.Weight.DemiBold), muted)
-        else:
-            rings = self._ring_layout(bounds, primary, secondary)
-            ring_width = diameter * (0.047 if len(rings) == 2 else 0.065)
-            for ring, quota, color, _label in rings:
-                self._draw_ring(painter, ring, quota, color, track, ring_width)
-            if len(rings) == 2:
-                q5, q7 = self._quota_value(self._q5), self._quota_value(self._q7)
-                self._draw_centered(painter, QRectF(0, diameter*.29, diameter, diameter*.16), f"5H {q5:.0f}%", self._scaled_font("Segoe UI Variable", 8, QFont.Weight.Bold), secondary)
-                self._draw_centered(painter, QRectF(0, diameter*.46, diameter, diameter*.18), f"7D {q7:.0f}%", self._scaled_font("Segoe UI Variable", 10, QFont.Weight.Bold), primary)
-            else:
-                self._draw_centered(painter, QRectF(0, diameter*.29, diameter, diameter*.16), f"{active_label} · {self._mode_label()}", self._scaled_font("Microsoft YaHei", 8, QFont.Weight.DemiBold), active_color)
-                value_text = "--" if active_value is None else f"{active_value:.0f}%"
-                self._draw_centered(painter, QRectF(0, diameter*.44, diameter, diameter*.22), value_text, self._scaled_font("Segoe UI Variable Display", 21, QFont.Weight.Bold), text)
-                reset = self._format_reset(active_quota).replace("重置 ", "") or "--"
-                self._draw_centered(painter, QRectF(diameter*.19, diameter*.67, diameter*.62, diameter*.10), reset, self._scaled_font("Microsoft YaHei", 7), muted)
         painter.end()
 
     def contextMenuEvent(self, event: QContextMenuEvent):
@@ -482,18 +525,20 @@ class DesktopStatusPanel(QWidget):
             self.show_main.emit()
 
     def _mode_hit_test(self, position: QPoint) -> bool:
-        if self._style == "capsule":
-            center = QPoint(self.height() // 2, self.height() // 2)
-            radius = self.height() * 0.31
-            delta = position - center
-            return delta.x() ** 2 + delta.y() ** 2 <= radius ** 2
         if self._style == "tracks":
-            zone = self.rect().adjusted(
-                round(self.width() * 0.28), round(self.height() * 0.25),
-                -round(self.width() * 0.28), -round(self.height() * 0.25),
-            )
+            zone = self.rect().adjusted(round(self.width() * 0.39), 18, -16, -18)
             return zone.contains(position)
-        center = self.rect().center()
+        if self._style == "orb":
+            center = QPoint(round(self.width() * (0.33 if self._q5 is not None and self._q7 is not None else 0.50)), round(self.height() * 0.46))
+            radius = min(self.width(), self.height()) * 0.24
+        elif self._style == "halo":
+            center = QPoint(self.width() // 2, round(self.height() * 0.39))
+            radius = min(self.width(), self.height()) * 0.25
+        elif self._style == "mini":
+            center = QPoint(round(self.width() * 0.30), self.height() // 2)
+            radius = min(self.width(), self.height()) * 0.24
+        else:
+            center = QPoint(round(self.height() * 0.50), self.height() // 2)
+            radius = self.height() * 0.31
         delta = position - center
-        radius = min(self.width(), self.height()) * 0.30
         return delta.x() ** 2 + delta.y() ** 2 <= radius ** 2

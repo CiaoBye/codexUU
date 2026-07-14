@@ -35,3 +35,21 @@ def test_setting_controls_apply_only_after_save(tmp_path):
     assert manager.get_desktop_status_style() == "mini"
     assert manager.get_desktop_status_size() == "large"
     assert app is not None
+
+
+def test_desktop_status_style_names_match_finalized_designs(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        settings_manager=SettingsManager(Path(tmp_path) / "config.json"),
+        translation_manager=TranslationManager(),
+        theme_manager=ThemeManager(),
+    )
+    assert [dialog.desktop_style_combo.itemText(index) for index in range(dialog.desktop_style_combo.count())] == [
+        "信息圆盘 A",
+        "双环仪表 A",
+        "极简圆环 B",
+        "状态胶囊 B",
+        "双轨卡片 B",
+    ]
+    dialog.close()
+    assert app is not None

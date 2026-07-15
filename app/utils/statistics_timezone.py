@@ -35,9 +35,12 @@ class StatisticsTimeZone:
         return datetime.now().astimezone().tzinfo or timezone.utc
 
     def date_for(self, value: datetime) -> date:
+        return self.datetime_for(value).date()
+
+    def datetime_for(self, value: datetime) -> datetime:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(self.tzinfo()).date()
+        return value.astimezone(self.tzinfo())
 
     def now_date(self) -> date:
         return datetime.now(timezone.utc).astimezone(self.tzinfo()).date()

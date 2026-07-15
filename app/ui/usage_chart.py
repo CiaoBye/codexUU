@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from calendar import monthrange
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -77,10 +78,46 @@ def period_label(mode: str, english: bool) -> str:
     return values[mode][1 if english else 0]
 
 
+def model_period_start(mode: str, today: date | None = None) -> date | None:
+    """Model lists use the active calendar period, not the 30-day trend window."""
+    today = today or get_statistics_timezone().now_date()
+    return today if mode == "daily" else period_start(mode, today)
+
+
+def model_period_label(mode: str, english: bool, today: date | None = None) -> str:
+    today = today or get_statistics_timezone().now_date()
+    if mode == "daily":
+        return f"Today {today:%m/%d}" if english else f"本日 {today:%m/%d}"
+    if mode == "weekly":
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6)
+        return f"This week {start:%m/%d}–{end:%m/%d}" if english else f"本周 {start:%m/%d}–{end:%m/%d}"
+    if mode == "monthly":
+        end = today.replace(day=monthrange(today.year, today.month)[1])
+        return f"This month {today:%m/%d}–{end:%m/%d}" if english else f"本月 {today:%m/%d}–{end:%m/%d}"
+    return "All time" if english else "累计"
+
+
+def period_range_text(mode: str, english: bool, today: date | None = None) -> str:
+    """Scheme B range-strip value without redundant 本日/本周 prefixes."""
+    today = today or get_statistics_timezone().now_date()
+    if mode == "daily":
+        return f"{today:%m/%d}"
+    if mode == "weekly":
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6)
+        return f"{start:%m/%d}-{end:%m/%d}"
+    if mode == "monthly":
+        start = today.replace(day=1)
+        end = today.replace(day=monthrange(today.year, today.month)[1])
+        return f"{start:%m/%d}-{end:%m/%d}"
+    return "All records" if english else "全部记录"
+
+
 def _in_period(value: datetime | None, start: date | None, end: date) -> bool:
     if value is None:
         return False
-    day = value.date() if hasattr(value, "date") else value
+    day = get_statistics_timezone().date_for(value) if hasattr(value, "tzinfo") else value
     return day <= end and (start is None or day >= start)
 
 
@@ -112,7 +149,7 @@ def aggregate_points(daily_tokens, mode: str, cumulative_total=None):
         return [(start.strftime("%m/%d"), buckets[start]) for start in starts]
     if mode == "monthly":
         starts = [_month_shift(today.replace(day=1), index) for index in range(-11, 1)]
-        return [(f"{start.month}月", buckets[start]) for start in starts]
+        return [(f"{start.month:02d}月", buckets[start]) for start in starts]
 
     starts = sorted(buckets)
     known_total = sum(buckets.values())
@@ -120,7 +157,7 @@ def aggregate_points(daily_tokens, mode: str, cumulative_total=None):
     result = []
     for start in starts:
         running += buckets[start]
-        result.append((f"{start.month}月", running))
+        result.append((f"{start.month:02d}月", running))
     return result[-12:]
 
 
@@ -237,12 +274,20 @@ class ModelUsageRow(QFrame):
 
 
 class UsagePlot(QWidget):
+    LEFT_MARGIN = 54
+    TOP_MARGIN = 6
+    RIGHT_MARGIN = 18
+    BOTTOM_MARGIN = 32
+
     def __init__(self, bars=False, parent=None):
         super().__init__(parent)
         self.bars = bars
         self.points = []
         self.hover_index = -1
-        self.setMinimumHeight(210)
+        # The dashboard gives overview and model plots different live heights.
+        # A large minimum makes the stacked page taller than its viewport and
+        # silently clips the zero baseline and X-axis labels.
+        self.setMinimumHeight(48)
         self.setMouseTracking(True)
 
     def set_points(self, points):
@@ -253,12 +298,15 @@ class UsagePlot(QWidget):
     def mouseMoveEvent(self, event):
         if not self.points:
             return
-        left, right = 44, 16
+        left, right = self.LEFT_MARGIN, self.RIGHT_MARGIN
         width = max(1, self.width() - left - right)
         index = round((event.position().x() - left) / width * max(1, len(self.points) - 1))
         self.hover_index = max(0, min(len(self.points) - 1, index))
         label, value = self.points[self.hover_index]
-        QToolTip.showText(event.globalPosition().toPoint(), f"{label}\n{format_tokens(value)} token", self)
+        # Always open above the cursor so a point on the zero baseline cannot
+        # push the tooltip underneath the card/window boundary.
+        tooltip_pos = event.globalPosition().toPoint() + QPoint(12, -54)
+        QToolTip.showText(tooltip_pos, f"{label}\n{format_tokens(value)} token", self)
         self.update()
 
     def leaveEvent(self, event):
@@ -274,17 +322,35 @@ class UsagePlot(QWidget):
             painter.setPen(QColor("#8a94a6"))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "—")
             return
-        left, top, right, bottom = 44, 14, 16, 28
+        left, top, right, bottom = (
+            self.LEFT_MARGIN, self.TOP_MARGIN, self.RIGHT_MARGIN, self.BOTTOM_MARGIN,
+        )
         width = max(1, self.width() - left - right)
         height = max(1, self.height() - top - bottom)
+        baseline = top + height
+        self._last_plot_rect = QRectF(left, top, width, height)
+        self._last_y_axis_label_rects = []
+        self._last_x_axis_label_rects = []
+        self._last_axis_label_rects = []
         maximum = max(value for _, value in self.points) or 1
         painter.setFont(QFont("Microsoft YaHei", 8))
-        for pct in (0, 0.5, 1):
+        # Short model cards cannot fit three 14px Y labels without collisions.
+        # Keep the zero baseline mandatory, then add max/mid only when the live
+        # plot height can actually accommodate them.
+        y_ticks = (0, 0.5, 1) if height >= 58 else ((0, 1) if height >= 32 else (0,))
+        for pct in y_ticks:
             y = top + height * (1 - pct)
             painter.setPen(QPen(QColor(127, 145, 172, 36), 1))
             painter.drawLine(left, int(y), self.width() - right, int(y))
             painter.setPen(QColor("#8a94a6"))
-            painter.drawText(QRectF(0, y - 7, 38, 14), Qt.AlignmentFlag.AlignRight, format_tokens(int(maximum * pct)))
+            label_y = y - 14 if pct == 0 else (top if pct == 1 else y - 7)
+            label_rect = QRectF(0, label_y, left - 8, 14)
+            self._last_y_axis_label_rects.append(label_rect)
+            painter.drawText(
+                label_rect,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                format_tokens(int(maximum * pct)),
+            )
 
         count = len(self.points)
         coords = []
@@ -296,13 +362,13 @@ class UsagePlot(QWidget):
             bar_width = max(5, min(22, width / max(1, count) * 0.55))
             for index, point in enumerate(coords):
                 color = QColor("#6d9dff") if index != self.hover_index else QColor("#326ad6")
-                painter.fillRect(QRectF(point.x() - bar_width / 2, point.y(), bar_width, top + height - point.y()), color)
+                painter.fillRect(QRectF(point.x() - bar_width / 2, point.y(), bar_width, baseline - point.y()), color)
         else:
             area = QPainterPath(coords[0])
             for point in coords[1:]:
                 area.lineTo(point)
-            area.lineTo(coords[-1].x(), top + height)
-            area.lineTo(coords[0].x(), top + height)
+            area.lineTo(coords[-1].x(), baseline)
+            area.lineTo(coords[0].x(), baseline)
             area.closeSubpath()
             painter.fillPath(area, QColor(78, 130, 227, 38))
             line = QPainterPath(coords[0])
@@ -316,12 +382,22 @@ class UsagePlot(QWidget):
                 painter.drawEllipse(point, 4 if index == self.hover_index else 2.5, 4 if index == self.hover_index else 2.5)
 
         painter.setPen(QColor("#8a94a6"))
-        step = max(1, count // 6)
+        month_labels = count <= 12 and all(label.endswith("月") for label, _ in self.points)
+        step = 1 if month_labels else max(1, count // 6)
         for index, (label, _) in enumerate(self.points):
             if index not in (0, count - 1) and index % step:
                 continue
             x = coords[index].x()
-            painter.drawText(QRectF(x - 30, self.height() - 20, 60, 15), Qt.AlignmentFlag.AlignCenter, label)
+            label_width = 36.0 if month_labels else 64.0
+            label_left = max(0.0, min(self.width() - label_width, x - label_width / 2))
+            label_rect = QRectF(label_left, baseline + 8, label_width, 16)
+            self._last_x_axis_label_rects.append(label_rect)
+            painter.drawText(
+                label_rect,
+                Qt.AlignmentFlag.AlignCenter,
+                label,
+            )
+        self._last_axis_label_rects = self._last_y_axis_label_rects + self._last_x_axis_label_rects
 
 
 class UsageTrendWidget(QWidget):
@@ -333,11 +409,12 @@ class UsageTrendWidget(QWidget):
         self.cumulative_total = None
         self.mode = "daily"
         self.language = "zh"
+        self.data_updated_at = datetime.now(timezone.utc)
         self._mode_animation = None
         self.reduce_motion = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(9)
+        layout.setSpacing(6)
         self.stats = StatStrip()
         layout.addWidget(self.stats)
 
@@ -368,6 +445,24 @@ class UsageTrendWidget(QWidget):
         self.view_group.idClicked.connect(self._set_view)
         layout.addLayout(controls)
 
+        self.range_strip = QFrame()
+        self.range_strip.setObjectName("rangeStrip")
+        self.range_strip.setFixedHeight(28)
+        range_layout = QHBoxLayout(self.range_strip)
+        range_layout.setContentsMargins(10, 3, 10, 3)
+        range_layout.setSpacing(7)
+        self.range_caption = QLabel("")
+        self.range_caption.setObjectName("metricHint")
+        range_layout.addWidget(self.range_caption)
+        self.range_value = QLabel("")
+        self.range_value.setObjectName("rangeValue")
+        range_layout.addWidget(self.range_value)
+        range_layout.addStretch()
+        self.updated_label = QLabel("")
+        self.updated_label.setObjectName("metricHint")
+        range_layout.addWidget(self.updated_label)
+        layout.addWidget(self.range_strip)
+
         self.charts_host = QWidget()
         charts = QHBoxLayout(self.charts_host)
         charts.setContentsMargins(0, 0, 0, 0)
@@ -375,16 +470,13 @@ class UsageTrendWidget(QWidget):
         left = QFrame()
         left.setObjectName("surfaceCard")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(14, 10, 14, 10)
+        left_layout.setContentsMargins(14, 8, 14, 8)
         left_header = QHBoxLayout()
         left_header.addWidget(_header_icon("activity.svg"))
         self.activity_title = QLabel("Token 活动")
         self.activity_title.setObjectName("sectionTitle")
         left_header.addWidget(self.activity_title)
         left_header.addStretch()
-        self.summary = QLabel("")
-        self.summary.setObjectName("metricHint")
-        left_header.addWidget(self.summary)
         left_layout.addLayout(left_header)
         self.activity_stack = QStackedWidget()
         self.heatmap = TokenHeatmap()
@@ -397,7 +489,7 @@ class UsageTrendWidget(QWidget):
         right = QFrame()
         right.setObjectName("surfaceCard")
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(14, 10, 14, 10)
+        right_layout.setContentsMargins(14, 8, 14, 8)
         trend_header = QHBoxLayout()
         trend_header.addWidget(_header_icon("tab-trend.svg"))
         self.trend_title = QLabel("趋势")
@@ -424,7 +516,7 @@ class UsageTrendWidget(QWidget):
         ranking = QFrame()
         ranking.setObjectName("surfaceCard")
         ranking_layout = QVBoxLayout(ranking)
-        ranking_layout.setContentsMargins(14, 10, 14, 10)
+        ranking_layout.setContentsMargins(14, 8, 14, 8)
         self.models_title = QLabel("")
         self.models_title.setObjectName("sectionTitle")
         ranking_layout.addWidget(self.models_title)
@@ -444,7 +536,7 @@ class UsageTrendWidget(QWidget):
         detail = QFrame()
         detail.setObjectName("surfaceCard")
         detail_layout = QVBoxLayout(detail)
-        detail_layout.setContentsMargins(14, 10, 14, 10)
+        detail_layout.setContentsMargins(14, 8, 14, 8)
         detail_header = QHBoxLayout()
         self.model_detail_title = QLabel("")
         self.model_detail_title.setObjectName("sectionTitle")
@@ -466,7 +558,7 @@ class UsageTrendWidget(QWidget):
             tile.setObjectName("modelMetricTile")
             tile.setProperty("tone", object_name)
             tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(9, 7, 9, 7)
+            tile_layout.setContentsMargins(9, 5, 9, 5)
             tile_layout.setSpacing(1)
             metric_value = QLabel("0")
             metric_value.setObjectName("modelMetricValue")
@@ -485,14 +577,31 @@ class UsageTrendWidget(QWidget):
     def set_language(self, language):
         self.language = language
         english = language == "en"
-        labels = ("Daily", "Weekly", "Monthly", "Cumulative") if english else ("每日", "每周", "每月", "累计")
-        for mode, label in zip(MODES, labels):
-            self.mode_buttons[mode].setText(label)
         self.activity_title.setText("Token activity" if english else "Token 活动")
         self.overview_button.setText("Overview" if english else "概览")
         self.models_button.setText("Models" if english else "模型")
         self.models_title.setText("Model usage" if english else "模型使用量")
         self._render()
+
+    def _update_period_controls(self):
+        english = self.language == "en"
+        labels = dict(zip(MODES, ("Daily", "Weekly", "Monthly", "Cumulative")
+                          if english else ("每日", "每周", "每月", "累计")))
+        today = get_statistics_timezone().now_date()
+        for mode, button in self.mode_buttons.items():
+            title = labels[mode]
+            button.setText(title)
+            button.setToolTip(f"{title} · {period_range_text(mode, english, today)}")
+        self.range_caption.setText("Range" if english else "统计范围")
+        self.range_value.setText(period_range_text(self.mode, english, today))
+        updated = self.data_updated_at.astimezone(get_statistics_timezone().tzinfo())
+        self.updated_label.setText(
+            f"Data updated {updated:%m/%d %H:%M}" if english
+            else f"数据更新 {updated:%m/%d %H:%M}"
+        )
+        self.updated_label.setToolTip(
+            updated.strftime("%Y-%m-%d %H:%M:%S %Z")
+        )
 
     def _set_view(self, index):
         self.content_stack.setCurrentIndex(index)
@@ -505,6 +614,7 @@ class UsageTrendWidget(QWidget):
             return
         self.mode = mode
         self.mode_buttons[mode].setChecked(True)
+        self._update_period_controls()
         if not self.isVisible() or self.reduce_motion:
             self._render()
             return
@@ -540,6 +650,7 @@ class UsageTrendWidget(QWidget):
         self.daily_tokens = list(daily_tokens or [])
         self.cumulative_total = cumulative_total
         self.model_usage = list(model_usage or [])
+        self.data_updated_at = datetime.now(timezone.utc)
         if self.selected_model not in self.model_usage:
             self.selected_model = self.model_usage[0] if self.model_usage else None
         self._render()
@@ -547,7 +658,7 @@ class UsageTrendWidget(QWidget):
     def _period_model(self, model):
         points = aggregate_points(model.daily_tokens, self.mode, model.token_total)
         today = get_statistics_timezone().now_date()
-        start = period_start(self.mode, today)
+        start = model_period_start(self.mode, today)
         selected_days = [
             item for item in model.daily_tokens
             if _in_period(item.date, start, today)
@@ -596,7 +707,7 @@ class UsageTrendWidget(QWidget):
     def _render_models(self):
         self._clear_model_rows()
         english = self.language == "en"
-        range_text = period_label(self.mode, english)
+        range_text = model_period_label(self.mode, english)
         period_models = []
         for original in self.model_usage:
             period, points = self._period_model(original)
@@ -635,7 +746,7 @@ class UsageTrendWidget(QWidget):
         self.model_detail_value.setText(f"{format_tokens(period.token_total)} · {value_text}")
         self.model_detail_value.setToolTip(source or ("No exact official price for this model ID" if english else "未找到与该模型 ID 精确匹配的官方价格"))
         share = period.token_total / max(1, total) * 100
-        last_active = original.last_active.strftime("%m/%d %H:%M") if original.last_active else "--"
+        last_active = get_statistics_timezone().datetime_for(original.last_active).strftime("%m/%d %H:%M") if original.last_active else "--"
         self.model_detail_meta.setText(
             f"{period.session_count} sessions · {period.turn_count} turns · {share:.1f}% share · last active {last_active}"
             if english else f"{period.session_count} 个会话 · {period.turn_count} 个回合 · 占本期 {share:.1f}% · 最近活跃 {last_active}"
@@ -649,6 +760,7 @@ class UsageTrendWidget(QWidget):
 
     def _render(self):
         english = self.language == "en"
+        self._update_period_controls()
         self.stats.set_data(self.daily_tokens, english, self.cumulative_total)
         points = aggregate_points(self.daily_tokens, self.mode, self.cumulative_total)
         self.chart.set_points(points)
@@ -658,8 +770,6 @@ class UsageTrendWidget(QWidget):
         else:
             self.activity_stack.setCurrentIndex(1)
             self.bars.set_points(points)
-        total = points[-1][1] if self.mode == "cumulative" and points else sum(value for _, value in points)
         mode_names = {mode: period_label(mode, english) for mode in MODES}
-        self.summary.setText(f"{mode_names[self.mode]} · {format_tokens(total)}")
         self.trend_title.setText(("Trend · " if english else "趋势 · ") + mode_names[self.mode])
         self._render_models()

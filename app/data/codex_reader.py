@@ -630,12 +630,10 @@ def _classify_thread_task(archived, created_at, updated_at, recency_at, archived
     recency = _parse_updated(recency_at)
     archived_time = _parse_updated(archived_at)
     statistics = get_statistics_timezone()
-    today = statistics.date_for(now)
     if bool(archived):
         activity = archived_time or updated
-        if activity and statistics.date_for(activity) == today:
-            return "completed", activity
-        return None
+        return ("completed", activity) if activity else None
+    today = statistics.date_for(now)
     candidates = [value for value in (created, updated, recency) if value is not None]
     if not candidates or not any(statistics.date_for(value) == today for value in candidates):
         return None

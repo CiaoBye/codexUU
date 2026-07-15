@@ -20,6 +20,9 @@ DEFAULT_QUOTA_ALERT_THRESHOLD = 20
 DEFAULT_DESKTOP_STATUS_ENABLED = True
 DEFAULT_DESKTOP_STATUS_STYLE = "orb"
 DEFAULT_DESKTOP_STATUS_SIZE = "medium"
+DEFAULT_DESKTOP_STATUS_SCALE = 1.0
+MIN_DESKTOP_STATUS_SCALE = 0.20
+MAX_DESKTOP_STATUS_SCALE = 3.0
 DEFAULT_LIGHTWEIGHT_MODE = True
 DESKTOP_STATUS_STYLES = ("orb", "halo", "mini", "capsule", "tracks")
 
@@ -44,6 +47,7 @@ class SettingsManager:
         self.desktop_status_position: tuple[int, int] | None = None
         self.desktop_status_style = DEFAULT_DESKTOP_STATUS_STYLE
         self.desktop_status_size = DEFAULT_DESKTOP_STATUS_SIZE
+        self.desktop_status_scale = DEFAULT_DESKTOP_STATUS_SCALE
         self.lightweight_mode = DEFAULT_LIGHTWEIGHT_MODE
         self.listeners: list[Callable] = []
     
@@ -91,6 +95,9 @@ class SettingsManager:
 
     def get_desktop_status_size(self) -> str:
         return self.desktop_status_size
+
+    def get_desktop_status_scale(self) -> float:
+        return self.desktop_status_scale
 
     def set_active_runtime(self, runtime: str):
         if runtime in ("codex", "claudeCode"):
@@ -146,7 +153,16 @@ class SettingsManager:
     def set_desktop_status_size(self, size: str):
         if size in ("small", "medium", "large"):
             self.desktop_status_size = size
+            self.desktop_status_scale = {"small": 0.20, "medium": 1.0, "large": 1.18}[size]
             self._notify_listeners()
+
+    def set_desktop_status_scale(self, scale: float):
+        try:
+            value = float(scale)
+        except (TypeError, ValueError):
+            value = DEFAULT_DESKTOP_STATUS_SCALE
+        self.desktop_status_scale = max(MIN_DESKTOP_STATUS_SCALE, min(MAX_DESKTOP_STATUS_SCALE, value))
+        self._notify_listeners()
 
     def set_lightweight_mode(self, enabled: bool):
         self.lightweight_mode = bool(enabled)
@@ -196,6 +212,7 @@ class SettingsManager:
                 desktop_status_position = data.get("desktop_status_position")
                 desktop_status_style = data.get("desktop_status_style", DEFAULT_DESKTOP_STATUS_STYLE)
                 desktop_status_size = data.get("desktop_status_size", DEFAULT_DESKTOP_STATUS_SIZE)
+                desktop_status_scale = data.get("desktop_status_scale", {"small": 0.20, "medium": 1.0, "large": 1.18}.get(desktop_status_size, DEFAULT_DESKTOP_STATUS_SCALE))
                 lightweight_mode = data.get("lightweight_mode", DEFAULT_LIGHTWEIGHT_MODE)
                 self.language = language if language in ("zh", "en") else DEFAULT_LANGUAGE
                 self.theme = theme if theme in ("auto", "light", "dark") else DEFAULT_THEME
@@ -219,6 +236,7 @@ class SettingsManager:
                 )
                 self.desktop_status_style = desktop_status_style if desktop_status_style in DESKTOP_STATUS_STYLES else DEFAULT_DESKTOP_STATUS_STYLE
                 self.desktop_status_size = desktop_status_size if desktop_status_size in ("small", "medium", "large") else DEFAULT_DESKTOP_STATUS_SIZE
+                self.set_desktop_status_scale(desktop_status_scale)
                 self.lightweight_mode = bool(lightweight_mode)
             except (OSError, ValueError, json.JSONDecodeError, TypeError):
                 self.language = DEFAULT_LANGUAGE
@@ -239,6 +257,7 @@ class SettingsManager:
                 self.desktop_status_position = None
                 self.desktop_status_style = DEFAULT_DESKTOP_STATUS_STYLE
                 self.desktop_status_size = DEFAULT_DESKTOP_STATUS_SIZE
+                self.desktop_status_scale = DEFAULT_DESKTOP_STATUS_SCALE
                 self.lightweight_mode = DEFAULT_LIGHTWEIGHT_MODE
     
     def save(self):
@@ -262,6 +281,7 @@ class SettingsManager:
             "desktop_status_position": list(self.desktop_status_position) if self.desktop_status_position else None,
             "desktop_status_style": self.desktop_status_style,
             "desktop_status_size": self.desktop_status_size,
+            "desktop_status_scale": self.desktop_status_scale,
             "lightweight_mode": self.lightweight_mode,
         }
         with open(self.config_path, "w", encoding="utf-8") as f:

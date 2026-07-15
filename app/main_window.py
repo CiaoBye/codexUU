@@ -3,8 +3,8 @@ import ctypes
 import os
 import uuid
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QIcon, QShowEvent
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QIcon, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
 
 from app.ui.dashboard import DashboardWidget
@@ -33,7 +33,28 @@ class _GUID(ctypes.Structure):
         )
 
 
+class _RECT(ctypes.Structure):
+    _fields_ = (("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long))
+
+
+class _MSG(ctypes.Structure):
+    _fields_ = (
+        ("hwnd", ctypes.c_void_p),
+        ("message", ctypes.c_uint),
+        ("wParam", ctypes.c_size_t),
+        ("lParam", ctypes.c_ssize_t),
+        ("time", ctypes.c_ulong),
+        ("pt_x", ctypes.c_long),
+        ("pt_y", ctypes.c_long),
+    )
+
+
 class MainAppWindow(QMainWindow):
+    DESIGN_WIDTH = 1060
+    DESIGN_HEIGHT = 720
+    DESIGN_ASPECT = DESIGN_WIDTH / DESIGN_HEIGHT
+
     def __init__(self, parent=None, settings_manager=None,
                  translation_manager: TranslationManager = None,
                  theme_manager: ThemeManager = None):
@@ -43,8 +64,14 @@ class MainAppWindow(QMainWindow):
         self.theme_manager = theme_manager
         self.setWindowTitle("CodexUU")
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "icons" / "codexu-logo.svg")))
-        self.setMinimumSize(1060, 720)
-        self.resize(1180, 800)
+        self._aspect_adjusting = False
+        self._pending_aspect_size = None
+        self._last_normal_size = QSize(self.DESIGN_WIDTH, self.DESIGN_HEIGHT)
+        # The dashboard is authored and tested at this logical client size.
+        # Allowing a smaller window compresses fixed-height metric/model rows
+        # and makes stacked pages paint outside their visible viewport.
+        self.setMinimumSize(self.DESIGN_WIDTH, self.DESIGN_HEIGHT)
+        self.resize(self.DESIGN_WIDTH, self.DESIGN_HEIGHT)
         self.setObjectName("mainWindow")
 
         central = QWidget()
@@ -71,6 +98,106 @@ class MainAppWindow(QMainWindow):
             self.settings_manager.add_listener(self._apply_window_settings)
         self._apply_window_settings()
         QTimer.singleShot(0, self._apply_windows_chrome)
+
+    @classmethod
+    def constrained_client_size(cls, width: int, height: int, drive: str = "width") -> QSize:
+        """Return a standard-or-larger client size with the design aspect ratio."""
+        width = max(cls.DESIGN_WIDTH, int(width))
+        height = max(cls.DESIGN_HEIGHT, int(height))
+        if drive == "height":
+            width = max(cls.DESIGN_WIDTH, round(height * cls.DESIGN_ASPECT))
+            height = round(width / cls.DESIGN_ASPECT)
+        else:
+            height = max(cls.DESIGN_HEIGHT, round(width / cls.DESIGN_ASPECT))
+            width = round(height * cls.DESIGN_ASPECT)
+        return QSize(width, height)
+
+    def _normal_resize_target(self, size: QSize) -> QSize:
+        previous = self._last_normal_size
+        width_delta = abs(size.width() - previous.width()) / max(1, previous.width())
+        height_delta = abs(size.height() - previous.height()) / max(1, previous.height())
+        drive = "width" if width_delta >= height_delta else "height"
+        target = self.constrained_client_size(size.width(), size.height(), drive)
+        screen = self.screen()
+        if screen:
+            available = screen.availableGeometry().size()
+            frame_width = max(0, self.frameGeometry().width() - self.width())
+            frame_height = max(0, self.frameGeometry().height() - self.height())
+            max_width = max(self.DESIGN_WIDTH, available.width() - frame_width)
+            max_height = max(self.DESIGN_HEIGHT, available.height() - frame_height)
+            if target.width() > max_width or target.height() > max_height:
+                scale = min(max_width / target.width(), max_height / target.height())
+                fitted_width = max(self.DESIGN_WIDTH, round(target.width() * scale))
+                target = self.constrained_client_size(fitted_width, self.DESIGN_HEIGHT, "width")
+        return target
+
+    def _apply_pending_aspect_resize(self):
+        target = self._pending_aspect_size
+        self._pending_aspect_size = None
+        if target is None or self.isMaximized() or self.isFullScreen() or self.isMinimized():
+            return
+        if self.size() == target:
+            self._last_normal_size = QSize(target)
+            return
+        self._aspect_adjusting = True
+        self.resize(target)
+        self._aspect_adjusting = False
+        self._last_normal_size = QSize(target)
+
+    def resizeEvent(self, event: QResizeEvent):
+        super().resizeEvent(event)
+        if self._aspect_adjusting or self.isMaximized() or self.isFullScreen() or self.isMinimized():
+            return
+        target = self._normal_resize_target(event.size())
+        self._last_normal_size = QSize(event.size())
+        if abs(target.width() - event.size().width()) <= 1 and abs(target.height() - event.size().height()) <= 1:
+            self._last_normal_size = QSize(target)
+            return
+        self._pending_aspect_size = target
+        QTimer.singleShot(0, self._apply_pending_aspect_resize)
+
+    def nativeEvent(self, event_type, message):
+        """Lock interactive Windows edge/corner resizing to the design ratio."""
+        if os.name == "nt" and not self.isMaximized() and not self.isFullScreen():
+            try:
+                msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+                if msg.message == 0x0214 and msg.lParam:  # WM_SIZING
+                    rect = ctypes.cast(msg.lParam, ctypes.POINTER(_RECT)).contents
+                    current = self.frameGeometry()
+                    frame_width = max(0, current.width() - self.width())
+                    frame_height = max(0, current.height() - self.height())
+                    min_outer_width = self.DESIGN_WIDTH + frame_width
+                    min_outer_height = self.DESIGN_HEIGHT + frame_height
+                    outer_aspect = min_outer_width / max(1, min_outer_height)
+                    width = max(min_outer_width, rect.right - rect.left)
+                    height = max(min_outer_height, rect.bottom - rect.top)
+                    horizontal_edges = (1, 2)
+                    vertical_edges = (3, 6)
+                    if msg.wParam in horizontal_edges:
+                        drive = "width"
+                    elif msg.wParam in vertical_edges:
+                        drive = "height"
+                    else:
+                        dw = abs(width - current.width()) / max(1, current.width())
+                        dh = abs(height - current.height()) / max(1, current.height())
+                        drive = "width" if dw >= dh else "height"
+                    if drive == "width":
+                        height = max(min_outer_height, round(width / outer_aspect))
+                        width = round(height * outer_aspect)
+                    else:
+                        width = max(min_outer_width, round(height * outer_aspect))
+                        height = round(width / outer_aspect)
+                    if msg.wParam in (1, 4, 7):
+                        rect.left = rect.right - width
+                    else:
+                        rect.right = rect.left + width
+                    if msg.wParam in (3, 4, 5):
+                        rect.top = rect.bottom - height
+                    else:
+                        rect.bottom = rect.top + height
+            except Exception:
+                pass
+        return super().nativeEvent(event_type, message)
 
     def _apply_manager_theme(self):
         if self.theme_manager:

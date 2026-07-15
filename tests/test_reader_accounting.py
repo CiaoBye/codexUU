@@ -217,6 +217,28 @@ def test_task_board_reads_today_archive_time_and_cleans_markdown(monkeypatch, tm
     configure_statistics_timezone("system")
 
 
+def test_task_board_keeps_archived_history_sorted_by_archive_time(monkeypatch, tmp_path):
+    configure_statistics_timezone("utc")
+    now = datetime.now(timezone.utc)
+    db = tmp_path / "state_5.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE threads (id TEXT, title TEXT, preview TEXT, cwd TEXT, archived INTEGER, "
+            "created_at INTEGER, updated_at INTEGER, recency_at INTEGER, archived_at INTEGER)"
+        )
+        for item_id, title, minutes in (("older", "旧归档", 90), ("newer", "新归档", 5)):
+            stamp = int((now - timedelta(minutes=minutes)).timestamp())
+            conn.execute(
+                "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (item_id, title, "", str(tmp_path), 1, stamp, stamp, stamp, stamp),
+            )
+    monkeypatch.setattr(codex_reader, "_state_db_path", lambda: db)
+    monkeypatch.setattr(codex_reader, "_automations_dir", lambda: tmp_path / "none")
+    codex_reader.clear_cache()
+    assert [task.title for task in codex_reader.read_task_board()] == ["新归档", "旧归档"]
+    configure_statistics_timezone("system")
+
+
 def test_clear_cache_forces_fresh_aggregate_reads():
     codex_reader._store("probe", 1)
     assert codex_reader._cached("probe") == 1

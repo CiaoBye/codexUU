@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
+    QPointF,
     QParallelAnimationGroup,
     QPropertyAnimation,
     QRect,
@@ -243,7 +244,7 @@ class MetricCard(Surface):
 
     def __init__(self, label: str, icon: str, parent=None):
         super().__init__(parent=parent)
-        self.setMinimumHeight(146)
+        self.setMinimumHeight(136)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(18)
@@ -374,13 +375,18 @@ class MetricCard(Surface):
 
 
 class QuotaDial(QWidget):
+    center_activated = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.q5 = None
         self.q7 = None
         self.language = "zh"
         self.display_mode = "remaining"
-        self.setMinimumSize(168, 164)
+        # The summary card has a fixed vertical budget.  Keep the dial flexible
+        # so Qt never satisfies its minimum height by painting underneath the
+        # reset strip.
+        self.setMinimumSize(190, 138)
 
     def set_quota(self, q5, q7):
         self.q5, self.q7 = q5, q7
@@ -397,76 +403,154 @@ class QuotaDial(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        side = min(self.width(), self.height()) - 22
-        bounds = QRectF((self.width() - side) / 2, 7, side, side)
+        side = min(self.width(), self.height()) - 12
+        bounds = QRectF((self.width() - side) / 2, 3, side, side)
         available = [
             item for item in (
-                ("5h", self.q5, QColor("#3992ff")),
                 ("7d", self.q7, QColor("#8d74ff")),
+                ("5h", self.q5, QColor("#3992ff")),
             ) if item[1] is not None
         ]
         for index, (_, quota, color) in enumerate(available):
-            inset = index * 20 if len(available) > 1 else 8
+            inset = index * 20 if len(available) > 1 else 7
             rect = bounds.adjusted(inset, inset, -inset, -inset)
-            painter.setPen(QPen(QColor(127, 145, 172, 38), 10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(QColor(127, 145, 172, 38), 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawArc(rect, 0, 360 * 16)
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
             value = max(0.0, min(100.0, value))
-            painter.setPen(QPen(color, 10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(color, 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             direction = -1 if self.display_mode == "used" else 1
             painter.drawArc(rect, 270 * 16, direction * int(360 * 16 * value / 100))
 
-        painter.setPen(QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc"))
-        painter.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
+        text_color = QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc")
+        painter.setPen(text_color)
         center = bounds.center()
         if not available:
             painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Medium))
             text = "Unavailable" if self.language == "en" else "暂不可用"
             painter.drawText(QRectF(center.x() - 54, center.y() - 12, 108, 24), Qt.AlignmentFlag.AlignCenter, text)
             return
-        line_height = 24
-        start_y = center.y() - line_height * len(available) / 2
-        for index, (label, quota, _) in enumerate(available):
+        if len(available) == 1:
+            label, quota, color = available[0]
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
-            text = f"{label}  {value:.0f}%"
+            caption = f"{label.upper()} {'Usage' if self.language == 'en' else '使用率'}"
+            painter.setPen(color)
+            painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.DemiBold))
             painter.drawText(
-                QRectF(center.x() - 48, start_y + index * line_height, 96, line_height),
+                QRectF(center.x() - 86, center.y() - 27, 172, 20),
                 Qt.AlignmentFlag.AlignCenter,
-                text,
+                caption,
             )
+            painter.setPen(text_color)
+            painter.setFont(QFont("Segoe UI Variable Display", 29, QFont.Weight.Bold))
+            painter.drawText(
+                QRectF(center.x() - 92, center.y() + 1, 184, 38),
+                Qt.AlignmentFlag.AlignCenter,
+                f"{value:.0f}%",
+            )
+            return
+
+        # Scheme C: the inner 5H and outer 7D values are intentionally stacked,
+        # not compressed into a single line.  This mirrors the selected prototype.
+        entries = (("5H", self.q5, QColor("#3992ff"), -47), ("7D", self.q7, QColor("#8d74ff"), 13))
+        for label, quota, color, offset in entries:
+            if quota is None:
+                continue
+            value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
+            caption = f"{label} {'Usage' if self.language == 'en' else '使用率'}"
+            painter.setPen(color)
+            painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.DemiBold))
+            painter.drawText(
+                QRectF(center.x() - 72, center.y() + offset, 144, 17),
+                Qt.AlignmentFlag.AlignCenter,
+                caption,
+            )
+            painter.setPen(text_color)
+            painter.setFont(QFont("Segoe UI Variable Display", 20, QFont.Weight.Bold))
+            painter.drawText(
+                QRectF(center.x() - 78, center.y() + offset + 15, 156, 28),
+                Qt.AlignmentFlag.AlignCenter,
+                f"{value:.0f}%",
+            )
+        painter.setPen(QPen(QColor(149, 166, 193, 100), 1))
+        painter.drawLine(QPointF(center.x() - 55, center.y() + 3), QPointF(center.x() + 55, center.y() + 3))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            side = min(self.width(), self.height()) - 12
+            center = QPointF(self.width() / 2, 3 + side / 2)
+            delta = event.position() - center
+            if delta.x() ** 2 + delta.y() ** 2 <= (side * .36) ** 2:
+                self.center_activated.emit()
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
 
 
-class QuotaResetRow(QWidget):
-    def __init__(self, color: str, parent=None):
+class QuotaResetStrip(QFrame):
+    """Prototype C's dedicated reset area; adapts from two sections to one."""
+
+    def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("quotaResetStrip")
+        self.setFixedHeight(52)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(7)
-        dot = QLabel()
-        dot.setFixedSize(7, 7)
-        dot.setStyleSheet(f"background: {color}; border-radius: 3px;")
-        layout.addWidget(dot)
-        self.label = QLabel()
-        self.label.setObjectName("caption")
-        layout.addWidget(self.label)
-        layout.addStretch()
-        self.time = QLabel()
-        self.time.setObjectName("metricLabel")
-        self.time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(self.time)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(10)
+        self.five_section, self.five_label, self.five_time = self._section("metric-today.svg", "#3992ff")
+        self.seven_section, self.seven_label, self.seven_time = self._section("metric-week.svg", "#8d74ff")
+        self.divider = QFrame()
+        self.divider.setObjectName("quotaResetDivider")
+        self.divider.setFrameShape(QFrame.Shape.VLine)
+        layout.addWidget(self.five_section, 1)
+        layout.addWidget(self.divider)
+        layout.addWidget(self.seven_section, 1)
 
-    def update_value(self, prefix, quota, english=False):
-        self.setVisible(quota is not None)
-        if quota is None:
-            return
-        self.label.setText(f"{prefix} reset" if english else f"{prefix} 重置")
-        if quota.reset_time is None:
-            self.time.setText("--")
-            self.setToolTip("")
-            return
+    @staticmethod
+    def _section(icon_name, color):
+        section = QWidget()
+        layout = QHBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addStretch()
+        icon = icon_label(icon_name, 24)
+        layout.addWidget(icon)
+        text = QVBoxLayout()
+        text.setSpacing(0)
+        label = QLabel()
+        label.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: 700;")
+        text.addWidget(label)
+        time = QLabel("--")
+        time.setObjectName("quotaResetTime")
+        text.addWidget(time)
+        layout.addLayout(text)
+        layout.addStretch()
+        return section, label, time
+
+    @staticmethod
+    def _time_text(prefix, quota):
+        if quota is None or quota.reset_time is None:
+            return "--", ""
         local_time = quota.reset_time.astimezone(get_statistics_timezone().tzinfo())
-        self.time.setText(local_time.strftime("%H:%M") if prefix == "5h" else local_time.strftime("%m/%d %H:%M"))
-        self.setToolTip(local_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        return (
+            local_time.strftime("%H:%M") if prefix == "5H" else local_time.strftime("%m/%d %H:%M"),
+            local_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        )
+
+    def update_values(self, q5, q7, english=False):
+        self.five_section.setVisible(q5 is not None)
+        self.divider.setVisible(q5 is not None and q7 is not None)
+        self.seven_section.setVisible(q7 is not None)
+        for prefix, quota, label, time, section in (
+            ("5H", q5, self.five_label, self.five_time, self.five_section),
+            ("7D", q7, self.seven_label, self.seven_time, self.seven_section),
+        ):
+            if quota is None:
+                continue
+            label.setText(f"{prefix} reset time" if english else f"{prefix} 重置时间")
+            value, tooltip = self._time_text(prefix, quota)
+            time.setText(value)
+            section.setToolTip(tooltip)
 
 
 class QuotaPanel(Surface):
@@ -474,37 +558,23 @@ class QuotaPanel(Surface):
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
-        self.setFixedWidth(216)
+        self.setFixedWidth(260)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(3)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
         header = QHBoxLayout()
         header.setSpacing(4)
         header.addWidget(icon_label("quota.svg", 16))
-        self.title = QLabel("额度窗口")
+        self.title = QLabel("额度使用情况")
         self.title.setObjectName("sectionTitle")
         header.addWidget(self.title)
         header.addStretch()
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        self.mode_buttons = {}
-        for mode, text in (("remaining", "剩余"), ("used", "已用")):
-            button = QPushButton(text)
-            button.setObjectName("quotaToggle")
-            button.setCheckable(True)
-            button.setChecked(mode == "remaining")
-            button.setFixedHeight(24)
-            button.clicked.connect(lambda checked=False, value=mode: self._select_mode(value))
-            self.mode_group.addButton(button)
-            self.mode_buttons[mode] = button
-            header.addWidget(button)
         layout.addLayout(header)
         self.dial = QuotaDial()
+        self.dial.center_activated.connect(self._toggle_center_mode)
         layout.addWidget(self.dial, 1)
-        self.reset_5h = QuotaResetRow("#3992ff")
-        self.reset_7d = QuotaResetRow("#8d74ff")
-        layout.addWidget(self.reset_5h)
-        layout.addWidget(self.reset_7d)
+        self.reset_strip = QuotaResetStrip()
+        layout.addWidget(self.reset_strip)
         self.language = "zh"
         self.q5 = None
         self.q7 = None
@@ -514,23 +584,23 @@ class QuotaPanel(Surface):
         self.set_display_mode(mode)
         self.mode_changed.emit(mode)
 
+    def _toggle_center_mode(self):
+        self._select_mode("used" if self.display_mode == "remaining" else "remaining")
+
     def set_display_mode(self, mode):
         self.display_mode = mode if mode in ("remaining", "used") else "remaining"
-        self.mode_buttons[self.display_mode].setChecked(True)
         self.dial.set_display_mode(self.display_mode)
 
     def update_quota(self, q5, q7):
         self.q5, self.q7 = q5, q7
         self.dial.set_quota(q5, q7)
         english = self.language == "en"
-        self.reset_5h.update_value("5h", q5, english)
-        self.reset_7d.update_value("7d", q7, english)
+        self.reset_strip.update_values(q5, q7, english)
 
     def set_language(self, language):
         self.language = language
         self.dial.set_language(language)
-        self.mode_buttons["remaining"].setText("Remaining" if language == "en" else "剩余")
-        self.mode_buttons["used"].setText("Used" if language == "en" else "已用")
+        self.set_display_mode(self.display_mode)
         self.update_quota(self.q5, self.q7)
 
 
@@ -620,7 +690,7 @@ class MilestoneProgress(QWidget):
 class ValueCard(Surface):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
-        self.setMinimumHeight(94)
+        self.setMinimumHeight(88)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 11, 15, 11)
         layout.setSpacing(7)
@@ -792,7 +862,7 @@ class DashboardWidget(QWidget):
 
         self.setObjectName("dashboard")
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 16, 22, 16)
+        root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(12)
         root.addLayout(self._build_header())
         root.addWidget(self._build_summary())
@@ -917,10 +987,10 @@ class DashboardWidget(QWidget):
     def _build_summary(self):
         summary = QFrame()
         summary.setObjectName("summaryPanel")
-        summary.setFixedHeight(286)
+        summary.setFixedHeight(282)
         layout = QHBoxLayout(summary)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         self.quota_card = QuotaPanel()
         self.quota_card.mode_changed.connect(self._set_quota_display)
         if self.settings_manager:
@@ -957,8 +1027,8 @@ class DashboardWidget(QWidget):
         panel = QFrame()
         panel.setObjectName("tabPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(8)
         tab_row = QHBoxLayout()
         tab_row.setSpacing(0)
         self.tab_bar = SlidingTabBar(("今日任务", "用量趋势", "项目排行", "Skill"))
@@ -1064,7 +1134,7 @@ class DashboardWidget(QWidget):
         for button in self.model_scope_buttons.values():
             button.setToolTip(scope_tip)
         self.language_buttons["en" if english else "zh"].setChecked(True)
-        self.quota_card.title.setText("Quota windows" if english else "额度窗口")
+        self.quota_card.title.setText("Quota usage" if english else "额度使用情况")
         self.today_card.title.setText("Today" if english else "今日")
         self.week_card.title.setText("This week" if english else "本周")
         self.month_card.title.setText("This month" if english else "本月")

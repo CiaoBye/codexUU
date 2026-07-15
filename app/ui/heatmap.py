@@ -18,7 +18,9 @@ class TokenHeatmap(QWidget):
         super().__init__(parent)
         self.daily_tokens = []
         self._cells = []
-        self.setMinimumHeight(160)
+        # The heatmap must follow the visible card height.  A 160px minimum can
+        # exceed the stacked viewport and crop the seventh row in the main app.
+        self.setMinimumHeight(120)
         self.setMinimumWidth(485)
         self.setMouseTracking(True)
 
@@ -66,15 +68,14 @@ class TokenHeatmap(QWidget):
         levels = light_levels if self._is_light() else dark_levels
         weeks = 27
         self._cells = []
-        left, right = 32, 8
+        left, right = 30, 4
         available_width = max(1, self.width() - left - right)
-        cell_size = min(
-            17.0,
-            max(10.0, (available_width - (weeks - 1) * self.CELL_GAP_X) / weeks),
-        )
-        gap_x = max(2.0, (available_width - weeks * cell_size) / (weeks - 1))
-        top, bottom = 28.0, 28.0
+        top, bottom = 26.0, 10.0
         available_height = max(1.0, self.height() - top - bottom)
+        width_cell = (available_width - (weeks - 1) * 2.5) / weeks
+        height_cell = (available_height - 6 * 2.0) / 7
+        cell_size = max(8.0, min(17.0, width_cell, height_cell))
+        gap_x = max(2.0, (available_width - weeks * cell_size) / (weeks - 1))
         gap_y = max(2.0, (available_height - 7 * cell_size) / 6)
         for column in range(weeks):
             for row in range(7):
@@ -94,20 +95,31 @@ class TokenHeatmap(QWidget):
                 painter.drawRoundedRect(rect, 3, 3)
                 if item:
                     self._cells.append((rect, item))
+        self._layout_snapshot = {
+            "cell_size": cell_size,
+            "top": top,
+            "grid_bottom": top + 7 * cell_size + 6 * gap_y,
+            "widget_height": self.height(),
+        }
 
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#8a94a6"))
         for row, label in enumerate(("日", "一", "二", "三", "四", "五", "六")):
             painter.drawText(QRectF(0, top + row * (cell_size + gap_y) - 1, 22, 16), Qt.AlignmentFlag.AlignCenter, label)
         last_month = None
+        self._month_label_rects = []
         for column in range(weeks):
             month_date = start + timedelta(days=column * 7)
             if month_date.month != last_month:
+                label_width = 54.0
+                label_x = max(0.0, min(self.width() - label_width, left + column * (cell_size + gap_x) - 2))
+                label_rect = QRectF(label_x, 2, label_width, 18)
                 painter.drawText(
-                    QRectF(left + column * (cell_size + gap_x) - 2, 2, 54, 18),
+                    label_rect,
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                     month_date.strftime("%Y/%m"),
                 )
+                self._month_label_rects.append(label_rect)
                 last_month = month_date.month
 
     def _is_light(self) -> bool:

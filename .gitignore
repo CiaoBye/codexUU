@@ -11,3 +11,7 @@ venv/
 artifacts/
 screenshot*.png
 .mimocode/
+/build/
+/dist/
+/*.spec
+/tmp/

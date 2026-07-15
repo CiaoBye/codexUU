@@ -85,7 +85,7 @@ class ProjectUsageRow(QFrame):
         name.setObjectName("projectName")
         name.setToolTip(project.name)
         name_box.addWidget(name)
-        active = project.last_active.strftime("%m/%d %H:%M") if project.last_active else "--"
+        active = get_statistics_timezone().datetime_for(project.last_active).strftime("%m/%d %H:%M") if project.last_active else "--"
         detail = (
             f"{project.thread_count} threads · active {active}"
             if english else f"{project.thread_count} 线程 · 活跃于 {active}"
@@ -172,7 +172,7 @@ class RecentProjectRow(QFrame):
         name = QLabel(project.name or "default")
         name.setObjectName("projectName")
         text.addWidget(name)
-        active = project.last_active.strftime("%m/%d %H:%M") if project.last_active else "--"
+        active = get_statistics_timezone().datetime_for(project.last_active).strftime("%m/%d %H:%M") if project.last_active else "--"
         detail = f"{project.thread_count} threads · {active}" if english else f"{project.thread_count} 线程 · {active}"
         subtitle = QLabel(detail)
         subtitle.setObjectName("caption")

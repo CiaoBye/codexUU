@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.data.models import TaskItem, RuntimeScope
+from app.utils.statistics_timezone import get_statistics_timezone
 
 FONT = "Microsoft YaHei"
 
@@ -58,10 +59,15 @@ STATUS_PRIORITY = {"running": 0, "pending": 1, "scheduled": 2, "completed": 3}
 
 
 def aggregate_tasks_by_project(tasks):
-    """将今日线程按 Runtime + 项目聚合，项目状态由最活跃状态决定。"""
+    """按 Runtime + 项目聚合；归档历史也以项目而不是线程展示。"""
     groups = {}
+    completed_groups = {}
     for task in tasks or []:
         project_name = str(task.project or "").strip() or str(task.title or "未命名项目").strip()
+        if task.status == "completed":
+            key = (task.runtime, project_name.casefold())
+            completed_groups.setdefault(key, {"name": project_name, "items": []})["items"].append(task)
+            continue
         key = (task.runtime, project_name.casefold())
         groups.setdefault(key, {"name": project_name, "items": []})["items"].append(task)
 
@@ -75,6 +81,20 @@ def aggregate_tasks_by_project(tasks):
             id=latest.id,
             title=group["name"],
             status=status,
+            runtime=runtime,
+            updated_at=latest.updated_at,
+            project=group["name"],
+            detail=latest_title if latest_title.casefold() != group["name"].casefold() else "",
+            thread_count=len(items),
+        ))
+    for (runtime, _), group in completed_groups.items():
+        items = group["items"]
+        latest = max(items, key=lambda item: item.updated_at.timestamp() if item.updated_at else float("-inf"))
+        latest_title = str(latest.title or "").strip()
+        aggregated.append(TaskItem(
+            id=latest.id,
+            title=group["name"],
+            status="completed",
             runtime=runtime,
             updated_at=latest.updated_at,
             project=group["name"],
@@ -164,7 +184,8 @@ class TaskCard(QFrame):
         status_row.addWidget(count_label)
         status_row.addStretch()
         if task.updated_at:
-            time_label = QLabel(task.updated_at.strftime("%H:%M"))
+            local_time = get_statistics_timezone().datetime_for(task.updated_at)
+            time_label = QLabel(local_time.strftime("%H:%M"))
             time_label.setFont(QFont(FONT, 8))
             time_label.setObjectName("caption")
             status_row.addWidget(time_label)

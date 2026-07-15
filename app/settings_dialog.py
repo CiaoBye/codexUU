@@ -6,7 +6,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListView, QMessageBox, QPushButton, QScrollArea, QStyledItemDelegate, QTabWidget,
+    QLabel, QLineEdit, QListView, QMessageBox, QPushButton, QScrollArea, QStyledItemDelegate, QTabWidget, QDoubleSpinBox,
     QVBoxLayout, QWidget, QApplication,
 )
 
@@ -281,6 +281,13 @@ class SettingsDialog(QDialog):
         self.desktop_size_combo.setCurrentIndex(max(0, self.desktop_size_combo.findData(self.settings_manager.get_desktop_status_size())))
         self.desktop_size_combo.currentIndexChanged.connect(self._save_window_preferences)
         window_form.addRow("悬浮窗大小", self.desktop_size_combo)
+        self.desktop_scale_spin = QDoubleSpinBox()
+        self.desktop_scale_spin.setRange(20, 300)
+        self.desktop_scale_spin.setSingleStep(5)
+        self.desktop_scale_spin.setSuffix("%")
+        self.desktop_scale_spin.setValue(round(self.settings_manager.get_desktop_status_scale() * 100))
+        self.desktop_scale_spin.valueChanged.connect(self._save_window_preferences)
+        window_form.addRow("自定义缩放", self.desktop_scale_spin)
         self.lightweight_mode_cb = _check("轻量模式（运行时不显示任务栏图标）", self.settings_manager.get_lightweight_mode())
         self.lightweight_mode_cb.stateChanged.connect(self._save_window_preferences)
         window_form.addRow(self.lightweight_mode_cb)
@@ -500,6 +507,7 @@ class SettingsDialog(QDialog):
         self.settings_manager.set_desktop_status_enabled(self.desktop_status_cb.isChecked())
         self.settings_manager.set_desktop_status_style(self.desktop_style_combo.currentData() or "orb")
         self.settings_manager.set_desktop_status_size(self.desktop_size_combo.currentData() or "medium")
+        self.settings_manager.set_desktop_status_scale(self.desktop_scale_spin.value() / 100)
         self.settings_manager.set_lightweight_mode(self.lightweight_mode_cb.isChecked())
         self.settings_manager.set_quota_display(self.quota_combo.currentData() or "remaining")
         self.settings_manager.set_reduce_motion(self.reduce_motion_cb.isChecked())

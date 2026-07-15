@@ -87,6 +87,11 @@ QPushButton#miniTabButton:hover { background: #1f2734; color: #ffffff; }
 QPushButton#miniTabButton:checked { background: #2b3f64; color: #ffffff; font-weight: 700; }
 QLabel#planBadge { background: #252d3b; color: #dbe4f3; border: 1px solid #354157; border-radius: 16px; font-weight: 700; }
 QLabel#statusPill { background: #1d2a3b; color: #9fc1ff; border: 1px solid #30435f; border-radius: 8px; padding: 5px 9px; font-size: 10px; }
+QFrame#rangeStrip { background: #151d29; border: 1px solid #2b374a; border-radius: 8px; }
+QLabel#rangeValue { color: #dce8ff; font-family: 'Segoe UI Variable'; font-size: 10px; font-weight: 700; }
+QFrame#quotaResetStrip { background: #121924; border: 1px solid #2d3c54; border-radius: 12px; }
+QFrame#quotaResetDivider { background: #34435b; max-width: 1px; }
+QLabel#quotaResetTime { color: #f3f6fb; font-family: 'Segoe UI Variable Display'; font-size: 16px; font-weight: 700; }
 QLabel#positiveBadge { background: #16382d; color: #55d89a; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#negativeBadge { background: #40252b; color: #ff8190; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#neutralBadge { background: #252d3b; color: #aab6c8; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
@@ -211,6 +216,11 @@ QPushButton#miniTabButton:hover { background: #edf2f9; color: #26344b; }
 QPushButton#miniTabButton:checked { background: #dbe8ff; color: #1d54b1; font-weight: 700; }
 QLabel#planBadge { background: #ffffff; color: #526071; border: 1px solid #d7dfeb; border-radius: 16px; font-weight: 700; }
 QLabel#statusPill { background: #e8f1ff; color: #285fbd; border: 1px solid #c8daf8; border-radius: 8px; padding: 5px 9px; font-size: 10px; }
+QFrame#rangeStrip { background: #f8faff; border: 1px solid #d8e1ef; border-radius: 8px; }
+QLabel#rangeValue { color: #172744; font-family: 'Segoe UI Variable'; font-size: 10px; font-weight: 700; }
+QFrame#quotaResetStrip { background: #f8faff; border: 1px solid #d8e1ef; border-radius: 12px; }
+QFrame#quotaResetDivider { background: #d2dceb; max-width: 1px; }
+QLabel#quotaResetTime { color: #172744; font-family: 'Segoe UI Variable Display'; font-size: 16px; font-weight: 700; }
 QLabel#positiveBadge { background: #e3f7ee; color: #18845c; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#negativeBadge { background: #fff0f1; color: #c44756; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
 QLabel#neutralBadge { background: #edf2f9; color: #667085; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }

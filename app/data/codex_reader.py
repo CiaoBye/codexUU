@@ -7,6 +7,8 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from queue import Empty, Queue
+from threading import Thread
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +27,9 @@ from app.data.models import (
     TokenStats,
     ToolUsage,
     UsageSnapshot,
+    QUOTA_STATUS_AVAILABLE,
+    QUOTA_STATUS_EXHAUSTED,
+    QUOTA_STATUS_UNAVAILABLE,
     estimate_model_api_value,
     parse_jsonl_line,
 )
@@ -36,6 +41,13 @@ _cache: dict[str, tuple[float, object]] = {}
 _CACHE_TTL = 60
 _rollout_file_cache: dict[Path, tuple[int, int, datetime, list[dict]]] = {}
 _ROLLOUT_FILE_CACHE_LIMIT = 1024
+_last_quota_status = QUOTA_STATUS_UNAVAILABLE
+# Spawning the Desktop-managed standalone runtime for every 60-second token
+# refresh can make Codex repeatedly recycle that helper process.  Keep a
+# successfully verified live quota briefly; session/token aggregation still
+# refreshes on every cycle.
+_LIVE_QUOTA_TTL_SECONDS = 300
+_live_quota_cache: Optional[tuple[float, tuple[Optional[QuotaInfo], Optional[QuotaInfo]], str]] = None
 
 
 def _cached(key: str):
@@ -52,7 +64,9 @@ def _store(key: str, value):
 
 def clear_cache():
     """清除聚合快照；保留 rollout 文件级缓存，避免重复解析未变化日志。"""
+    global _last_quota_status
     _cache.clear()
+    _last_quota_status = QUOTA_STATUS_UNAVAILABLE
 
 
 def _codex_dir() -> Path:
@@ -94,55 +108,182 @@ def _parse_reset(value) -> Optional[datetime]:
         return None
 
 
-def read_quota_from_appserver() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
-    """Read rolling rate limits when the local Codex CLI is available."""
-    executable = shutil.which("codex")
-    if not executable:
-        return None
-    # The Microsoft Store package can resolve its bundled executable here, but
-    # child processes are denied access on many installations.  Its persisted
-    # rate-limit snapshot is therefore the reliable local channel; returning
-    # immediately avoids a failed process launch on every 60-second refresh.
-    if os.name == "nt" and "windowsapps" in executable.lower():
-        return None
+def _set_quota_status(status: str):
+    global _last_quota_status
+    _last_quota_status = status
+
+
+def get_last_quota_status() -> str:
+    """Return the status produced by the most recent quota read."""
+    return _last_quota_status
+
+
+def _status_from_rate_limits(
+    limits: object,
+    quota: tuple[Optional[QuotaInfo], Optional[QuotaInfo]],
+) -> str:
+    if any(quota):
+        return QUOTA_STATUS_AVAILABLE
+    # The Codex rollout schema keeps the limit id but clears both windows when
+    # the account has exhausted its allowance.  Treat only this explicit
+    # shape as exhausted; an absent/malformed object remains unverifiable.
+    if (
+        isinstance(limits, dict)
+        and limits.get("limit_id", limits.get("limitId")) == "codex"
+        and "primary" in limits
+        and "secondary" in limits
+        and limits.get("primary") is None
+        and limits.get("secondary") is None
+    ):
+        return QUOTA_STATUS_EXHAUSTED
+    return QUOTA_STATUS_UNAVAILABLE
+
+
+def _appserver_executables() -> list[str]:
+    """Return usable standalone Codex CLIs, excluding the Store execution alias.
+
+    The Store alias is discoverable through PATH but cannot consistently spawn
+    a stdio app-server.  Codex Desktop also keeps an independent runtime under
+    ``~/.codex``; prefer it when present so quota reads can ask the backend for
+    the current reset timestamp instead of relying only on persisted events.
+    """
+    candidates: list[str] = []
+    resolved = shutil.which("codex")
+    if resolved:
+        candidates.append(resolved)
+    codex_dir = _codex_dir()
+    candidates.extend([
+        str(codex_dir / ".sandbox-bin" / "codex.exe"),
+        str(codex_dir / "plugins" / ".plugin-appserver" / "codex.exe"),
+    ])
+    seen: set[str] = set()
+    usable: list[str] = []
+    for candidate in candidates:
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if normalized in seen or (os.name == "nt" and "windowsapps" in normalized):
+            continue
+        seen.add(normalized)
+        if os.path.isfile(candidate):
+            usable.append(candidate)
+    return usable
+
+
+def _appserver_rate_limits(executable: str) -> Optional[dict]:
+    """Read one current rate-limit response without closing app-server early."""
+    process = None
+    response_lines: Queue[str] = Queue()
+
+    def consume_stdout(stream):
+        try:
+            for line in stream:
+                response_lines.put(line)
+        finally:
+            stream.close()
+
     try:
-        # app-server is a JSON-RPC stdio service.  Sending one request batch
-        # avoids relying on the CLI's human-oriented output format.
-        request = "\n".join([
-            json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"clientInfo": {"name": "CodexUU", "version": APP_VERSION.lstrip("v")}},
-            }),
-            json.dumps({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}}),
-        ]) + "\n"
-        result = subprocess.run(
-            ["codex", "app-server"],
-            input=request,
-            capture_output=True,
+        process = subprocess.Popen(
+            [executable, "app-server", "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
-            timeout=8,
-            check=False,
+            bufsize=1,
         )
-        if result.returncode != 0:
+        if process.stdin is None or process.stdout is None:
             return None
-        payload = None
-        for line in result.stdout.splitlines():
+        reader = Thread(target=consume_stdout, args=(process.stdout,), daemon=True)
+        reader.start()
+
+        def send(message: dict):
+            process.stdin.write(json.dumps(message) + "\n")
+            process.stdin.flush()
+
+        send({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"clientInfo": {"name": "CodexUU", "version": APP_VERSION.lstrip("v")}},
+        })
+        deadline = time.monotonic() + 3.0
+        initialized = False
+        while time.monotonic() < deadline:
             try:
-                candidate = json.loads(line)
-                if candidate.get("id") == 2:
-                    payload = candidate.get("result", candidate)
-                    break
+                message = json.loads(response_lines.get(timeout=0.15))
+            except Empty:
+                continue
             except json.JSONDecodeError:
                 continue
-        if not isinstance(payload, dict):
+            if message.get("id") == 1 and "result" in message:
+                initialized = True
+                break
+        if not initialized:
             return None
-        limits = payload.get("rateLimits", {})
-        if not limits:
-            limits = payload.get("account", {}).get("rateLimits", {})
-        return _quota_pair_from_rate_limits(limits)
+
+        send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        # Current protocol defines this request with null params.  Empty object
+        # worked in older builds but is rejected by newer app-server versions.
+        send({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": None})
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                message = json.loads(response_lines.get(timeout=0.15))
+            except Empty:
+                continue
+            except json.JSONDecodeError:
+                continue
+            if message.get("id") == 2 and isinstance(message.get("result"), dict):
+                return message["result"]
+        return None
     except (OSError, subprocess.SubprocessError, TypeError, ValueError):
         return None
+    finally:
+        if process is not None:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except OSError:
+                pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+
+
+def _codex_rate_limits_from_response(payload: dict) -> dict:
+    """Select the Codex bucket from legacy and current app-server responses."""
+    buckets = payload.get("rateLimitsByLimitId")
+    if isinstance(buckets, dict) and isinstance(buckets.get("codex"), dict):
+        return buckets["codex"]
+    limits = payload.get("rateLimits")
+    if isinstance(limits, dict):
+        return limits
+    account = payload.get("account")
+    if isinstance(account, dict) and isinstance(account.get("rateLimits"), dict):
+        return account["rateLimits"]
+    return {}
+
+
+def read_quota_from_appserver() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
+    """Read rolling rate limits when the local Codex CLI is available."""
+    global _live_quota_cache
+    now = time.monotonic()
+    if _live_quota_cache is not None:
+        checked_at, quota, status = _live_quota_cache
+        if now - checked_at < _LIVE_QUOTA_TTL_SECONDS:
+            _set_quota_status(status)
+            return quota
+    for executable in _appserver_executables():
+        payload = _appserver_rate_limits(executable)
+        if not isinstance(payload, dict):
+            continue
+        limits = _codex_rate_limits_from_response(payload)
+        quota = _quota_pair_from_rate_limits(limits)
+        status = _status_from_rate_limits(limits, quota)
+        _set_quota_status(status)
+        _live_quota_cache = (now, quota, status)
+        return quota
+    _set_quota_status(QUOTA_STATUS_UNAVAILABLE)
+    return None
 
 
 def _quota_pair_from_rate_limits(limits: dict) -> tuple[Optional[QuotaInfo], Optional[QuotaInfo]]:
@@ -187,6 +328,7 @@ def read_quota_from_session_events() -> Optional[tuple[Optional[QuotaInfo], Opti
     """Read the newest persisted Codex rate-limit snapshot without a full history scan."""
     cached = _cached("quota_session_events")
     if cached is not None:
+        _set_quota_status(_cached("quota_session_status") or QUOTA_STATUS_UNAVAILABLE)
         return cached
     # The current quota is written into recent token_count events.  Sampling the
     # newest files is both the most current local source available to the Store
@@ -198,8 +340,16 @@ def read_quota_from_session_events() -> Optional[tuple[Optional[QuotaInfo], Opti
             if not isinstance(limits, dict):
                 continue
             result = _quota_pair_from_rate_limits(limits)
-            if any(result):
-                return _store("quota_session_events", result)
+            status = _status_from_rate_limits(limits, result)
+            # A newest event with explicit empty windows is authoritative: do
+            # not resurrect an older quota snapshot after a reset or account
+            # state change.  Codex uses this empty shape after exhaustion, so
+            # preserve the status even though there is no honest window to draw.
+            _set_quota_status(status)
+            _store("quota_session_status", status)
+            return _store("quota_session_events", result)
+    _set_quota_status(QUOTA_STATUS_UNAVAILABLE)
+    _store("quota_session_status", QUOTA_STATUS_UNAVAILABLE)
     return _store("quota_session_events", None)
 
 
@@ -309,8 +459,8 @@ def _model_context_from_event(event: dict) -> tuple[str, str, str]:
     return model, effort, turn_id
 
 
-def _iter_token_deltas(days: int = 180) -> Iterator[tuple[Path, datetime, str, TokenBreakdown, dict]]:
-    cache_key = f"token_deltas:{days}"
+def _iter_token_deltas(days: Optional[int] = None) -> Iterator[tuple[Path, datetime, str, TokenBreakdown, dict]]:
+    cache_key = f"token_deltas:{days if days is not None else 'all'}"
     cached = _cached(cache_key)
     if cached is not None:
         yield from cached
@@ -344,14 +494,14 @@ def _iter_token_deltas(days: int = 180) -> Iterator[tuple[Path, datetime, str, T
     yield from records
 
 
-def _iter_rollout_events(days: int = 180) -> Iterator[tuple[Path, datetime, dict]]:
-    cache_key = f"rollout_events:{days}"
+def _iter_rollout_events(days: Optional[int] = None) -> Iterator[tuple[Path, datetime, dict]]:
+    cache_key = f"rollout_events:{days if days is not None else 'all'}"
     cached = _cached(cache_key)
     if cached is not None:
         yield from cached
         return
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days) if days is not None else None
     records: list[tuple[Path, datetime, dict]] = []
     seen_files: set[Path] = set()
     for root in (_sessions_dir(), _archived_dir()):
@@ -361,7 +511,7 @@ def _iter_rollout_events(days: int = 180) -> Iterator[tuple[Path, datetime, dict
             try:
                 stat = path.stat()
                 mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-                if mtime < cutoff:
+                if cutoff is not None and mtime < cutoff:
                     continue
                 seen_files.add(path)
                 events = _read_rollout_file_events(path, stat, mtime)
@@ -459,7 +609,7 @@ def read_session_tokens() -> TokenBreakdown:
     if cached is not None:
         return cached
     total = TokenBreakdown()
-    for _, _, _, breakdown, _ in _iter_token_deltas(days=180):
+    for _, _, _, breakdown, _ in _iter_token_deltas():
         total.cached_input += breakdown.cached_input
         total.uncached_input += breakdown.uncached_input
         total.output += breakdown.output
@@ -471,7 +621,7 @@ def read_daily_tokens() -> list[DailyToken]:
     if cached is not None:
         return cached
     daily: dict[str, DailyToken] = {}
-    for _, mtime, timestamp, breakdown, _ in _iter_token_deltas(days=180):
+    for _, mtime, timestamp, breakdown, _ in _iter_token_deltas():
         day = _event_date(timestamp, mtime)
         key = day.strftime("%Y-%m-%d")
         item = daily.setdefault(key, DailyToken(date=day, runtime=RuntimeScope.CODEX))
@@ -479,7 +629,7 @@ def read_daily_tokens() -> list[DailyToken]:
         item.uncached_input += breakdown.uncached_input
         item.output += breakdown.output
         item.total = item.cached_input + item.uncached_input + item.output
-    result = sorted(daily.values(), key=lambda item: item.date, reverse=True)[:180]
+    result = sorted(daily.values(), key=lambda item: item.date, reverse=True)
     return _store("daily_tokens", result)
 
 
@@ -497,7 +647,7 @@ def read_model_usage() -> list[ModelUsage]:
         target.uncached_input += value.uncached_input
         target.output += value.output
 
-    for path, mtime, timestamp, breakdown, event in _iter_token_deltas(days=180):
+    for path, mtime, timestamp, breakdown, event in _iter_token_deltas():
         model = str(event.get("_codexu_model") or "").strip()
         effort = str(event.get("_codexu_effort") or "").strip().lower()
         item = grouped[(model, effort)]
@@ -566,7 +716,7 @@ def read_model_priced_values() -> dict[str, float | int]:
     grouped = {period: defaultdict(TokenBreakdown) for period in periods}
     priced_tokens = 0
     unpriced_tokens = 0
-    for _, mtime, timestamp, breakdown, event in _iter_token_deltas(days=180):
+    for _, mtime, timestamp, breakdown, event in _iter_token_deltas():
         model = str(event.get("_codexu_model") or "")
         if estimate_model_api_value(TokenBreakdown(), model) is None:
             unpriced_tokens += breakdown.total
@@ -709,7 +859,7 @@ def read_projects() -> list[ProjectStats]:
     if cached is not None:
         return cached
     data = defaultdict(lambda: {
-        "tokens": 0, "threads": 0, "last": None,
+        "name": "", "tokens": 0, "threads": 0, "last": None,
         "breakdown": TokenBreakdown(), "recent": TokenBreakdown(),
         "week": TokenBreakdown(), "month": TokenBreakdown(),
         "models": defaultdict(TokenBreakdown),
@@ -739,11 +889,13 @@ def read_projects() -> list[ProjectStats]:
             for model, tokens in by_model.items()
         ), 2)
 
-    for path, mtime, timestamp, breakdown, event in _iter_token_deltas(days=180):
-        name = _project_name(path, event, path_projects)
-        if not name:
+    for path, mtime, timestamp, breakdown, event in _iter_token_deltas():
+        directory = _project_name(path, event, path_projects)
+        if not directory:
             continue
-        item = data[name]
+        key = _normalized_path(directory)
+        item = data[key]
+        item["name"] = directory.name
         if path not in seen_paths:
             item["threads"] += 1
             seen_paths.add(path)
@@ -802,9 +954,12 @@ def read_projects() -> list[ProjectStats]:
             ))
         return sorted(result, key=lambda item: item.last_active or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:100]
 
+    name_counts = defaultdict(int)
+    for item in data.values():
+        name_counts[item["name"]] += 1
     result = [
         ProjectStats(
-            name=name,
+            name=(item["name"] if name_counts[item["name"]] == 1 else f"{item['name']} · {Path(key).parent}"),
             token_total=int(item["tokens"]),
             estimated_value=priced_value(item["models"]),
             thread_count=int(item["threads"]),
@@ -827,7 +982,7 @@ def read_projects() -> list[ProjectStats]:
             model_usage=model_usage(item["models"]),
             sessions=session_usage(item["sessions"]),
         )
-        for name, item in data.items()
+        for key, item in data.items()
     ]
     result.sort(key=lambda item: item.token_total, reverse=True)
     return _store("projects", result[:20])
@@ -871,7 +1026,7 @@ def _project_directory(value: str | Path) -> Optional[Path]:
     return None
 
 
-def _thread_project_map() -> dict[str, Optional[str]]:
+def _thread_project_map() -> dict[str, Optional[Path]]:
     db_path = _state_db_path()
     if not db_path:
         return {}
@@ -884,7 +1039,7 @@ def _thread_project_map() -> dict[str, Optional[str]]:
             ).fetchall()
         for rollout_path, cwd in rows:
             directory = _project_directory(cwd)
-            result[_normalized_path(rollout_path)] = directory.name if directory else None
+            result[_normalized_path(rollout_path)] = directory
     except sqlite3.Error:
         return {}
     return result
@@ -894,7 +1049,7 @@ def _project_name(
     path: Path,
     event: dict,
     path_projects: Optional[dict[str, Optional[str]]] = None,
-) -> Optional[str]:
+) -> Optional[Path]:
     """Return only an existing project directory, never a chat/session label."""
     normalized = _normalized_path(path)
     if path_projects is not None and normalized in path_projects:
@@ -907,7 +1062,7 @@ def _project_name(
         if isinstance(value, str) and value.strip():
             directory = _project_directory(value)
             if directory:
-                return directory.name
+                return directory
     return None
 
 
@@ -948,20 +1103,13 @@ def read_tool_usage() -> list[ToolUsage]:
     if cached is not None:
         return cached
     counts: defaultdict[str, int] = defaultdict(int)
-    for _, _, event in _iter_rollout_events(days=180):
+    for _, _, event in _iter_rollout_events():
         payload = event.get("payload")
         if isinstance(payload, dict) and payload.get("type") in ("function_call", "custom_tool_call"):
             name = payload.get("name")
             if isinstance(name, str) and name.strip():
                 counts[name.strip()] += 1
             continue
-        for key in ("tool_calls", "tools", "tool_use"):
-            for name in _names_from_event(event, key):
-                counts[name] += 1
-        if isinstance(payload, dict):
-            for key in ("tool_calls", "tools", "tool_use"):
-                for name in _names_from_event(payload, key):
-                    counts[name] += 1
     result = sorted(
         [ToolUsage(
             name=name,
@@ -1004,7 +1152,7 @@ def read_skill_usage() -> list[SkillUsage]:
             return None
         return candidate
 
-    for _, _, event in _iter_rollout_events(days=180):
+    for _, _, event in _iter_rollout_events():
         for key in ("skill", "skills"):
             for name in _names_from_event(event, key):
                 counts[name] += 1
@@ -1048,7 +1196,15 @@ def read_skill_usage() -> list[SkillUsage]:
 
 
 def read_codex_snapshot() -> UsageSnapshot:
-    quota = read_quota_from_appserver() or read_quota_from_session_events()
+    _set_quota_status(QUOTA_STATUS_UNAVAILABLE)
+    quota = read_quota_from_appserver()
+    if quota is None or (
+        not any(quota) and get_last_quota_status() == QUOTA_STATUS_UNAVAILABLE
+    ):
+        session_quota = read_quota_from_session_events()
+        if session_quota is not None or get_last_quota_status() != QUOTA_STATUS_UNAVAILABLE:
+            quota = session_quota
+    quota_status = get_last_quota_status()
     db_tokens = read_token_totals_from_db()
     session_tokens = read_session_tokens()
     daily = read_daily_tokens()
@@ -1092,6 +1248,7 @@ def read_codex_snapshot() -> UsageSnapshot:
     return UsageSnapshot(
         quota_5h=quota[0] if quota else None,
         quota_7d=quota[1] if quota else None,
+        quota_status=quota_status,
         tokens=tokens,
         api_equivalent_value=float(priced["cumulative"]),
         today_api_equivalent_value=float(priced["today"]),

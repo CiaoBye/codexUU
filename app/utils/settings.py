@@ -9,7 +9,6 @@ DEFAULT_STATISTICS_TIMEZONE = "system"
 DEFAULT_STATISTICS_TIMEZONE_ID = "Asia/Shanghai"
 DEFAULT_AUTO_UPDATE = True
 DEFAULT_INCLUDE_BETA = True
-DEFAULT_ACTIVE_RUNTIME = "codex"
 DEFAULT_QUOTA_DISPLAY = "remaining"
 DEFAULT_MODEL_SCOPE = "all"
 DEFAULT_SHORTCUT = "Ctrl+U"
@@ -35,7 +34,6 @@ class SettingsManager:
         self.statistics_timezone_id = DEFAULT_STATISTICS_TIMEZONE_ID
         self.auto_update = DEFAULT_AUTO_UPDATE
         self.include_beta = DEFAULT_INCLUDE_BETA
-        self.active_runtime = DEFAULT_ACTIVE_RUNTIME
         self.quota_display = DEFAULT_QUOTA_DISPLAY
         self.model_scope = DEFAULT_MODEL_SCOPE
         self.shortcut = DEFAULT_SHORTCUT
@@ -62,9 +60,6 @@ class SettingsManager:
 
     def get_update_preferences(self) -> tuple[bool, bool]:
         return self.auto_update, self.include_beta
-
-    def get_active_runtime(self) -> str:
-        return self.active_runtime
 
     def get_quota_display(self) -> str:
         return self.quota_display
@@ -98,11 +93,6 @@ class SettingsManager:
 
     def get_desktop_status_scale(self) -> float:
         return self.desktop_status_scale
-
-    def set_active_runtime(self, runtime: str):
-        if runtime in ("codex", "claudeCode"):
-            self.active_runtime = runtime
-            self._notify_listeners()
 
     def set_quota_display(self, mode: str):
         if mode in ("remaining", "used"):
@@ -200,7 +190,6 @@ class SettingsManager:
                 timezone_id = data.get("statistics_timezone_id", DEFAULT_STATISTICS_TIMEZONE_ID)
                 auto_update = data.get("auto_update", DEFAULT_AUTO_UPDATE)
                 include_beta = data.get("include_beta", DEFAULT_INCLUDE_BETA)
-                active_runtime = data.get("active_runtime", DEFAULT_ACTIVE_RUNTIME)
                 quota_display = data.get("quota_display", DEFAULT_QUOTA_DISPLAY)
                 model_scope = data.get("model_scope", DEFAULT_MODEL_SCOPE)
                 shortcut = data.get("shortcut", DEFAULT_SHORTCUT)
@@ -220,7 +209,6 @@ class SettingsManager:
                 self.statistics_timezone_id = str(timezone_id or DEFAULT_STATISTICS_TIMEZONE_ID)
                 self.auto_update = bool(auto_update)
                 self.include_beta = bool(include_beta)
-                self.active_runtime = active_runtime if active_runtime in ("codex", "claudeCode") else DEFAULT_ACTIVE_RUNTIME
                 self.quota_display = quota_display if quota_display in ("remaining", "used") else DEFAULT_QUOTA_DISPLAY
                 self.model_scope = model_scope if model_scope in ("gpt", "all") else DEFAULT_MODEL_SCOPE
                 self.shortcut = str(shortcut or DEFAULT_SHORTCUT)
@@ -245,7 +233,6 @@ class SettingsManager:
                 self.statistics_timezone_id = DEFAULT_STATISTICS_TIMEZONE_ID
                 self.auto_update = DEFAULT_AUTO_UPDATE
                 self.include_beta = DEFAULT_INCLUDE_BETA
-                self.active_runtime = DEFAULT_ACTIVE_RUNTIME
                 self.quota_display = DEFAULT_QUOTA_DISPLAY
                 self.model_scope = DEFAULT_MODEL_SCOPE
                 self.shortcut = DEFAULT_SHORTCUT
@@ -269,7 +256,6 @@ class SettingsManager:
             "statistics_timezone_id": self.statistics_timezone_id,
             "auto_update": self.auto_update,
             "include_beta": self.include_beta,
-            "active_runtime": self.active_runtime,
             "quota_display": self.quota_display,
             "model_scope": self.model_scope,
             "shortcut": self.shortcut,

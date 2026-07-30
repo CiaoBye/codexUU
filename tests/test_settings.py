@@ -10,7 +10,6 @@ def test_settings_manager_default_values():
         manager = SettingsManager(config_path)
         assert manager.get_language() == "zh"
         assert manager.get_theme() == "dark"
-        assert manager.get_active_runtime() == "codex"
         assert manager.get_quota_display() == "remaining"
         assert manager.get_model_scope() == "all"
         assert manager.get_shortcut() == "Ctrl+U"
@@ -30,7 +29,6 @@ def test_settings_manager_save_and_load():
         manager.set_language("en")
         manager.set_theme("light")
         manager.set_statistics_timezone("fixed", "Asia/Shanghai")
-        manager.set_active_runtime("claudeCode")
         manager.set_quota_display("used")
         manager.set_model_scope("gpt")
         manager.set_shortcut("Ctrl+Alt+K")
@@ -50,7 +48,6 @@ def test_settings_manager_save_and_load():
         assert manager2.get_language() == "en"
         assert manager2.get_theme() == "light"
         assert manager2.get_statistics_timezone() == ("fixed", "Asia/Shanghai")
-        assert manager2.get_active_runtime() == "claudeCode"
         assert manager2.get_quota_display() == "used"
         assert manager2.get_model_scope() == "gpt"
         assert manager2.get_shortcut() == "Ctrl+Alt+K"

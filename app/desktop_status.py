@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QMenu, QWidget
 
-from app.data.models import format_tokens
+from app.data.models import QUOTA_STATUS_EXHAUSTED, format_tokens
 from app.utils.statistics_timezone import get_statistics_timezone
 
 
@@ -73,6 +73,7 @@ class DesktopStatusPanel(QWidget):
         self._today = "0"
         self._q5 = None
         self._q7 = None
+        self._quota_status = "unavailable"
         self._display_mode = "remaining"
         self._press_position: QPoint | None = None
         self._dragged = False
@@ -129,19 +130,26 @@ class DesktopStatusPanel(QWidget):
         return self._BASE_GEOMETRY[self._style]
 
     def update_snapshot(self, runtime: str, snapshot):
-        self._runtime = "Claude Code" if runtime == "claudeCode" else "Codex"
+        self._runtime = "Codex"
         self._today = format_tokens(snapshot.tokens.today.total)
         self._q5 = snapshot.quota_5h
         self._q7 = snapshot.quota_7d
+        self._quota_status = getattr(snapshot, "quota_status", "available" if self._q5 or self._q7 else "unavailable")
         self._update_tooltip()
         self.update()
+
+    def _empty_quota_label(self, compact: bool = False) -> str:
+        if self._quota_status == QUOTA_STATUS_EXHAUSTED:
+            return "额度已用尽" if not compact else "已用尽"
+        return "暂无可验证额度" if not compact else "暂无额度"
 
     def _update_tooltip(self):
         available = [("5H", self._q5), ("7D", self._q7)]
         available = [(label, quota) for label, quota in available if quota is not None]
         mode_label = "已用" if self._display_mode == "used" else "剩余"
         if not available:
-            tip = f"{self._runtime}\n暂无可验证额度窗口\n单击打开主窗口 · 双击最小化主窗口 · 右键调整样式"
+            state = self._empty_quota_label()
+            tip = f"{self._runtime}\n{state}\n单击打开主窗口 · 双击最小化主窗口 · 右键调整样式"
         else:
             lines = [self._runtime]
             for label, quota in available:
@@ -365,7 +373,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_badge(painter, QRectF(panel.center().x() - 50, panel.top() + 132, 100, 23), self._short_reset(label, quota), text, muted, edge)
             self._draw_text(painter, QRectF(panel.left() + 16, panel.bottom() - 34, 150, 23), f"今日 {self._today}", self._scaled_font("Microsoft YaHei", 11, QFont.Weight.DemiBold), text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         else:
-            self._draw_centered(painter, panel, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, panel, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
 
     def _paint_halo(self, painter, surface, edge, track, primary, secondary, text, muted):
         """双环仪表 A：纵向仪表、图例与今日用量。"""
@@ -385,7 +393,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_centered(painter, QRectF(panel.center().x() - 65, panel.top() + 72, 130, 23), label, self._scaled_font("Segoe UI Variable", 12, QFont.Weight.Bold), color)
             self._draw_centered(painter, QRectF(panel.center().x() - 75, panel.top() + 98, 150, 48), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 32, QFont.Weight.Bold), color)
         else:
-            self._draw_centered(painter, ring_bounds, "暂无额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, ring_bounds, self._empty_quota_label(compact=True), self._scaled_font("Microsoft YaHei", 11), muted)
         divider_y = panel.bottom() - 51
         painter.setPen(QPen(edge, 1))
         painter.drawLine(QLineF(panel.left() + 24, divider_y, panel.right() - 24, divider_y))
@@ -408,7 +416,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_centered(painter, QRectF(panel.left() + 28, panel.center().y() - 25, 116, 50), f"{self._quota_value(quota):.0f}%", self._scaled_font("Segoe UI Variable Display", 29, QFont.Weight.Bold), text)
             self._draw_badge(painter, QRectF(panel.left() + 43, panel.center().y() + 29, 86, 22), self._short_reset(label, quota), text, muted, edge)
         else:
-            self._draw_centered(painter, ring_bounds.adjusted(26, 26, -26, -26), "暂无额度", self._scaled_font("Microsoft YaHei", 9), muted)
+            self._draw_centered(painter, ring_bounds.adjusted(26, 26, -26, -26), self._empty_quota_label(compact=True), self._scaled_font("Microsoft YaHei", 9), muted)
         divider_x = panel.left() + 171
         painter.setPen(QPen(edge, 1))
         painter.drawLine(QLineF(divider_x, panel.top() + 24, divider_x, panel.bottom() - 24))
@@ -471,7 +479,7 @@ class DesktopStatusPanel(QWidget):
         rows = [("5H", self._q5, secondary), ("7D", self._q7, primary)]
         rows = [item for item in rows if item[1] is not None]
         if not rows:
-            self._draw_centered(painter, QRectF(divider_x + 8, 47, panel.right() - divider_x - 16, 34), "暂无可验证额度", self._scaled_font("Microsoft YaHei", 9), muted)
+            self._draw_centered(painter, QRectF(divider_x + 8, 47, panel.right() - divider_x - 16, 34), self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 9), muted)
         else:
             content_left = divider_x + 17
             content_width = panel.right() - content_left - 16
@@ -508,7 +516,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_centered(painter, QRectF(center_x - 68, circle.top() + 105, 136, 43), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 34, QFont.Weight.Bold), text)
             self._draw_centered(painter, QRectF(center_x - 68, circle.top() + 166, 136, 16), self._short_reset(label, quota), self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
         else:
-            self._draw_centered(painter, circle, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
 
     def _paint_halo_c(self, painter, surface, edge, track, primary, secondary, text, muted):
         """Dual-ring gauge C: ticks and all labels stay inside a round dial."""
@@ -538,7 +546,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_centered(painter, QRectF(center_x - 72, circle.top() + 112, 144, 43), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 34, QFont.Weight.Bold), text)
             self._draw_centered(painter, QRectF(center_x - 70, circle.top() + 171, 140, 16), self._short_reset(label, quota), self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
         else:
-            self._draw_centered(painter, circle, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
 
     def _paint_mini_c(self, painter, surface, edge, track, primary, secondary, text, muted):
         """Minimal ring C: sparse split values within the circle only."""
@@ -562,7 +570,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_centered(painter, QRectF(center_x - 70, circle.top() + 109, 140, 42), f"{value:.0f}%", self._scaled_font("Segoe UI Variable Display", 34, QFont.Weight.Bold), text)
             self._draw_centered(painter, QRectF(center_x - 70, circle.top() + 164, 140, 16), self._short_reset(label, quota), self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
         else:
-            self._draw_centered(painter, circle, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
 
     def _paint_capsule_b(self, painter, surface, edge, track, primary, secondary, text, muted):
         """Status capsule B: compact meter bands, deliberately no circular gauge."""
@@ -585,7 +593,7 @@ class DesktopStatusPanel(QWidget):
             self._draw_text(painter, QRectF(content_left + 34, y + 3, content_width - 34, 15), f"{value:.0f}%", self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self._draw_centered(painter, QRectF(reset_left, y - 10, 38, 28), self._short_reset(label, quota), self._scaled_font("Segoe UI Variable", 7, QFont.Weight.DemiBold), muted)
         if not rows:
-            self._draw_centered(painter, QRectF(content_left, panel.top() + 59, content_width, 24), "暂无额度", self._scaled_font("Microsoft YaHei", 9), muted)
+            self._draw_centered(painter, QRectF(content_left, panel.top() + 59, content_width, 24), self._empty_quota_label(compact=True), self._scaled_font("Microsoft YaHei", 9), muted)
 
     def _paint_tracks_b(self, painter, surface, edge, track, primary, secondary, text, muted):
         """Double-track card B: integrated header and vertically stacked tracks."""
@@ -596,7 +604,7 @@ class DesktopStatusPanel(QWidget):
         painter.drawLine(QLineF(panel.left() + 18, panel.top() + 47, panel.right() - 18, panel.top() + 47))
         rows = self._available_quotas(secondary, primary)
         if not rows:
-            self._draw_centered(painter, QRectF(panel.left() + 18, panel.top() + 73, panel.width() - 36, 30), "暂无可验证额度", self._scaled_font("Microsoft YaHei", 9), muted)
+            self._draw_centered(painter, QRectF(panel.left() + 18, panel.top() + 73, panel.width() - 36, 30), self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 9), muted)
             return
         content_left = panel.left() + 18
         content_width = panel.width() - 36
@@ -628,7 +636,7 @@ class DesktopStatusPanel(QWidget):
             return
         quota = self._q7 or self._q5
         if quota is None:
-            self._draw_centered(painter, circle, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
             return
         label, color = ("7D", primary) if self._q7 is not None else ("5H", secondary)
         self._draw_ring(painter, circle.adjusted(24, 24, -24, -24), quota, color, track, 12)
@@ -641,6 +649,9 @@ class DesktopStatusPanel(QWidget):
         """Prototype C: numeric outer dial and contained 5H/7D gauge hierarchy."""
         circle = self._draw_circle_panel(painter, surface, edge)
         center_x = circle.center().x()
+        if self._q5 is None and self._q7 is None:
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
+            return
         outer_ticks = circle.adjusted(15, 15, -15, -15)
         self._draw_tick_ring(painter, outer_ticks, track, 40, 5)
         if self._q5 is not None and self._q7 is not None:
@@ -663,7 +674,7 @@ class DesktopStatusPanel(QWidget):
             return
         quota = self._q7 or self._q5
         if quota is None:
-            self._draw_centered(painter, circle, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
             return
         label, color = ("7D", primary) if self._q7 is not None else ("5H", secondary)
         self._draw_ring(painter, circle.adjusted(25, 25, -25, -25), quota, color, track, 10)
@@ -677,6 +688,9 @@ class DesktopStatusPanel(QWidget):
         """Prototype C: a thinner concentric ring with a compact split-value core."""
         circle = self._draw_circle_panel(painter, surface, edge)
         center_x = circle.center().x()
+        if self._q5 is None and self._q7 is None:
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
+            return
         painter.setPen(QPen(edge, 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(circle.adjusted(19, 19, -19, -19))
@@ -696,7 +710,7 @@ class DesktopStatusPanel(QWidget):
             return
         quota = self._q7 or self._q5
         if quota is None:
-            self._draw_centered(painter, circle, "暂无可验证额度", self._scaled_font("Microsoft YaHei", 11), muted)
+            self._draw_centered(painter, circle, self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 11), muted)
             return
         label, color = ("7D", primary) if self._q7 is not None else ("5H", secondary)
         self._draw_ring(painter, circle.adjusted(30, 30, -30, -30), quota, color, track, 9)
@@ -718,7 +732,7 @@ class DesktopStatusPanel(QWidget):
         self._draw_centered(painter, QRectF(panel.left() + 8, panel.top() + 60, today_width - 16, 30), self._today, self._scaled_font("Segoe UI Variable Display", 17, QFont.Weight.Bold), text)
         rows = self._available_quotas(secondary, primary)
         if not rows:
-            self._draw_centered(painter, QRectF(content_left, panel.top() + 62, content_right - content_left, 24), "暂无额度", self._scaled_font("Microsoft YaHei", 9), muted)
+            self._draw_centered(painter, QRectF(content_left, panel.top() + 62, content_right - content_left, 24), self._empty_quota_label(compact=True), self._scaled_font("Microsoft YaHei", 9), muted)
             return
         start_y = panel.top() + (38 if len(rows) == 2 else 57)
         for index, (label, quota, color) in enumerate(rows):
@@ -737,7 +751,7 @@ class DesktopStatusPanel(QWidget):
         painter.drawLine(QLineF(panel.left() + 18, panel.top() + 47, panel.right() - 18, panel.top() + 47))
         rows = self._available_quotas(secondary, primary)
         if not rows:
-            self._draw_centered(painter, QRectF(panel.left() + 18, panel.top() + 73, panel.width() - 36, 30), "暂无可验证额度", self._scaled_font("Microsoft YaHei", 9), muted)
+            self._draw_centered(painter, QRectF(panel.left() + 18, panel.top() + 73, panel.width() - 36, 30), self._empty_quota_label(), self._scaled_font("Microsoft YaHei", 9), muted)
             return
         reset_width = 58
         start_y = panel.top() + (67 if len(rows) == 2 else 78)

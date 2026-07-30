@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import math
-import threading
-import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,7 +15,10 @@ from PySide6.QtCore import (
     QRectF,
     QSize,
     Qt,
+    QObject,
+    QThread,
     Signal,
+    Slot,
     QTimer,
     QVariantAnimation,
 )
@@ -37,16 +38,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.data.claude_reader import (
-    clear_cache as clear_claude_cache,
-    read_claude_daily_tokens,
-    read_claude_model_usage,
-    read_claude_projects,
-    read_claude_skill_usage,
-    read_claude_snapshot,
-    read_claude_tasks,
-    read_claude_tool_usage,
-)
 from app.data.codex_reader import (
     clear_cache as clear_codex_cache,
     read_codex_snapshot,
@@ -61,6 +52,8 @@ from app.data.models import (
     DailyToken,
     FULL_MONTHLY_VALUE,
     MultiRuntimeUsageSnapshot,
+    QUOTA_STATUS_AVAILABLE,
+    QUOTA_STATUS_EXHAUSTED,
     RuntimeScope,
     TokenBreakdown,
     estimate_model_api_value,
@@ -174,6 +167,25 @@ def _model_scope_summary(models, runtime: RuntimeScope):
         "month_coverage": month_coverage,
         "month_unpriced": month_unpriced,
     }
+
+
+class RefreshWorker(QObject):
+    loaded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    @Slot()
+    def run(self):
+        try:
+            clear_codex_cache()
+            self.loaded.emit((
+                read_codex_snapshot(), read_task_board(), read_daily_tokens(), read_projects(),
+                read_tool_usage(), read_skill_usage(), read_model_usage(),
+            ))
+        except Exception as error:
+            self.failed.emit(str(error))
+        finally:
+            self.finished.emit()
 
 
 class Surface(QFrame):
@@ -381,6 +393,7 @@ class QuotaDial(QWidget):
         super().__init__(parent)
         self.q5 = None
         self.q7 = None
+        self.quota_status = "unavailable"
         self.language = "zh"
         self.display_mode = "remaining"
         # The summary card has a fixed vertical budget.  Keep the dial flexible
@@ -388,8 +401,9 @@ class QuotaDial(QWidget):
         # reset strip.
         self.setMinimumSize(190, 138)
 
-    def set_quota(self, q5, q7):
+    def set_quota(self, q5, q7, status=None):
         self.q5, self.q7 = q5, q7
+        self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None else "unavailable")
         self.update()
 
     def set_language(self, language):
@@ -427,8 +441,19 @@ class QuotaDial(QWidget):
         center = bounds.center()
         if not available:
             painter.setFont(QFont("Microsoft YaHei", 9, QFont.Weight.Medium))
-            text = "Unavailable" if self.language == "en" else "暂不可用"
-            painter.drawText(QRectF(center.x() - 54, center.y() - 12, 108, 24), Qt.AlignmentFlag.AlignCenter, text)
+            exhausted = self.quota_status == QUOTA_STATUS_EXHAUSTED
+            painter.setPen(QColor("#d96b3b") if exhausted else text_color)
+            painter.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.DemiBold))
+            text = "Quota exhausted" if exhausted and self.language == "en" else (
+                "额度已用尽" if exhausted else ("Unavailable" if self.language == "en" else "暂不可验证")
+            )
+            painter.drawText(QRectF(center.x() - 82, center.y() - 18, 164, 26), Qt.AlignmentFlag.AlignCenter, text)
+            painter.setPen(text_color)
+            painter.setFont(QFont("Microsoft YaHei", 8))
+            detail = "Waiting for reset" if exhausted and self.language == "en" else (
+                "等待后端重置" if exhausted else ("No verifiable window" if self.language == "en" else "后端未返回窗口")
+            )
+            painter.drawText(QRectF(center.x() - 82, center.y() + 10, 164, 18), Qt.AlignmentFlag.AlignCenter, detail)
             return
         if len(available) == 1:
             label, quota, color = available[0]
@@ -578,6 +603,7 @@ class QuotaPanel(Surface):
         self.language = "zh"
         self.q5 = None
         self.q7 = None
+        self.quota_status = "unavailable"
         self.display_mode = "remaining"
 
     def _select_mode(self, mode):
@@ -591,9 +617,10 @@ class QuotaPanel(Surface):
         self.display_mode = mode if mode in ("remaining", "used") else "remaining"
         self.dial.set_display_mode(self.display_mode)
 
-    def update_quota(self, q5, q7):
+    def update_quota(self, q5, q7, status=None):
         self.q5, self.q7 = q5, q7
-        self.dial.set_quota(q5, q7)
+        self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None else "unavailable")
+        self.dial.set_quota(q5, q7, self.quota_status)
         english = self.language == "en"
         self.reset_strip.update_values(q5, q7, english)
 
@@ -601,7 +628,7 @@ class QuotaPanel(Surface):
         self.language = language
         self.dial.set_language(language)
         self.set_display_mode(self.display_mode)
-        self.update_quota(self.q5, self.q7)
+        self.update_quota(self.q5, self.q7, self.quota_status)
 
 
 class MilestoneProgress(QWidget):
@@ -851,14 +878,12 @@ class DashboardWidget(QWidget):
         self.settings_manager = settings_manager
         self.translation_manager = translation_manager
         self.theme_manager = theme_manager
-        runtime = settings_manager.get_active_runtime() if settings_manager else "codex"
-        self.current_scope = RuntimeScope.CLAUDE_CODE if runtime == "claudeCode" else RuntimeScope.CODEX
+        self.current_scope = RuntimeScope.CODEX
         self.current_model_scope = settings_manager.get_model_scope() if settings_manager else "all"
         self.data = MultiRuntimeUsageSnapshot()
-        self._pending_result = None
-        self._loading = False
+        self._refresh_thread = None
+        self._refresh_worker = None
         self._silent_refresh = False
-        self._pending_error = None
 
         self.setObjectName("dashboard")
         root = QVBoxLayout(self)
@@ -868,9 +893,6 @@ class DashboardWidget(QWidget):
         root.addWidget(self._build_summary())
         root.addWidget(self._build_tab_area(), 1)
 
-        self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(50)
-        self._poll_timer.timeout.connect(self._check_worker)
         if self.translation_manager:
             self.translation_manager.add_listener(self.update_text)
         if self.settings_manager:
@@ -1097,11 +1119,6 @@ class DashboardWidget(QWidget):
     def _on_settings_changed(self):
         if not self.settings_manager:
             return
-        runtime = self.settings_manager.get_active_runtime()
-        scope = RuntimeScope.CLAUDE_CODE if runtime == "claudeCode" else RuntimeScope.CODEX
-        if scope != self.current_scope:
-            self.current_scope = scope
-            self._update()
         model_scope = self.settings_manager.get_model_scope()
         if model_scope != self.current_model_scope:
             self.current_model_scope = model_scope
@@ -1157,74 +1174,53 @@ class DashboardWidget(QWidget):
         QTimer.singleShot(0, lambda: self._do_refresh(silent))
 
     def _do_refresh(self, silent=False):
-        if self._loading:
+        if self._refresh_thread is not None:
             return
-        self._loading = True
         self._silent_refresh = bool(silent)
         if not self._silent_refresh:
             self.refresh_button.setEnabled(False)
             self.refresh_button.setIcon(QIcon())
             self.refresh_button.setText("…")
             self.refresh_button.setToolTip("Refreshing…" if self._is_english() else "正在刷新…")
-        self._pending_result = None
-        self._pending_error = None
+        thread = QThread(self)
+        worker = RefreshWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.loaded.connect(self._on_refresh_loaded)
+        worker.failed.connect(self._on_refresh_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_refresh_worker)
+        self._refresh_thread = thread
+        self._refresh_worker = worker
+        thread.start()
 
-        def load():
-            try:
-                clear_codex_cache()
-                clear_claude_cache()
-                codex = read_codex_snapshot()
-                claude = read_claude_snapshot()
-                tasks = read_task_board() + read_claude_tasks()
-                daily = read_daily_tokens() + read_claude_daily_tokens()
-                daily.sort(key=lambda item: item.date, reverse=True)
-                models = read_model_usage() + read_claude_model_usage()
-                projects = read_projects() + read_claude_projects()
-                projects.sort(key=lambda item: item.token_total, reverse=True)
-                tools = read_tool_usage() + read_claude_tool_usage()
-                skills = read_skill_usage() + read_claude_skill_usage()
-                self._pending_result = (codex, claude, tasks, daily, projects, tools, skills, models)
-            except Exception as error:
-                self._pending_error = str(error)
-                traceback.print_exc()
-            finally:
-                self._loading = False
+    def _on_refresh_loaded(self, result):
+        codex, tasks, daily, projects, tools, skills, models = result
+        self.data.codex = codex
+        self.data.tasks = tasks
+        self.data.daily_tokens = sorted(daily, key=lambda item: item.date, reverse=True)
+        self.data.projects = sorted(projects, key=lambda item: item.token_total, reverse=True)
+        self.data.tools = tools
+        self.data.skills = skills
+        self.data.models = models
+        if not self._silent_refresh:
+            self.refresh_button.setEnabled(True)
+            self._restore_refresh_button()
+        self._update()
+        now = datetime.now().strftime("%H:%M:%S")
+        self.refresh_button.setToolTip(f"Updated at {now}" if self._is_english() else f"刷新完成 · {now}")
 
-        self._poll_timer.start()
-        threading.Thread(target=load, daemon=True).start()
+    def _on_refresh_failed(self, error):
+        if not self._silent_refresh:
+            self.refresh_button.setEnabled(True)
+            self._restore_refresh_button()
+        self.refresh_button.setToolTip(f"Refresh failed: {error}" if self._is_english() else f"刷新失败：{error}")
 
-    def _check_worker(self):
-        if self._pending_result is not None:
-            self._poll_timer.stop()
-            result = self._pending_result
-            self._pending_result = None
-            codex, claude, tasks, daily, projects, tools, skills, models = result
-            self.data.codex = codex
-            self.data.claude_code = claude
-            self.data.tasks = tasks
-            self.data.daily_tokens = daily
-            self.data.projects = projects
-            self.data.tools = tools
-            self.data.skills = skills
-            self.data.models = models
-            if not self._silent_refresh:
-                self.refresh_button.setEnabled(True)
-                self._restore_refresh_button()
-            self._update()
-            now = datetime.now().strftime("%H:%M:%S")
-            self.refresh_button.setToolTip(
-                f"Updated at {now}" if self._is_english() else f"刷新完成 · {now}"
-            )
-        elif not self._loading:
-            self._poll_timer.stop()
-            if not self._silent_refresh:
-                self.refresh_button.setEnabled(True)
-                self._restore_refresh_button()
-            if self._pending_error:
-                self.refresh_button.setToolTip(
-                    f"Refresh failed: {self._pending_error}" if self._is_english()
-                    else f"刷新失败：{self._pending_error}"
-                )
+    def _clear_refresh_worker(self):
+        self._refresh_thread = None
+        self._refresh_worker = None
 
     def _restore_refresh_button(self):
         self.refresh_button.setText("")
@@ -1257,8 +1253,8 @@ class DashboardWidget(QWidget):
         self.tab_summary.setText(summaries[index])
 
     def _update(self):
-        snapshot = self.data.for_scope(self.current_scope)
-        self.quota_card.update_quota(snapshot.quota_5h, snapshot.quota_7d)
+        snapshot = self.data.codex
+        self.quota_card.update_quota(snapshot.quota_5h, snapshot.quota_7d, snapshot.quota_status)
         tasks, daily, projects, tools, skills = self._visible_data()
         self.task_tab.update_tasks(tasks)
         models = [item for item in self.data.models if item.runtime == self.current_scope]

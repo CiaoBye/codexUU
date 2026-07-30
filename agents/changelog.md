@@ -1,5 +1,38 @@
 # CodexUU 更新日志
 
+## 2026-07-30 · 0.3.05 · 定时刷新重启循环修复
+
+- 修复后台 60 秒刷新每次都启动并终止独立 `codex app-server` 的问题；该行为可能使 Codex Desktop 的受管 runtime 被反复回收或拉起。
+- 实时额度一旦成功读取，5 分钟内复用同一份已验证的窗口、百分比和重置时间；Token、任务、趋势、项目和工具等本机聚合仍保持原有每分钟刷新。
+- 验证：新增 live quota 进程复用测试；完整测试通过后重启单实例验证。
+
+## 2026-07-30 · 0.3.04 · 实时额度重置时间修复
+
+- 修复 Windows Store 的 PATH 执行别名遮蔽 `~/.codex` 内独立 Codex runtime，导致应用只读取已耗尽的空 rollout 快照、无法显示真实重置时间的问题。
+- 额度读取现在发现并优先调用可执行的独立 runtime，保持 app-server stdio 连接直至完成初始化和 `account/rateLimits/read` 响应，避免旧逻辑过早关闭 stdin 而丢失响应。
+- 兼容新版 `rateLimitsByLimitId.codex` 多额度桶；当实时后端返回 100% 已用及 `resetsAt` 时，主卡、悬浮窗和托盘沿用真实 7D 重置时间，不再显示“等待后端重置”。
+- 验证：`python -m compileall -q app main.py` 通过；`PYTHONPATH=. python -m pytest -q` 通过（74 passed）；本机 app-server 实时读取为 7D 已用 100%、北京时间重置 `08/05 12:43`。
+
+## 2026-07-30 · 0.3.03 · 额度耗尽状态可见性修复
+
+- 修复 Codex 在额度耗尽后把 `rate_limits.primary/secondary` 清空时，主界面和桌面悬浮窗只显示“暂不可用”的问题。
+- 仅当官方快照明确带有 `limit_id=codex` 且 5h/7d 两个窗口均为空时标记“额度已用尽”；没有该明确形状时仍显示“暂不可验证”。
+- 耗尽状态不伪造 5h/7d 百分比、空环或重置时间，保持缺失窗口动态隐藏，同时在主卡、悬浮窗 tooltip 和五种悬浮样式中给出状态文案。
+- 验证：`python -m compileall -q app main.py`；`PYTHONPATH=. python -m pytest -q`。
+
+## 2026-07-30 · 0.3.02 · 额度最新快照口径修复
+
+- 修复额度读取器在最新 rollout 的 `rate_limits` 明确为空时继续扫描旧文件，导致界面显示过期 7d 额度的问题。
+- 最新空快照现在立即生效；5h/7d 缺失时动态隐藏，不伪造或回退旧额度。
+- 验证：`python -m compileall -q app main.py`；`PYTHONPATH=. python -m pytest -q`，71 passed。
+
+## 2026-07-30 · 0.3.01 · Codex 单数据源与审计修复
+
+- 移除 Claude Code 前后端：删除 transcript 读取与派生索引、设置数据源切换、Claude 额度/任务/项目/模型/工具/Skill 汇总；CodexUU 现在只读取并展示 Codex 本机记录。
+- 修复审计问题：累计统计改读全量精细事件；模型价格只接受精确 ID；项目按完整目录聚合并为同名目录显示父目录区分；工具榜仅统计明确 `function_call` / `custom_tool_call`。
+- 刷新流程改为 `QThread` + Signal，移除 50ms 轮询；桌面悬浮样式名称同步 A/C/C/B/B；Windows 构建脚本拒绝脏工作树。
+- 验证：`python -m compileall -q app main.py`；`PYTHONPATH=. python -m pytest -q`。
+
 ## 2026-07-15 · 0.2.21 · 紧凑标准窗口与趋势轴线回归
 
 ### 必须修复

@@ -52,7 +52,6 @@ EMPTY_LABELS_EN = {
 }
 RUNTIME_BADGE = {
     RuntimeScope.CODEX: ("C", "#60a5fa"),
-    RuntimeScope.CLAUDE_CODE: ("H", "#a78bfa"),
 }
 
 STATUS_PRIORITY = {"running": 0, "pending": 1, "scheduled": 2, "completed": 3}

@@ -25,4 +25,5 @@ def test_official_third_party_prices_require_exact_model_ids():
         "output": 0.87,
     }
     assert prices_for_model("deepseek-v4-flash-private") is None
+    assert prices_for_model("gpt-5.6-sol-private") is None
     assert estimate_model_api_value(TokenBreakdown(uncached_input=1_000_000), "internal-review") is None

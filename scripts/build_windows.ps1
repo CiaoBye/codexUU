@@ -7,6 +7,18 @@ $ErrorActionPreference = "Stop"
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location $workspace
 
+$dirty = @(
+    git diff --name-only
+    git diff --cached --name-only
+    git ls-files --others --exclude-standard -- app main.py resources VERSION requirements.txt CodexUU.spec installer scripts
+) | Where-Object { $_ }
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to verify the source tree before building."
+}
+if ($dirty) {
+    throw "Refusing to build from an uncommitted worktree. Commit or remove local changes first."
+}
+
 if (-not (Get-Command pyinstaller.exe -ErrorAction SilentlyContinue)) {
     throw "PyInstaller was not found. Run: python -m pip install pyinstaller"
 }

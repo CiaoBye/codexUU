@@ -8,7 +8,11 @@ from typing import Optional
 
 class RuntimeScope(Enum):
     CODEX = "codex"
-    CLAUDE_CODE = "claudeCode"
+
+
+QUOTA_STATUS_AVAILABLE = "available"
+QUOTA_STATUS_EXHAUSTED = "exhausted"
+QUOTA_STATUS_UNAVAILABLE = "unavailable"
 
 
 @dataclass
@@ -54,6 +58,10 @@ class TokenStats:
 class UsageSnapshot:
     quota_5h: Optional[QuotaInfo] = None
     quota_7d: Optional[QuotaInfo] = None
+    # Codex can emit an explicit empty rate-limit snapshot after exhaustion.
+    # Keep that state separate from a genuinely missing/unreadable data source
+    # so the UI can explain why no window can be drawn.
+    quota_status: str = QUOTA_STATUS_UNAVAILABLE
     tokens: TokenStats = field(default_factory=TokenStats)
     api_equivalent_value: float = 0.0
     today_api_equivalent_value: float = 0.0
@@ -153,17 +161,12 @@ class SkillUsage:
 @dataclass
 class MultiRuntimeUsageSnapshot:
     codex: UsageSnapshot = field(default_factory=UsageSnapshot)
-    claude_code: UsageSnapshot = field(default_factory=UsageSnapshot)
     tasks: list[TaskItem] = field(default_factory=list)
     daily_tokens: list[DailyToken] = field(default_factory=list)
     projects: list[ProjectStats] = field(default_factory=list)
     tools: list[ToolUsage] = field(default_factory=list)
     skills: list[SkillUsage] = field(default_factory=list)
     models: list[ModelUsage] = field(default_factory=list)
-
-    def for_scope(self, scope: RuntimeScope) -> UsageSnapshot:
-        return self.codex if scope == RuntimeScope.CODEX else self.claude_code
-
 
 CODEX_PROMPT_PRICES = {
     "uncached_input": 5.00,
@@ -204,12 +207,6 @@ MODEL_PRICE_SOURCES = {
     "Xiaomi MiMo": "https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go",
 }
 
-CLAUDE_PROMPT_PRICES = {
-    "uncached_input": 3.00,
-    "cached_input": 0.30,
-    "output": 15.00,
-}
-
 MODEL_MIX = {
     "uncached_input_pct": 0.30,
     "cached_input_pct": 0.50,
@@ -241,10 +238,6 @@ def prices_for_model(model: str) -> Optional[dict[str, float]]:
         return OPENAI_MODEL_PRICES[normalized]
     if normalized in THIRD_PARTY_MODEL_PRICES:
         return THIRD_PARTY_MODEL_PRICES[normalized]
-    # Snapshot suffixes keep the base model's published price.
-    for model_id in sorted(OPENAI_MODEL_PRICES, key=len, reverse=True):
-        if normalized.startswith(model_id + "-"):
-            return OPENAI_MODEL_PRICES[model_id]
     return None
 
 

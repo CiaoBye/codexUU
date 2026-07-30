@@ -54,3 +54,19 @@ def test_quota_scheme_c_uses_adaptive_centered_reset_strip_without_design_badge(
     seven_center = panel.reset_strip.seven_section.mapTo(panel.reset_strip, panel.reset_strip.seven_section.rect().center()).x()
     assert abs(seven_center - panel.reset_strip.rect().center().x()) <= 2
     panel.hide()
+
+
+def test_quota_panel_explains_exhaustion_without_inventing_missing_windows():
+    app = QApplication.instance() or QApplication([])
+    panel = QuotaPanel()
+    panel.update_quota(None, None, "exhausted")
+    panel.show()
+    app.processEvents()
+
+    assert panel.quota_status == "exhausted"
+    assert panel.dial.quota_status == "exhausted"
+    assert panel.reset_strip.five_section.isHidden()
+    assert panel.reset_strip.seven_section.isHidden()
+    image = panel.dial.grab().toImage()
+    assert image.width() > 0 and image.height() > 0
+    panel.hide()

@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.constants import APP_REPO, APP_VERSION
-from app.data.local_index import clear_local_index, local_index_status
 from app.utils.data_diagnostics import diagnose_data_sources
 from app.utils.global_hotkey import parse_shortcut
 from app.utils.settings import SettingsManager
@@ -223,12 +222,6 @@ class SettingsDialog(QDialog):
         self.lang_combo.setCurrentIndex(0 if self.translation_manager.get_language() == "zh" else 1)
         self.lang_combo.currentIndexChanged.connect(self._on_language_index)
         form.addRow("语言", self.lang_combo)
-        self.runtime_combo = StyledComboBox()
-        self.runtime_combo.addItem("Codex", "codex")
-        self.runtime_combo.addItem("Claude Code", "claudeCode")
-        self.runtime_combo.setCurrentIndex(0 if self.settings_manager.get_active_runtime() == "codex" else 1)
-        self.runtime_combo.currentIndexChanged.connect(self._on_runtime_index)
-        form.addRow("数据源", self.runtime_combo)
         self.auto_update_cb = _check("自动检查 GitHub Release 更新", True)
         self.beta_cb = _check("接收 Beta / prerelease 版本", True)
         auto_update, include_beta = self.settings_manager.get_update_preferences()
@@ -267,8 +260,8 @@ class SettingsDialog(QDialog):
         window_form.addRow(self.desktop_status_cb)
         self.desktop_style_combo = StyledComboBox()
         self.desktop_style_combo.addItem("信息圆盘 A", "orb")
-        self.desktop_style_combo.addItem("双环仪表 A", "halo")
-        self.desktop_style_combo.addItem("极简圆环 B", "mini")
+        self.desktop_style_combo.addItem("双环仪表 C", "halo")
+        self.desktop_style_combo.addItem("极简圆环 C", "mini")
         self.desktop_style_combo.addItem("状态胶囊 B", "capsule")
         self.desktop_style_combo.addItem("双轨卡片 B", "tracks")
         self.desktop_style_combo.setCurrentIndex(max(0, self.desktop_style_combo.findData(self.settings_manager.get_desktop_status_style())))
@@ -419,19 +412,7 @@ class SettingsDialog(QDialog):
         alert_form.addRow("说明", alert_note)
         layout.addWidget(self.alert_card)
 
-        self.maintenance_card, maintenance_form = self._card("数据维护")
-        self.maintenance_form = maintenance_form
-        self.index_status_label = QLabel()
-        self.index_status_label.setObjectName("caption")
-        self.index_status_label.setWordWrap(True)
-        maintenance_form.addRow("本机索引", self.index_status_label)
-        self.clear_index_btn = QPushButton("清理并在下次读取时重建")
-        self.clear_index_btn.setObjectName("iconButton")
-        self.clear_index_btn.clicked.connect(self._clear_local_index)
-        maintenance_form.addRow("可重建数据", self.clear_index_btn)
-        layout.addWidget(self.maintenance_card)
         self._refresh_diagnostics()
-        self._refresh_index_maintenance()
         layout.addStretch()
         return tab
 
@@ -439,9 +420,6 @@ class SettingsDialog(QDialog):
         self._mark_pending()
 
     def _on_theme_index(self, index):
-        self._mark_pending()
-
-    def _on_runtime_index(self, index):
         self._mark_pending()
 
     def _save_update_preferences(self):
@@ -498,7 +476,6 @@ class SettingsDialog(QDialog):
         timezone_mode = self.timezone_combo.currentData() or "system"
         timezone_identifier = self.timezone_edit.text().strip() or DEFAULT_FIXED_ZONE
         self.settings_manager.set_language(language)
-        self.settings_manager.set_active_runtime(self.runtime_combo.currentData() or "codex")
         self.settings_manager.set_update_preferences(self.auto_update_cb.isChecked(), self.beta_cb.isChecked())
         self.settings_manager.set_shortcut(shortcut)
         self.settings_manager.set_window_preferences(
@@ -536,7 +513,6 @@ class SettingsDialog(QDialog):
         # 对话框会复用；取消时恢复为当前已保存配置，避免下次打开仍看到草稿。
         controls = (
             (self.lang_combo, 0 if self.settings_manager.get_language() == "zh" else 1),
-            (self.runtime_combo, max(0, self.runtime_combo.findData(self.settings_manager.get_active_runtime()))),
             (self.theme_combo, {"auto": 0, "light": 1, "dark": 2}.get(self.settings_manager.get_theme(), 2)),
             (self.quota_combo, 0 if self.settings_manager.get_quota_display() == "remaining" else 1),
             (self.close_combo, max(0, self.close_combo.findData(self.settings_manager.get_window_preferences()[1]))),
@@ -581,31 +557,6 @@ class SettingsDialog(QDialog):
                 ("●  全局快捷键：已注册" if parent.hotkey_registered else "◆  全局快捷键：注册失败或被占用")
             )
         self.diagnostic_label.setText("\n".join(lines))
-        self._refresh_index_maintenance()
-
-    def _refresh_index_maintenance(self):
-        status = local_index_status()
-        if status.available:
-            self.index_status_label.setText(
-                f"{status.file_count} 个文件、{status.event_count} 条派生事件；清理后仅会重建索引，不会删除原始日志。"
-            )
-        else:
-            self.index_status_label.setText("尚未创建派生索引；不会影响 Codex 或 Claude Code 的原始日志。")
-
-    def _clear_local_index(self):
-        english = self.translation_manager.get_language() == "en"
-        answer = QMessageBox.question(
-            self,
-            "Clear local index" if english else "清理本机索引",
-            "Only derived analytics data will be removed. Raw logs stay untouched and the index rebuilds on next read. Continue?"
-            if english else "仅删除派生统计索引，不会删除原始日志；下次读取会自动重建。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            clear_local_index()
-            self._refresh_diagnostics()
-
     def _on_theme_changed(self):
         app = QApplication.instance()
         if app is not None:
@@ -691,9 +642,7 @@ class SettingsDialog(QDialog):
         self.timezone_card.setTitle("Statistics" if english else "统计口径")
         self.diagnostic_card.setTitle("Data source diagnostics" if english else "数据源诊断")
         self.alert_card.setTitle("Quota alerts" if english else "额度提醒")
-        self.maintenance_card.setTitle("Data maintenance" if english else "数据维护")
         self.preference_form.labelForField(self.lang_combo).setText("Language" if english else "语言")
-        self.preference_form.labelForField(self.runtime_combo).setText("Data source" if english else "数据源")
         self.auto_update_cb.setText("Auto-check GitHub Release updates" if english else "自动检查 GitHub Release 更新")
         self.beta_cb.setText("Receive Beta / prerelease versions" if english else "接收 Beta / prerelease 版本")
         self.appearance_form.labelForField(self.theme_combo).setText("Theme" if english else "主题")
@@ -730,13 +679,10 @@ class SettingsDialog(QDialog):
             "Each quota window notifies once per reset cycle after remaining quota falls below this threshold."
             if english else "额度低于阈值时，每个额度窗口在本次重置周期内只通知一次。"
         )
-        self.maintenance_form.labelForField(self.index_status_label).setText("Local index" if english else "本机索引")
-        self.maintenance_form.labelForField(self.clear_index_btn).setText("Rebuildable data" if english else "可重建数据")
-        self.clear_index_btn.setText("Clear and rebuild on next read" if english else "清理并在下次读取时重建")
         self.diagnostic_form.labelForField(self.data_scope_label).setText("Scope" if english else "统计范围")
         self.data_scope_label.setText(
-            "Usage, trends, and projects are local records only. The local index stores derived metrics, not transcript text."
-            if english else "所有用量、趋势和项目数字均来自本机记录；本机索引只保存派生统计，不保存对话正文。"
+            "Usage, trends, and projects are local Codex records only."
+            if english else "所有用量、趋势和项目数字均来自本机 Codex 记录。"
         )
         self.timezone_form.labelForField(self.timezone_combo).setText("Calendar day" if english else "自然日")
         self.timezone_form.labelForField(self.timezone_edit).setText("IANA zone" if english else "IANA 标识")
@@ -746,8 +692,8 @@ class SettingsDialog(QDialog):
             (self.quota_combo, (("Show remaining", "Show used") if english else ("显示剩余", "显示已用"))),
             (self.close_combo, (("Hide to tray", "Minimize", "Quit application") if english else ("隐藏到托盘", "最小化", "退出程序"))),
             (self.desktop_style_combo, (
-                ("Info dial A", "Dual-ring gauge A", "Minimal ring B", "Status capsule B", "Dual-track card B")
-                if english else ("信息圆盘 A", "双环仪表 A", "极简圆环 B", "状态胶囊 B", "双轨卡片 B")
+                ("Info dial A", "Dual-ring gauge C", "Minimal ring C", "Status capsule B", "Dual-track card B")
+                if english else ("信息圆盘 A", "双环仪表 C", "极简圆环 C", "状态胶囊 B", "双轨卡片 B")
             )),
             (self.desktop_size_combo, (("Small", "Medium", "Large") if english else ("小", "中", "大"))),
         ):

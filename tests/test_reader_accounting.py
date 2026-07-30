@@ -88,7 +88,37 @@ def test_snapshot_uses_detailed_daily_tokens_for_today_and_week(monkeypatch):
 
 def test_store_app_alias_does_not_block_quota_refresh(monkeypatch):
     monkeypatch.setattr(codex_reader.shutil, "which", lambda _: r"C:\Program Files\WindowsApps\codex.exe")
+    monkeypatch.setattr(codex_reader, "_codex_dir", lambda: Path("missing-codex-dir"))
     assert codex_reader.read_quota_from_appserver() is None
+
+
+def test_appserver_prefers_current_codex_bucket_and_preserves_reset_time(monkeypatch, tmp_path):
+    runtime = tmp_path / "codex.exe"
+    runtime.touch()
+    monkeypatch.setattr(codex_reader, "_live_quota_cache", None)
+    monkeypatch.setattr(codex_reader, "_appserver_executables", lambda: [str(runtime)])
+    monkeypatch.setattr(codex_reader, "_appserver_rate_limits", lambda _: {
+        "rateLimits": {"limitId": "other", "primary": None, "secondary": None},
+        "rateLimitsByLimitId": {
+            "codex": {"limitId": "codex", "primary": {
+                "usedPercent": 100, "windowDurationMins": 10080, "resetsAt": 1_800_000_000,
+            }, "secondary": None},
+        },
+    })
+
+    q5, q7 = codex_reader.read_quota_from_appserver()
+    assert q5 is None
+    assert q7.used_pct == 100
+    assert q7.reset_time is not None
+    assert codex_reader.get_last_quota_status() == "available"
+
+
+def test_live_appserver_quota_is_reused_between_scheduled_refreshes(monkeypatch):
+    quota = (None, codex_reader.QuotaInfo(used_pct=100, remaining_pct=0))
+    monkeypatch.setattr(codex_reader, "_live_quota_cache", (codex_reader.time.monotonic(), quota, "available"))
+    monkeypatch.setattr(codex_reader, "_appserver_executables", lambda: (_ for _ in ()).throw(AssertionError("must not spawn")))
+
+    assert codex_reader.read_quota_from_appserver() == quota
 
 
 def test_project_directory_accepts_current_project_and_rejects_deleted_or_dated_workspace(tmp_path):
@@ -131,6 +161,33 @@ def test_session_quota_uses_the_newest_persisted_rate_limit_snapshot(monkeypatch
     q5, q7 = codex_reader.read_quota_from_session_events()
     assert q5 is None
     assert q7.remaining_pct == 69
+
+
+def test_session_quota_does_not_fall_back_to_stale_snapshot_when_latest_is_empty(monkeypatch):
+    monkeypatch.setattr(codex_reader, "_cached", lambda _: None)
+    monkeypatch.setattr(codex_reader, "_store", lambda _key, value: value)
+    monkeypatch.setattr(codex_reader, "_recent_rollout_files", lambda days, limit: [
+        (Path("latest.jsonl"), datetime.now(timezone.utc), object()),
+        (Path("older.jsonl"), datetime.now(timezone.utc) - timedelta(days=1), object()),
+    ])
+    monkeypatch.setattr(codex_reader, "_read_rollout_file_events", lambda path, *_: [
+        {"payload": {"rate_limits": {
+            "limit_id": "codex", "primary": None, "secondary": None,
+        }}}
+    ] if path.name == "latest.jsonl" else [{
+        "payload": {"rate_limits": {"primary": {"usedPercent": 38, "windowDurationMins": 10080}}}
+    }])
+
+    assert codex_reader.read_quota_from_session_events() == (None, None)
+    assert codex_reader.get_last_quota_status() == "exhausted"
+
+
+def test_empty_codex_rate_limit_snapshot_is_only_exhausted_for_explicit_codex_shape():
+    assert codex_reader._status_from_rate_limits(
+        {"limit_id": "codex", "primary": None, "secondary": None},
+        (None, None),
+    ) == "exhausted"
+    assert codex_reader._status_from_rate_limits({}, (None, None)) == "unavailable"
 
 
 def test_tool_usage_counts_explicit_function_call_events(monkeypatch):

@@ -166,9 +166,7 @@ class TrayManager(QObject):
 
     def update_data(self, data):
         self.data = data
-        runtime = self.settings_manager.get_active_runtime() if self.settings_manager else "codex"
-        snapshot = data.claude_code if runtime == "claudeCode" else data.codex
-        self.desktop_panel.update_snapshot(runtime, snapshot)
+        self.desktop_panel.update_snapshot("codex", data.codex)
         self._refresh_status_icon()
         self._notify_quota_alerts()
 
@@ -180,7 +178,7 @@ class TrayManager(QObject):
         if not self.tray_icon.supportsMessages():
             return
         active: set[tuple[str, str, str]] = set()
-        for runtime, snapshot in (("codex", self.data.codex), ("claudeCode", self.data.claude_code)):
+        for runtime, snapshot in (("codex", self.data.codex),):
             quota_name, quota = ("7d", snapshot.quota_7d) if snapshot.quota_7d else ("5h", snapshot.quota_5h)
             if quota is None or quota.remaining_pct > threshold:
                 continue
@@ -189,7 +187,7 @@ class TrayManager(QObject):
             active.add(key)
             if key in self._quota_alerts:
                 continue
-            runtime_name = "Claude Code" if runtime == "claudeCode" else "Codex"
+            runtime_name = "Codex"
             self.tray_icon.showMessage(
                 "CodexUU 额度提醒",
                 f"{runtime_name} {quota_name} 剩余 {quota.remaining_pct:.0f}%（提醒阈值 {threshold}%）。",
@@ -200,8 +198,8 @@ class TrayManager(QObject):
         self._quota_alerts.intersection_update(active)
 
     def _refresh_status_icon(self):
-        runtime = self.settings_manager.get_active_runtime() if self.settings_manager else "codex"
-        snapshot = self.data.claude_code if runtime == "claudeCode" else self.data.codex
+        runtime = "codex"
+        snapshot = self.data.codex
         mode = self.settings_manager.get_quota_display() if self.settings_manager else "remaining"
         quota = snapshot.quota_7d or snapshot.quota_5h
         value = None
@@ -213,7 +211,7 @@ class TrayManager(QObject):
             self.tray_icon.setIcon(icon)
             self.status_icon_changed.emit(icon)
             self._icon_key = icon_key
-        runtime_name = "Claude Code" if runtime == "claudeCode" else "Codex"
+        runtime_name = "Codex"
         quota_name = "7d" if snapshot.quota_7d else "5h"
         quota_text = "--" if value is None else f"{value:.0f}%"
         mode_text = "已用" if mode == "used" else "剩余"

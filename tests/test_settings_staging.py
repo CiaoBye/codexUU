@@ -46,8 +46,8 @@ def test_desktop_status_style_names_match_finalized_designs(tmp_path):
     )
     assert [dialog.desktop_style_combo.itemText(index) for index in range(dialog.desktop_style_combo.count())] == [
         "信息圆盘 A",
-        "双环仪表 A",
-        "极简圆环 B",
+        "双环仪表 C",
+        "极简圆环 C",
         "状态胶囊 B",
         "双轨卡片 B",
     ]

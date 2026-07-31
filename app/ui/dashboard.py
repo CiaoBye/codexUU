@@ -48,6 +48,10 @@ from app.data.codex_reader import (
     read_task_board,
     read_tool_usage,
 )
+from app.data.ccswitch_reader import (
+    clear_cache as clear_ccswitch_cache,
+    read_ccswitch_snapshot,
+)
 from app.data.models import (
     DailyToken,
     FULL_MONTHLY_VALUE,
@@ -178,9 +182,10 @@ class RefreshWorker(QObject):
     def run(self):
         try:
             clear_codex_cache()
+            clear_ccswitch_cache()
             self.loaded.emit((
                 read_codex_snapshot(), read_task_board(), read_daily_tokens(), read_projects(),
-                read_tool_usage(), read_skill_usage(), read_model_usage(),
+                read_tool_usage(), read_skill_usage(), read_model_usage(), read_ccswitch_snapshot(),
             ))
         except Exception as error:
             self.failed.emit(str(error))
@@ -397,6 +402,12 @@ class QuotaDial(QWidget):
         self.quota_status = "unavailable"
         self.language = "zh"
         self.display_mode = "remaining"
+        self.provider_mode = False
+        self.provider_name = ""
+        self.provider_balance = None
+        self.provider_status = "unavailable"
+        self.provider_status_detail = ""
+        self.single_ring_rect = QRectF()
         # The summary card has a fixed vertical budget.  Keep the dial flexible
         # so Qt never satisfies its minimum height by painting underneath the
         # reset strip.
@@ -405,7 +416,21 @@ class QuotaDial(QWidget):
     def set_quota(self, q5, q7, status=None, month=None):
         self.q5, self.q7 = q5, q7
         self.month = month
+        self.provider_mode = False
+        self.provider_name = ""
+        self.provider_balance = None
+        self.provider_status = "unavailable"
+        self.provider_status_detail = ""
         self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None or month is not None else "unavailable")
+        self.update()
+
+    def set_provider(self, snapshot):
+        self.q5 = self.q7 = self.month = None
+        self.provider_mode = True
+        self.provider_name = str(getattr(snapshot, "provider_name", "") or "")
+        self.provider_balance = getattr(snapshot, "balance", None)
+        self.provider_status = str(getattr(snapshot, "status", "unavailable") or "unavailable")
+        self.provider_status_detail = str(getattr(snapshot, "status_detail", "") or "")
         self.update()
 
     def set_language(self, language):
@@ -416,11 +441,53 @@ class QuotaDial(QWidget):
         self.display_mode = mode if mode in ("remaining", "used") else "remaining"
         self.update()
 
+    def _paint_provider(self, painter):
+        text_color = QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc")
+        center = QPointF(self.width() / 2, self.height() / 2)
+        balance = self.provider_balance
+        if balance is None or balance.remaining is None:
+            painter.setPen(QColor("#d96b3b") if self.provider_status == "degraded" else text_color)
+            painter.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.DemiBold))
+            label = "Balance unavailable" if self.language == "en" else "\u4e2d\u8f6c\u4f59\u989d\u4e0d\u53ef\u9a8c\u8bc1"
+            painter.drawText(QRectF(center.x() - 92, center.y() - 18, 184, 26), Qt.AlignmentFlag.AlignCenter, label)
+            painter.setPen(text_color)
+            painter.setFont(QFont("Microsoft YaHei", 8))
+            detail = self.provider_status_detail or ("Waiting for provider data" if self.language == "en" else "\u7b49\u5f85\u4e2d\u8f6c\u6570\u636e")
+            painter.drawText(QRectF(center.x() - 102, center.y() + 12, 204, 24), Qt.AlignmentFlag.AlignCenter, detail)
+            return
+
+        side = max(80.0, min(self.width(), self.height()) - 12.0)
+        bounds = QRectF((self.width() - side) / 2, (self.height() - side) / 2, side, side)
+        total = getattr(balance, "total", None)
+        remaining = max(0.0, float(balance.remaining))
+        if total is not None and float(total) > 0:
+            ratio = max(0.0, min(1.0, remaining / float(total)))
+            rect = bounds.adjusted(9, 9, -9, -9)
+            color = QColor("#35a58a")
+            painter.setPen(QPen(QColor(53, 165, 138, 42), 14, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(rect, 0, 360 * 16)
+            painter.setPen(QPen(color, 14, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(rect, 270 * 16, int(360 * 16 * ratio))
+
+        painter.setPen(QColor("#35a58a"))
+        painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.DemiBold))
+        caption = "Provider balance" if self.language == "en" else "\u4e2d\u8f6c\u4f59\u989d"
+        painter.drawText(QRectF(center.x() - 96, center.y() - 32, 192, 20), Qt.AlignmentFlag.AlignCenter, caption)
+        painter.setPen(text_color)
+        amount = f"{remaining:,.2f} {getattr(balance, 'unit', None) or 'USD'}"
+        painter.setFont(QFont("Segoe UI Variable Display", 23 if len(amount) < 13 else 19, QFont.Weight.Bold))
+        painter.drawText(QRectF(center.x() - 108, center.y() - 5, 216, 34), Qt.AlignmentFlag.AlignCenter, amount)
+        painter.setPen(QColor("#748197"))
+        painter.setFont(QFont("Microsoft YaHei", 8))
+        plan = getattr(balance, "plan_name", "") or self.provider_name or ("CC Switch" if self.language == "en" else "CC Switch")
+        painter.drawText(QRectF(center.x() - 100, center.y() + 32, 200, 18), Qt.AlignmentFlag.AlignCenter, plan)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        side = min(self.width(), self.height()) - 12
-        bounds = QRectF((self.width() - side) / 2, 3, side, side)
+        if self.provider_mode:
+            self._paint_provider(painter)
+            return
         available = [
             item for item in (
                 ("7d", self.q7, QColor("#8d74ff")),
@@ -429,16 +496,28 @@ class QuotaDial(QWidget):
         ]
         if not available and self.month is not None:
             available = [("month", self.month, QColor("#35a58a"))]
-        for index, (_, quota, color) in enumerate(available):
-            inset = index * 20 if len(available) > 1 else 7
+        single = len(available) == 1
+        side = min(self.width(), self.height()) - (4 if single else 12)
+        bounds = QRectF((self.width() - side) / 2, 2 if single else 3, side, side)
+        self.single_ring_rect = QRectF()
+        for index, (label, quota, color) in enumerate(available):
+            inset = index * 20 if len(available) > 1 else 8
             rect = bounds.adjusted(inset, inset, -inset, -inset)
-            painter.setPen(QPen(QColor(127, 145, 172, 38), 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            width = 15 if len(available) == 1 else 11
+            track_color = QColor(color)
+            track_color.setAlpha(48 if len(available) == 1 else 38)
+            painter.setPen(QPen(track_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawArc(rect, 0, 360 * 16)
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
             value = max(0.0, min(100.0, value))
-            painter.setPen(QPen(color, 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             direction = -1 if self.display_mode == "used" else 1
-            painter.drawArc(rect, 270 * 16, direction * int(360 * 16 * value / 100))
+            span = direction * int(360 * 16 * value / 100)
+            painter.drawArc(rect, 270 * 16, span)
+            if len(available) == 1:
+                self.single_ring_rect = QRectF(rect)
+                if value <= 0:
+                    painter.drawEllipse(QRectF(rect.center().x() - width / 2, rect.bottom() - width / 2, width, width))
 
         text_color = QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc")
         painter.setPen(text_color)
@@ -464,16 +543,16 @@ class QuotaDial(QWidget):
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
             caption = f"{label.upper()} {'Usage' if self.language == 'en' else '使用率'}"
             painter.setPen(color)
-            painter.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.DemiBold))
+            painter.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.DemiBold))
             painter.drawText(
-                QRectF(center.x() - 86, center.y() - 27, 172, 20),
+                QRectF(center.x() - 96, center.y() - 34, 192, 22),
                 Qt.AlignmentFlag.AlignCenter,
                 caption,
             )
             painter.setPen(text_color)
-            painter.setFont(QFont("Segoe UI Variable Display", 29, QFont.Weight.Bold))
+            painter.setFont(QFont("Segoe UI Variable Display", 34, QFont.Weight.Bold))
             painter.drawText(
-                QRectF(center.x() - 92, center.y() + 1, 184, 38),
+                QRectF(center.x() - 104, center.y() - 5, 208, 44),
                 Qt.AlignmentFlag.AlignCenter,
                 f"{value:.0f}%",
             )
@@ -505,11 +584,13 @@ class QuotaDial(QWidget):
         painter.drawLine(QPointF(center.x() - 55, center.y() + 3), QPointF(center.x() + 55, center.y() + 3))
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            side = min(self.width(), self.height()) - 12
-            center = QPointF(self.width() / 2, 3 + side / 2)
+        if event.button() == Qt.MouseButton.LeftButton and not self.provider_mode:
+            available_count = int(self.q5 is not None) + int(self.q7 is not None) + int(self.month is not None)
+            single = available_count == 1
+            side = min(self.width(), self.height()) - (4 if single else 12)
+            center = QPointF(self.width() / 2, (2 if single else 3) + side / 2)
             delta = event.position() - center
-            if delta.x() ** 2 + delta.y() ** 2 <= (side * .36) ** 2:
+            if delta.x() ** 2 + delta.y() ** 2 <= (side * (.42 if single else .36)) ** 2:
                 self.center_activated.emit()
                 event.accept()
                 return
@@ -624,6 +705,8 @@ class QuotaPanel(Surface):
         self.month = None
         self.quota_status = "unavailable"
         self.display_mode = "remaining"
+        self.provider_mode = False
+        self.provider_snapshot = None
 
     def _select_mode(self, mode):
         self.set_display_mode(mode)
@@ -637,18 +720,40 @@ class QuotaPanel(Surface):
         self.dial.set_display_mode(self.display_mode)
 
     def update_quota(self, q5, q7, status=None, month=None):
+        self.provider_mode = False
+        self.provider_snapshot = None
         self.q5, self.q7 = q5, q7
         self.month = month
         self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None or month is not None else "unavailable")
         self.dial.set_quota(q5, q7, self.quota_status, month)
+        self.reset_strip.setVisible(True)
         english = self.language == "en"
         self.reset_strip.update_values(q5, q7, month, english)
+
+    def update_provider(self, snapshot):
+        self.provider_mode = True
+        self.provider_snapshot = snapshot
+        self.dial.set_provider(snapshot)
+        self.reset_strip.setVisible(False)
+        self._update_title()
+
+    def _update_title(self):
+        self.title.setText(
+            "Provider balance" if self.provider_mode and self.language == "en" else
+            "\u4e2d\u8f6c\u4f59\u989d" if self.provider_mode else
+            "Quota usage" if self.language == "en" else "\u989d\u5ea6\u4f7f\u7528\u60c5\u51b5"
+        )
 
     def set_language(self, language):
         self.language = language
         self.dial.set_language(language)
         self.set_display_mode(self.display_mode)
-        self.update_quota(self.q5, self.q7, self.quota_status, self.month)
+        if self.provider_mode:
+            self._update_title()
+            self.dial.set_provider(self.provider_snapshot)
+        else:
+            self._update_title()
+            self.update_quota(self.q5, self.q7, self.quota_status, self.month)
 
 
 class MilestoneProgress(QWidget):
@@ -760,23 +865,59 @@ class ValueCard(Surface):
         self.language = "zh"
         self.coverage = 100.0
         self.unpriced_tokens = 0
+        self.provider_mode = False
+        self.provider_snapshot = None
 
     def update_value(self, value: float, coverage: float = 100.0, unpriced_tokens: int = 0):
+        self.provider_mode = False
+        self.provider_snapshot = None
         self.coverage = coverage
         self.unpriced_tokens = unpriced_tokens
+        self.bar.setVisible(True)
         self.value.setText(f"${value:,.2f} / $46.5K")
         self.bar.set_value(value)
+        self._update_title()
         self._update_hint()
+
+    def update_provider(self, snapshot):
+        self.provider_mode = True
+        self.provider_snapshot = snapshot
+        self.bar.setVisible(False)
+        self.value.setText(f"${snapshot.current_month_cost_usd:,.2f}")
+        self.value.setToolTip(
+            f"{snapshot.data_source}\n"
+            f"{snapshot.request_count} requests\n"
+            f"{snapshot.success_count} succeeded / {snapshot.failure_count} failed"
+        )
+        self._update_title()
+        self._update_hint()
+
+    def _update_title(self):
+        self.title.setText(
+            "Relay cost" if self.provider_mode and self.language == "en" else
+            "\u4e2d\u8f6c\u6210\u672c" if self.provider_mode else
+            "Value progress" if self.language == "en" else "\u7f8a\u6bdb\u8fdb\u5ea6"
+        )
 
     def set_language(self, language):
         self.language = language
+        self._update_title()
         self._update_hint()
 
     def set_reduce_motion(self, enabled):
         self.bar.set_reduce_motion(enabled)
 
     def _update_hint(self):
-        if self.unpriced_tokens:
+        if self.provider_mode:
+            snapshot = self.provider_snapshot
+            if snapshot is None:
+                return
+            self.hint.setText(
+                f"{snapshot.request_count} requests · {snapshot.success_count} succeeded"
+                if self.language == "en" else
+                f"{snapshot.request_count} \u8bf7\u6c42 · \u6210\u529f {snapshot.success_count} \u6b21"
+            )
+        elif self.unpriced_tokens:
             self.hint.setText(
                 f"Official price coverage {self.coverage:.0f}% · other models unpriced"
                 if self.language == "en"
@@ -784,6 +925,141 @@ class ValueCard(Surface):
             )
         else:
             self.hint.setText("Estimated with official model prices" if self.language == "en" else "按官方模型价格估算")
+
+
+class ProviderUsageLabel(QLabel):
+    """Show the active CC Switch provider without mixing it into official quota."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("providerUsageBadge")
+        self.setMinimumWidth(180)
+        self.setMaximumWidth(300)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.snapshot = None
+        self.language = "zh"
+
+    def set_language(self, language):
+        self.language = language
+        self._render()
+
+    def set_snapshot(self, snapshot):
+        self.snapshot = snapshot
+        self._render()
+
+    def _render(self):
+        snapshot = self.snapshot
+        english = self.language == "en"
+        if snapshot is None or not snapshot.provider_name:
+            self.setText("CCS: unavailable" if english else "CCS \u4e2d\u8f6c\uff1a\u672a\u68c0\u6d4b\u5230")
+            self.setToolTip("")
+            return
+        balance = snapshot.balance
+        if balance is not None and balance.remaining is not None:
+            value = f"{balance.remaining:,.2f} {balance.unit or 'USD'}"
+            text = f"CCS \u00b7 {snapshot.provider_name} \u00b7 {value}"
+        elif snapshot.request_count:
+            text = f"CCS \u00b7 {snapshot.provider_name} \u00b7 " + (
+                "usage tracked" if english else "\u7528\u91cf\u5df2\u7edf\u8ba1"
+            )
+        else:
+            text = f"CCS \u00b7 {snapshot.provider_name} \u00b7 " + (
+                "quota unavailable" if english else "\u989d\u5ea6\u4e0d\u53ef\u9a8c\u8bc1"
+            )
+        self.setText(text)
+        balance_text = (
+            f"{balance.remaining:,.2f} {balance.unit or 'USD'}"
+            if balance is not None and balance.remaining is not None
+            else ("unavailable" if english else "\u4e0d\u53ef\u9a8c\u8bc1")
+        )
+        if english:
+            lines = [
+                f"Provider: {snapshot.provider_name}",
+                f"Plan: {snapshot.plan_name or '--'}",
+                f"Remaining: {balance_text}",
+                f"Today tokens: {format_tokens(snapshot.tokens.today.total)}",
+                f"Requests: {snapshot.request_count} ({snapshot.success_count} succeeded, {snapshot.failure_count} failed)",
+                f"CCS cost: ${snapshot.current_month_cost_usd:,.4f} this month",
+                f"Source: {snapshot.data_source}",
+            ]
+        else:
+            lines = [
+                f"\u4f9b\u5e94\u5546\uff1a{snapshot.provider_name}",
+                f"\u5957\u9910\uff1a{snapshot.plan_name or '--'}",
+                f"\u5269\u4f59\uff1a{balance_text}",
+                f"\u4eca\u65e5 Token\uff1a{format_tokens(snapshot.tokens.today.total)}",
+                f"\u8bf7\u6c42\uff1a{snapshot.request_count}\uff08\u6210\u529f {snapshot.success_count}\uff0c\u5931\u8d25 {snapshot.failure_count}\uff09",
+                f"\u672c\u6708 CCS \u6210\u672c\uff1a${snapshot.current_month_cost_usd:,.4f}",
+                f"\u6765\u6e90\uff1a{snapshot.data_source}",
+            ]
+        if snapshot.status_detail:
+            lines.append(("Status: " if english else "\u72b6\u6001\uff1a") + snapshot.status_detail)
+        self.setToolTip("\n".join(lines))
+
+
+def _provider_scope_tooltip(snapshot, english: bool) -> str:
+    if snapshot is None or not snapshot.provider_name:
+        return "No CC Switch provider was detected" if english else "\u672a\u68c0\u6d4b\u5230 CC Switch \u4e2d\u8f6c\u7ad9"
+    balance = snapshot.balance
+    balance_text = (
+        f"{balance.remaining:,.2f} {balance.unit or 'USD'}"
+        if balance is not None and balance.remaining is not None
+        else ("unavailable" if english else "\u4e0d\u53ef\u9a8c\u8bc1")
+    )
+    if english:
+        lines = [
+            f"Provider: {snapshot.provider_name}",
+            f"Balance: {balance_text}",
+            f"Today tokens: {format_tokens(snapshot.tokens.today.total)}",
+            f"Requests: {snapshot.request_count} ({snapshot.success_count} succeeded, {snapshot.failure_count} failed)",
+            f"CCS cost this month: ${snapshot.current_month_cost_usd:,.4f}",
+            f"Source: {snapshot.data_source}",
+            "Click to view this provider's Token data",
+        ]
+    else:
+        lines = [
+            f"\u4e2d\u8f6c\u7ad9\uff1a{snapshot.provider_name}",
+            f"\u4f59\u989d\uff1a{balance_text}",
+            f"\u4eca\u65e5 Token\uff1a{format_tokens(snapshot.tokens.today.total)}",
+            f"\u8bf7\u6c42\uff1a{snapshot.request_count}\uff08\u6210\u529f {snapshot.success_count}\uff0c\u5931\u8d25 {snapshot.failure_count}\uff09",
+            f"\u672c\u6708 CCS \u6210\u672c\uff1a${snapshot.current_month_cost_usd:,.4f}",
+            f"\u6765\u6e90\uff1a{snapshot.data_source}",
+            "\u70b9\u51fb\u67e5\u770b\u8be5\u4e2d\u8f6c\u7ad9 Token \u6570\u636e",
+        ]
+    if snapshot.status_detail:
+        lines.append(("Status: " if english else "\u72b6\u6001\uff1a") + snapshot.status_detail)
+    return "\n".join(lines)
+
+
+class ProviderScopeButton(QPushButton):
+    """A compact provider scope selector whose label comes from CCS metadata."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.snapshot = None
+        self.language = "zh"
+        self.setObjectName("topToggleButton")
+        self.setCheckable(True)
+        self.setMinimumWidth(58)
+        self.setMaximumWidth(132)
+        self.setFixedHeight(28)
+        self.set_snapshot(None)
+
+    def set_language(self, language):
+        self.language = language
+        self._render()
+
+    def set_snapshot(self, snapshot):
+        self.snapshot = snapshot
+        self._render()
+
+    def _render(self):
+        snapshot = self.snapshot
+        english = self.language == "en"
+        name = str(getattr(snapshot, "provider_name", "") or "").strip()
+        self.setText(name or ("Relay" if english else "\u4e2d\u8f6c"))
+        self.setEnabled(bool(name))
+        self.setToolTip(_provider_scope_tooltip(snapshot, english))
 
 
 class AnimatedStackedWidget(QStackedWidget):
@@ -946,6 +1222,11 @@ class DashboardWidget(QWidget):
         self.model_scope_group = QButtonGroup(self)
         self.model_scope_group.setExclusive(True)
         self.model_scope_buttons = {}
+        self.provider_scope_button = ProviderScopeButton()
+        self.provider_scope_button.clicked.connect(lambda checked=False: self._set_model_scope("provider"))
+        self.model_scope_group.addButton(self.provider_scope_button)
+        self.model_scope_buttons["provider"] = self.provider_scope_button
+        model_scope_layout.addWidget(self.provider_scope_button)
         for value, text, width in (("gpt", "GPT", 42), ("all", "全部", 46)):
             button = QPushButton(text)
             button.setObjectName("topToggleButton")
@@ -956,7 +1237,7 @@ class DashboardWidget(QWidget):
             self.model_scope_buttons[value] = button
             model_scope_layout.addWidget(button)
         current_model_scope = self.settings_manager.get_model_scope() if self.settings_manager else "all"
-        self.model_scope_buttons[current_model_scope].setChecked(True)
+        self.model_scope_buttons.get(current_model_scope, self.model_scope_buttons["all"]).setChecked(True)
         header.addWidget(model_scope_group)
 
         theme_group = QFrame()
@@ -1128,7 +1409,23 @@ class DashboardWidget(QWidget):
             self.settings_manager.set_quota_display(mode)
             self.settings_manager.save()
 
+    def _provider_snapshot(self):
+        snapshot = self.data.ccswitch
+        return snapshot if snapshot is not None and snapshot.provider_name else None
+
+    def _sync_provider_scope_button(self):
+        snapshot = self.data.ccswitch
+        self.provider_scope_button.set_snapshot(snapshot)
+        if snapshot is None or not snapshot.provider_name:
+            if self.current_model_scope == "provider":
+                self.model_scope_buttons["all"].setChecked(True)
+        else:
+            self.model_scope_buttons["provider"].setChecked(self.current_model_scope == "provider")
+
     def _set_model_scope(self, scope):
+        if scope == "provider" and self._provider_snapshot() is None:
+            self.model_scope_buttons["all"].setChecked(True)
+            return
         if self.settings_manager:
             self.settings_manager.set_model_scope(scope)
             self.settings_manager.save()
@@ -1143,10 +1440,11 @@ class DashboardWidget(QWidget):
         if model_scope != self.current_model_scope:
             self.current_model_scope = model_scope
             self._update()
+        self._sync_provider_scope_button()
         theme = self.settings_manager.get_theme()
         if theme in self.theme_buttons:
             self.theme_buttons[theme].setChecked(True)
-        if model_scope in self.model_scope_buttons:
+        if model_scope in self.model_scope_buttons and not (model_scope == "provider" and self._provider_snapshot() is None):
             self.model_scope_buttons[model_scope].setChecked(True)
         self.quota_card.set_display_mode(self.settings_manager.get_quota_display())
         reduce_motion = self.settings_manager.get_reduce_motion()
@@ -1162,13 +1460,16 @@ class DashboardWidget(QWidget):
 
     def update_text(self):
         english = bool(self.translation_manager and self.translation_manager.get_language() == "en")
+        self.provider_scope_button.set_language("en" if english else "zh")
         self.model_scope_buttons["gpt"].setText("GPT")
         self.model_scope_buttons["all"].setText("All" if english else "全部")
         scope_tip = (
             "Switch token cards, trends and model usage between GPT-only and all models"
             if english else "切换顶部指标、用量趋势和模型统计：仅 GPT / 包含第三方模型"
         )
-        for button in self.model_scope_buttons.values():
+        for value, button in self.model_scope_buttons.items():
+            if value == "provider":
+                continue
             button.setToolTip(scope_tip)
         self.language_buttons["en" if english else "zh"].setChecked(True)
         self.quota_card.title.setText("Quota usage" if english else "额度使用情况")
@@ -1192,6 +1493,19 @@ class DashboardWidget(QWidget):
 
     def refresh(self, silent=False):
         QTimer.singleShot(0, lambda: self._do_refresh(silent))
+
+    def shutdown(self):
+        """Wait for an in-flight refresh before Qt destroys its worker thread."""
+        thread = self._refresh_thread
+        if thread is None:
+            return
+        if thread.isRunning():
+            thread.quit()
+            if not thread.wait(20000):
+                thread.terminate()
+                thread.wait(1000)
+        self._refresh_thread = None
+        self._refresh_worker = None
 
     def _do_refresh(self, silent=False):
         if self._refresh_thread is not None:
@@ -1217,8 +1531,9 @@ class DashboardWidget(QWidget):
         thread.start()
 
     def _on_refresh_loaded(self, result):
-        codex, tasks, daily, projects, tools, skills, models = result
+        codex, tasks, daily, projects, tools, skills, models, ccswitch = result
         self.data.codex = codex
+        self.data.ccswitch = ccswitch
         self.data.tasks = tasks
         self.data.daily_tokens = sorted(daily, key=lambda item: item.date, reverse=True)
         self.data.projects = sorted(projects, key=lambda item: item.token_total, reverse=True)
@@ -1274,17 +1589,32 @@ class DashboardWidget(QWidget):
 
     def _update(self):
         snapshot = self.data.codex
-        self.quota_card.update_quota(
-            snapshot.quota_5h,
-            snapshot.quota_7d,
-            snapshot.quota_status,
-            snapshot.quota_month,
-        )
+        self._sync_provider_scope_button()
+        provider = self._provider_snapshot() if self.current_model_scope == "provider" else None
+        if provider is not None:
+            self.quota_card.update_provider(provider)
+        else:
+            self.quota_card.update_quota(
+                snapshot.quota_5h,
+                snapshot.quota_7d,
+                snapshot.quota_status,
+                snapshot.quota_month,
+            )
         tasks, daily, projects, tools, skills = self._visible_data()
         self.task_tab.update_tasks(tasks)
         models = [item for item in self.data.models if item.runtime == self.current_scope]
         model_scope = self.current_model_scope
-        if model_scope == "gpt":
+        if provider is not None:
+            periods = provider.tokens
+            daily = provider.daily_tokens
+            cumulative_total = periods.cumulative.total
+            self.today_card.update_value(periods.today, provider.today_cost_usd)
+            self.week_card.update_value(periods.current_week, provider.current_week_cost_usd)
+            self.month_card.update_value(periods.current_month, provider.current_month_cost_usd)
+            self.cumulative_card.update_value(periods.cumulative, provider.total_cost_usd)
+            self.value_card.update_provider(provider)
+            models = []
+        elif model_scope == "gpt":
             models = [item for item in models if is_gpt_model(item.name)]
             scoped = _model_scope_summary(models, self.current_scope)
             periods = scoped["periods"]

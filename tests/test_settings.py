@@ -32,7 +32,7 @@ def test_settings_manager_save_and_load():
         manager.set_theme("light")
         manager.set_statistics_timezone("fixed", "Asia/Shanghai")
         manager.set_quota_display("used")
-        manager.set_model_scope("gpt")
+        manager.set_model_scope("provider")
         manager.set_model_activity_window(180)
         manager.set_model_metric("api")
         manager.set_shortcut("Ctrl+Alt+K")
@@ -53,7 +53,7 @@ def test_settings_manager_save_and_load():
         assert manager2.get_theme() == "light"
         assert manager2.get_statistics_timezone() == ("fixed", "Asia/Shanghai")
         assert manager2.get_quota_display() == "used"
-        assert manager2.get_model_scope() == "gpt"
+        assert manager2.get_model_scope() == "provider"
         assert manager2.get_model_activity_window() == 180
         assert manager2.get_model_metric() == "api"
         assert manager2.get_shortcut() == "Ctrl+Alt+K"

@@ -230,6 +230,15 @@ class MainAppWindow(QMainWindow):
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
             except Exception:
                 pass
+
+    def show_without_activation(self):
+        """Show a native window for background validation without taking focus."""
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         QTimer.singleShot(80, self._apply_windows_chrome)
 
     def _apply_window_settings(self):

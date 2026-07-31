@@ -11,6 +11,7 @@ DEFAULT_AUTO_UPDATE = True
 DEFAULT_INCLUDE_BETA = True
 DEFAULT_QUOTA_DISPLAY = "remaining"
 DEFAULT_MODEL_SCOPE = "all"
+MODEL_SCOPES = ("provider", "gpt", "all")
 DEFAULT_MODEL_ACTIVITY_WINDOW = 30
 DEFAULT_MODEL_METRIC = "tokens"
 DEFAULT_SHORTCUT = "Ctrl+U"
@@ -110,7 +111,7 @@ class SettingsManager:
             self._notify_listeners()
 
     def set_model_scope(self, scope: str):
-        if scope in ("gpt", "all"):
+        if scope in MODEL_SCOPES:
             self.model_scope = scope
             self._notify_listeners()
 
@@ -236,7 +237,7 @@ class SettingsManager:
                 self.auto_update = bool(auto_update)
                 self.include_beta = bool(include_beta)
                 self.quota_display = quota_display if quota_display in ("remaining", "used") else DEFAULT_QUOTA_DISPLAY
-                self.model_scope = model_scope if model_scope in ("gpt", "all") else DEFAULT_MODEL_SCOPE
+                self.model_scope = model_scope if model_scope in MODEL_SCOPES else DEFAULT_MODEL_SCOPE
                 try:
                     self.model_activity_window = (
                         int(model_activity_window)

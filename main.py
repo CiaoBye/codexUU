@@ -54,6 +54,7 @@ class CodexUApplication:
             theme_manager=self.theme_manager,
         )
         self.tray = TrayManager(self.settings_manager, self.theme_manager)
+        self.app.aboutToQuit.connect(self._shutdown_workers)
 
         self.tray.show_main_window.connect(self._show_main)
         self.tray.minimize_main_window.connect(self._minimize_main)
@@ -76,7 +77,10 @@ class CodexUApplication:
         self.timer.start(60000)
 
     def _show_main(self):
-        self.window.show_and_activate()
+        if os.environ.get("CODEXUU_BACKGROUND_TEST") == "1":
+            self.window.show_without_activation()
+        else:
+            self.window.show_and_activate()
 
     def _minimize_main(self):
         if not self.window.isVisible():
@@ -100,7 +104,7 @@ class CodexUApplication:
                 pass
         if not visible:
             self.window.hide()
-            self.window.show_and_activate()
+            self._show_main()
 
     def _show_settings(self):
         if self.settings_dialog is None:
@@ -137,6 +141,11 @@ class CodexUApplication:
                 "CodexUU 有可用更新",
                 f"发现 {release.tag_name}，打开设置查看详情。",
             )
+
+    def _shutdown_workers(self):
+        self.window.dashboard.shutdown()
+        if self.settings_dialog is not None:
+            self.settings_dialog.shutdown()
 
     def run(self):
         return self.app.exec()

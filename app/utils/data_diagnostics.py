@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.data.ccswitch_reader import ccswitch_diagnostic
 from app.data.codex_reader import _appserver_executables, get_appserver_diagnostics
 
 @dataclass
@@ -42,8 +43,20 @@ def diagnose_data_sources() -> list[DataSourceStatus]:
         )
     else:
         appserver = DataSourceStatus("Codex app-server", "未找到可执行独立 runtime；额度使用最新 session rate-limit 快照", "warning")
+    ccswitch = ccswitch_diagnostic()
+    if ccswitch.get("provider_id"):
+        usage_query = "enabled" if ccswitch.get("quota_query_enabled") else "not configured"
+        ccswitch_status = "ok" if ccswitch.get("request_count") or ccswitch.get("quota_query_enabled") else "warning"
+        ccswitch_detail = (
+            f"{ccswitch.get('provider_name')} · {ccswitch.get('request_count', 0)} requests · "
+            f"quota query {usage_query} · {ccswitch.get('path')}"
+        )
+    else:
+        ccswitch_status = "warning"
+        ccswitch_detail = ccswitch.get("status_detail") or "CC Switch database or current Codex provider not found"
     return [
         appserver,
+        DataSourceStatus("CC Switch third-party provider", ccswitch_detail, ccswitch_status),
         DataSourceStatus("Codex SQLite", str(state) if state.exists() else "state_5.sqlite 不存在", "ok" if state.exists() else "error"),
         DataSourceStatus("Codex 精细事件", f"{session_count} session · {archived_count} archived", "ok" if session_count + archived_count else "error"),
     ]

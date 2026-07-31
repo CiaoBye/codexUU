@@ -1,5 +1,28 @@
 # CodexUU 更新日志
 
+## 2026-07-31 · 0.3.16 · CCS 范围标签与 7D 单环视觉收口
+
+- 顶栏范围选择器新增 CCS 当前供应商范围，按钮直接显示供应商站点名称（例如 `WawAPI`），移除品牌区的长行中转余额文本；余额、请求数、成本和数据来源保留在按钮 tooltip。
+- 中转范围使用 CCS 本机代理 Token、趋势、请求成本和供应商余额；官方 5h/7d 额度不伪装为中转额度，额度卡切换为明确的供应商余额状态；切回“全部”恢复全部 Codex 本机模型数据。
+- 7D 单额度窗口按上游 codexU 的单窗口信息架构放大有效环径、加粗紫色主轨、强化中心百分比和 0% 起点，双额度布局及缺失窗口 fail-closed 规则保持不变。
+- 新增范围持久化、供应商范围数据切换、余额卡和 7D 单环离屏回归测试；验证 `python -m compileall -q app main.py`、全量 `110 passed`、真实本机数据 smoke 和离屏截图。
+
+## 2026-07-31 · 0.3.15 · CC Switch 异常路径收口
+
+- 初始化供应商变量，确保 CCS 供应商解析或用量聚合异常时可以稳定返回不可用快照，不会在错误处理阶段再次抛出未定义变量异常。
+- 应用退出前等待 Dashboard 刷新和设置页 Release 检查线程；若后台线程超时才终止，避免刷新进行中重启触发 Qt 异常退出。
+- 增加 `CODEXUU_BACKGROUND_TEST=1` 后台验收开关；保持可见原生主窗口句柄，但不请求前台焦点。
+- 新增供应商解析异常回归测试。
+- 验证：`python -m compileall -q app main.py`；`QT_QPA_PLATFORM=offscreen PYTHONPATH=. python -m pytest -q` 为 107 passed；主程序 4.5 秒 offscreen smoke 正常退出；后台重启跨 60 秒刷新周期保持同一 PID、单实例和 `CodexUU` 可见窗口。
+
+## 2026-07-31 · 0.3.14 · CC Switch 第三方中转用量
+
+- 接入 CC Switch 当前 Codex 供应商的只读 `cc-switch.db`，统计代理请求、输入/缓存/输出 Token、成功/失败请求和 CCS 本地成本。
+- 读取 CCS 供应商已配置的用量查询脚本，使用供应商返回的余额、单位和套餐信息；API Key 仅在内存中用于请求，不写入 CodexUU 配置、日志或 tooltip。
+- 主界面品牌区显示当前中转供应商与余额，设置页数据源诊断显示 CCS 数据库、当前供应商和查询脚本状态；余额查询失败时保留 Token 统计并明确标记额度不可验证。
+- 第三方数据不混入官方 Codex 5h/7d 额度、官方 Token 羊毛进度或官方 API 计价口径。
+- 验证：`python -m compileall -q app main.py`；CCS reader 回归测试 3 项通过。
+
 ## 2026-07-30 · 0.3.13 · 模型趋势偏好持久化与规格收口
 
 - 模型活动范围和 Token/API 指标选择接入 `SettingsManager`，点击后立即写入现有配置文件，启动时恢复；旧配置兼容默认 30 天 + Token。

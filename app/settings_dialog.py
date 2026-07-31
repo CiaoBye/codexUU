@@ -592,6 +592,19 @@ class SettingsDialog(QDialog):
         self._update_worker = worker
         thread.start()
 
+    def shutdown(self):
+        """Wait for an in-flight release check before Qt destroys the dialog."""
+        thread = self._update_thread
+        if thread is None:
+            return
+        if thread.isRunning():
+            thread.quit()
+            if not thread.wait(12000):
+                thread.terminate()
+                thread.wait(1000)
+        self._update_thread = None
+        self._update_worker = None
+
     def _on_update_finished(self, release):
         self.check_update_btn.setEnabled(True)
         self._latest_release = release

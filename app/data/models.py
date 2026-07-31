@@ -13,6 +13,9 @@ class RuntimeScope(Enum):
 QUOTA_STATUS_AVAILABLE = "available"
 QUOTA_STATUS_EXHAUSTED = "exhausted"
 QUOTA_STATUS_UNAVAILABLE = "unavailable"
+PROVIDER_STATUS_AVAILABLE = "available"
+PROVIDER_STATUS_DEGRADED = "degraded"
+PROVIDER_STATUS_UNAVAILABLE = "unavailable"
 
 
 @dataclass
@@ -115,6 +118,46 @@ class DailyToken:
 
 
 @dataclass
+class ProviderBalance:
+    """余额接口返回的第三方供应商额度，不等同于官方滚动窗口。"""
+
+    remaining: Optional[float] = None
+    unit: str = "USD"
+    total: Optional[float] = None
+    used: Optional[float] = None
+    plan_name: str = ""
+    is_valid: Optional[bool] = None
+    invalid_message: str = ""
+    checked_at: Optional[datetime] = None
+
+
+@dataclass
+class ProviderUsageSnapshot:
+    """CC Switch 当前供应商的本机代理用量和供应商余额。"""
+
+    provider_id: str = ""
+    provider_name: str = ""
+    app_type: str = "codex"
+    plan_name: str = ""
+    base_url_host: str = ""
+    balance: Optional[ProviderBalance] = None
+    quota_query_enabled: bool = False
+    status: str = PROVIDER_STATUS_UNAVAILABLE
+    status_detail: str = ""
+    data_source: str = "CC Switch"
+    tokens: TokenStats = field(default_factory=TokenStats)
+    daily_tokens: list[DailyToken] = field(default_factory=list)
+    request_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    total_cost_usd: float = 0.0
+    today_cost_usd: float = 0.0
+    current_week_cost_usd: float = 0.0
+    current_month_cost_usd: float = 0.0
+    last_request_at: Optional[datetime] = None
+
+
+@dataclass
 class ProjectStats:
     name: str
     token_total: int = 0
@@ -180,6 +223,7 @@ class SkillUsage:
 @dataclass
 class MultiRuntimeUsageSnapshot:
     codex: UsageSnapshot = field(default_factory=UsageSnapshot)
+    ccswitch: Optional[ProviderUsageSnapshot] = None
     tasks: list[TaskItem] = field(default_factory=list)
     daily_tokens: list[DailyToken] = field(default_factory=list)
     projects: list[ProjectStats] = field(default_factory=list)

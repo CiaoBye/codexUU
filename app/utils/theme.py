@@ -63,6 +63,7 @@ QProgressBar#modelUsageProgress::chunk { background: qlineargradient(x1:0,y1:0,x
 QLabel#brandMark { color: #76a7ff; font-size: 20px; font-weight: 700; }
 QLabel#brandName { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 17px; font-weight: 700; }
 QLabel#brandSubtitle { color: #748197; font-size: 10px; }
+QLabel#providerUsageBadge { color: #8fb3ed; font-size: 10px; font-weight: 600; }
 QToolButton#navButton { background: transparent; color: #91a0b7; border: 0; border-radius: 7px; padding: 9px 12px; text-align: left; font-size: 12px; }
 QToolButton#navButton:hover { background: #1f2734; color: #e7edf7; }
 QToolButton#navButton:checked { background: #243a63; color: #ffffff; }
@@ -192,6 +193,7 @@ QProgressBar#modelUsageProgress::chunk { background: qlineargradient(x1:0,y1:0,x
 QLabel#brandMark { color: #326ad6; font-size: 20px; font-weight: 700; }
 QLabel#brandName { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 17px; font-weight: 700; }
 QLabel#brandSubtitle { color: #8a94a6; font-size: 10px; }
+QLabel#providerUsageBadge { color: #3768b4; font-size: 10px; font-weight: 600; }
 QToolButton#navButton { background: transparent; color: #667085; border: 0; border-radius: 7px; padding: 9px 12px; text-align: left; font-size: 12px; }
 QToolButton#navButton:hover { background: #e9eef7; color: #26344b; }
 QToolButton#navButton:checked { background: #dbe8ff; color: #1d54b1; }

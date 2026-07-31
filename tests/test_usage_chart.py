@@ -5,7 +5,17 @@ from PySide6.QtWidgets import QApplication
 
 from app.data.models import DailyToken, ModelUsage, RuntimeScope, TokenBreakdown
 from app.ui.heatmap import TokenHeatmap
-from app.ui.usage_chart import UsagePlot, UsageTrendWidget, aggregate_points, model_period_label, period_range_text
+from app.ui.usage_chart import (
+    MODEL_ACTIVITY_WINDOWS,
+    UsagePlot,
+    UsageTrendWidget,
+    _daily_metric_points,
+    aggregate_points,
+    model_activity_range_text,
+    model_activity_start,
+    model_period_label,
+    period_range_text,
+)
 from app.utils.statistics_timezone import configure_statistics_timezone, get_statistics_timezone
 
 
@@ -170,3 +180,93 @@ def test_heatmap_expands_grid_and_keeps_only_small_bottom_margin():
     assert all(heatmap.rect().contains(rect.toAlignedRect()) for rect in heatmap._month_label_rects)
     assert heatmap._month_label_rects[-1].right() <= heatmap.width()
     heatmap.hide()
+
+
+def test_model_activity_window_uses_inclusive_calendar_days_and_zero_fills():
+    today = get_statistics_timezone().now_date()
+    model = ModelUsage(
+        name="gpt-5",
+        tokens=TokenBreakdown(uncached_input=20),
+        token_total=20,
+        daily_tokens=[
+            DailyToken(
+                date=datetime.combine(today, datetime.min.time()),
+                total=20,
+                uncached_input=20,
+            ),
+        ],
+    )
+    points = _daily_metric_points(model, 60, "tokens", today)
+    assert len(points) == 60
+    assert points[0][0] == model_activity_start(60, today).strftime("%m/%d")
+    assert points[-1] == (today.strftime("%m/%d"), 20)
+    assert sum(value for _label, value in points[:-1]) == 0
+    assert model_activity_range_text(60, False, today) == f"{model_activity_start(60, today):%Y/%m/%d} - {today:%Y/%m/%d}"
+
+
+def test_model_view_renders_top_eight_other_and_metric_switch():
+    app = QApplication.instance() or QApplication([])
+    today = get_statistics_timezone().now_date()
+    models = []
+    model_names = (
+        "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-codex",
+        "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6",
+        "gpt-5.6-sol", "vendor-internal",
+    )
+    for index, name in enumerate(model_names, start=1):
+        total = index * 100
+        daily = DailyToken(
+            date=datetime.combine(today, datetime.min.time()),
+            total=total,
+            uncached_input=total,
+        )
+        models.append(ModelUsage(
+            name=name,
+            token_total=total,
+            tokens=TokenBreakdown(uncached_input=total),
+            daily_tokens=[daily],
+        ))
+
+    widget = UsageTrendWidget()
+    widget.set_data([], model_usage=models)
+    widget._set_view(1)
+    for window in MODEL_ACTIVITY_WINDOWS:
+        widget.set_model_activity_window(window)
+        assert widget.model_activity_window == window
+        assert str(window) in widget.model_window_buttons[window].text()
+    widget.set_model_activity_window(180)
+    assert len(widget.model_chart.series) == 9
+    assert widget.model_chart.series[-1][0] == "其他模型"
+    assert widget.model_chart.baseline[-1][1] == sum(range(100, 1100, 100))
+
+    widget.set_model_metric("api")
+    assert widget.model_chart.value_metric == "api"
+    assert widget.model_detail_value.text()
+
+    unknown = UsageTrendWidget()
+    unknown_model = models[-1]
+    unknown.set_data([], model_usage=[unknown_model])
+    unknown.set_model_metric("api")
+    assert "未计价" in unknown.model_detail_value.text()
+    widget.deleteLater()
+    unknown.deleteLater()
+    app.processEvents()
+
+
+def test_model_trend_preferences_restore_from_settings_manager(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    from app.utils.settings import SettingsManager
+
+    manager = SettingsManager(tmp_path / "config.json")
+    manager.set_model_activity_window(180)
+    manager.set_model_metric("api")
+    manager.save()
+    manager2 = SettingsManager(tmp_path / "config.json")
+    manager2.load()
+    widget = UsageTrendWidget(settings_manager=manager2)
+    assert widget.model_activity_window == 180
+    assert widget.model_metric == "api"
+    assert widget.model_window_buttons[180].isChecked()
+    assert widget.model_metric_buttons["api"].isChecked()
+    widget.deleteLater()
+    app.processEvents()

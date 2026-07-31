@@ -20,6 +20,24 @@ class QuotaInfo:
     used_pct: float
     remaining_pct: float
     reset_time: Optional[datetime] = None
+    window_minutes: Optional[int] = None
+    reset_count: Optional[int] = None
+    reset_times: tuple[datetime, ...] = ()
+
+
+@dataclass
+class QuotaWindows:
+    five_hour: Optional[QuotaInfo] = None
+    seven_day: Optional[QuotaInfo] = None
+    monthly: Optional[QuotaInfo] = None
+    unclassified_count: int = 0
+    malformed_count: int = 0
+    duplicate_count: int = 0
+    authoritative: bool = False
+
+    @property
+    def pair(self) -> tuple[Optional[QuotaInfo], Optional[QuotaInfo]]:
+        return self.five_hour, self.seven_day
 
 
 @dataclass
@@ -58,6 +76,7 @@ class TokenStats:
 class UsageSnapshot:
     quota_5h: Optional[QuotaInfo] = None
     quota_7d: Optional[QuotaInfo] = None
+    quota_month: Optional[QuotaInfo] = None
     # Codex can emit an explicit empty rate-limit snapshot after exhaustion.
     # Keep that state separate from a genuinely missing/unreadable data source
     # so the UI can explain why no window can be drawn.
@@ -295,6 +314,7 @@ def parse_jsonl_line(line: str) -> Optional[dict]:
     if not line:
         return None
     try:
-        return json.loads(line)
+        value = json.loads(line)
+        return value if isinstance(value, dict) else None
     except json.JSONDecodeError:
         return None

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from app.data.models import (
     DailyToken,
     ModelUsage,
+    RuntimeScope,
     TokenBreakdown,
     estimate_model_api_value,
     format_tokens,
@@ -36,6 +37,9 @@ from app.utils.statistics_timezone import get_statistics_timezone
 
 
 MODES = ("daily", "weekly", "monthly", "cumulative")
+MODEL_ACTIVITY_WINDOWS = (30, 60, 90, 180)
+MODEL_METRICS = ("tokens", "api")
+OTHER_MODEL_KEY = "__other_models__"
 ICONS_DIR = Path(__file__).resolve().parents[2] / "resources" / "icons"
 
 
@@ -112,6 +116,66 @@ def period_range_text(mode: str, english: bool, today: date | None = None) -> st
         end = today.replace(day=monthrange(today.year, today.month)[1])
         return f"{start:%m/%d}-{end:%m/%d}"
     return "All records" if english else "全部记录"
+
+
+def model_activity_start(days: int, today: date | None = None) -> date:
+    """Return the inclusive start of a model activity window."""
+    today = today or get_statistics_timezone().now_date()
+    days = max(1, int(days))
+    return today - timedelta(days=days - 1)
+
+
+def model_activity_range_text(days: int, english: bool, today: date | None = None) -> str:
+    today = today or get_statistics_timezone().now_date()
+    start = model_activity_start(days, today)
+    return f"{start:%Y/%m/%d} - {today:%Y/%m/%d}"
+
+
+def format_metric_value(value: float, metric: str, english: bool = False) -> str:
+    if metric == "api":
+        return f"${float(value):,.2f}"
+    return format_tokens(int(round(value)))
+
+
+def _exact_model_api_value(tokens: TokenBreakdown, model: str) -> float:
+    prices = prices_for_model(model)
+    if not prices:
+        return 0.0
+    return (
+        tokens.uncached_input / 1_000_000 * prices["uncached_input"]
+        + tokens.cached_input / 1_000_000 * prices["cached_input"]
+        + tokens.output / 1_000_000 * prices["output"]
+    )
+
+
+def _daily_metric_points(model: ModelUsage, days: int, metric: str, today: date | None = None):
+    """Build a zero-filled model series without changing source model data."""
+    today = today or get_statistics_timezone().now_date()
+    start = model_activity_start(days, today)
+    by_day = defaultdict(float)
+    prices_available = prices_for_model(model.name) is not None
+    for item in model.daily_tokens or []:
+        day = _item_date(item)
+        if day < start or day > today:
+            continue
+        if metric == "tokens":
+            amount = item.total
+        elif prices_available:
+            amount = _exact_model_api_value(
+                TokenBreakdown(
+                    cached_input=item.cached_input,
+                    uncached_input=item.uncached_input,
+                    output=item.output,
+                ),
+                model.name,
+            ) or 0.0
+        else:
+            amount = 0.0
+        by_day[day] += amount
+    return [
+        ((start + timedelta(days=index)).strftime("%m/%d"), by_day[start + timedelta(days=index)])
+        for index in range(max(1, int(days)))
+    ]
 
 
 def _in_period(value: datetime | None, start: date | None, end: date) -> bool:
@@ -215,12 +279,13 @@ def longest_streak(by_day):
     return best
 
 
-def _model_label(name: str) -> str:
+def _model_label(name: str, english: bool = False) -> str:
     value = (name or "unknown").strip()
     aliases = {
         "gpt-5.6-sol": "Sol",
         "gpt-5.6-terra": "Terra",
         "gpt-5.6-luna": "Luna",
+        OTHER_MODEL_KEY: "Other models" if english else "其他模型",
     }
     return aliases.get(value.lower(), value)
 
@@ -232,10 +297,32 @@ def _effort_label(effort: str, english: bool) -> str:
     return (en if english else zh).get(key, "Not provided" if english else "未提供")
 
 
+def _model_key(model: ModelUsage) -> str:
+    return f"{model.name}\x1f{model.effort}"
+
+
+def _api_value_text(model: ModelUsage, english: bool) -> str:
+    if model.pricing_coverage_pct <= 0:
+        return "Unpriced" if english else "未计价"
+    prefix = "~" if model.pricing_coverage_pct < 99.5 else ""
+    value = f"{prefix}${model.estimated_value:,.2f}"
+    if model.pricing_coverage_pct < 99.5:
+        value += f" ({model.pricing_coverage_pct:.0f}%)"
+    return value
+
+
 class ModelUsageRow(QFrame):
     activated = Signal(object)
 
-    def __init__(self, model: ModelUsage, total: int, english: bool, period_text: str, parent=None):
+    def __init__(
+        self,
+        model: ModelUsage,
+        total: int,
+        english: bool,
+        period_text: str,
+        metric: str = "tokens",
+        parent=None,
+    ):
         super().__init__(parent)
         self.model = model
         self.setObjectName("modelUsageRow")
@@ -245,11 +332,17 @@ class ModelUsageRow(QFrame):
         layout.setContentsMargins(11, 7, 11, 7)
         layout.setSpacing(4)
         heading = QHBoxLayout()
-        name = QLabel(f"{_model_label(model.name)} · {_effort_label(model.effort, english)}")
+        model_name = _model_label(model.name, english)
+        effort = _effort_label(model.effort, english) if model.effort else ""
+        name = QLabel(f"{model_name} · {effort}" if effort else model_name)
         name.setObjectName("modelUsageName")
+        name.setToolTip(model.name)
         heading.addWidget(name)
         heading.addStretch()
-        value = QLabel(format_tokens(model.token_total))
+        value = QLabel(
+            format_tokens(model.token_total)
+            if metric == "tokens" else _api_value_text(model, english)
+        )
         value.setObjectName("modelUsageValue")
         heading.addWidget(value)
         layout.addLayout(heading)
@@ -283,6 +376,10 @@ class UsagePlot(QWidget):
         super().__init__(parent)
         self.bars = bars
         self.points = []
+        self.series = []
+        self.baseline = []
+        self.value_metric = "tokens"
+        self.english = False
         self.hover_index = -1
         # The dashboard gives overview and model plots different live heights.
         # A large minimum makes the stacked page taller than its viewport and
@@ -290,8 +387,25 @@ class UsagePlot(QWidget):
         self.setMinimumHeight(48)
         self.setMouseTracking(True)
 
-    def set_points(self, points):
+    def set_points(self, points, metric="tokens", english=False):
         self.points = list(points or [])
+        self.series = []
+        self.baseline = []
+        self.value_metric = metric
+        self.english = english
+        self.hover_index = -1
+        self.update()
+
+    def set_series(self, series, baseline=None, metric="tokens", english=False):
+        self.series = [
+            (str(name), list(points or []))
+            for name, points in (series or [])
+            if points
+        ]
+        self.baseline = list(baseline or [])
+        self.points = self.baseline or (self.series[0][1] if self.series else [])
+        self.value_metric = metric
+        self.english = english
         self.hover_index = -1
         self.update()
 
@@ -302,11 +416,28 @@ class UsagePlot(QWidget):
         width = max(1, self.width() - left - right)
         index = round((event.position().x() - left) / width * max(1, len(self.points) - 1))
         self.hover_index = max(0, min(len(self.points) - 1, index))
-        label, value = self.points[self.hover_index]
+        label, _value = self.points[self.hover_index]
+        if self.series:
+            values = []
+            if self.baseline:
+                values.append(
+                    f"{'Total' if self.english else '总量'}: "
+                    f"{format_metric_value(self.baseline[self.hover_index][1], self.value_metric, self.english)}"
+                )
+            values.extend(
+                f"{name}: {format_metric_value(points[self.hover_index][1], self.value_metric, self.english)}"
+                for name, points in self.series
+                if self.hover_index < len(points)
+            )
+            tooltip_text = f"{label}\n" + "\n".join(values)
+        else:
+            value = self.points[self.hover_index][1]
+            unit = "API value" if self.value_metric == "api" else "token"
+            tooltip_text = f"{label}\n{format_metric_value(value, self.value_metric, self.english)} {unit}"
         # Always open above the cursor so a point on the zero baseline cannot
         # push the tooltip underneath the card/window boundary.
         tooltip_pos = event.globalPosition().toPoint() + QPoint(12, -54)
-        QToolTip.showText(tooltip_pos, f"{label}\n{format_tokens(value)} token", self)
+        QToolTip.showText(tooltip_pos, tooltip_text, self)
         self.update()
 
     def leaveEvent(self, event):
@@ -332,7 +463,10 @@ class UsagePlot(QWidget):
         self._last_y_axis_label_rects = []
         self._last_x_axis_label_rects = []
         self._last_axis_label_rects = []
-        maximum = max(value for _, value in self.points) or 1
+        all_values = [value for _, value in self.points]
+        for _name, series in self.series:
+            all_values.extend(value for _, value in series)
+        maximum = max(all_values or [0]) or 1
         painter.setFont(QFont("Microsoft YaHei", 8))
         # Short model cards cannot fit three 14px Y labels without collisions.
         # Keep the zero baseline mandatory, then add max/mid only when the live
@@ -349,16 +483,37 @@ class UsagePlot(QWidget):
             painter.drawText(
                 label_rect,
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                format_tokens(int(maximum * pct)),
+                format_metric_value(maximum * pct, self.value_metric, self.english),
             )
 
         count = len(self.points)
-        coords = []
-        for index, (_, value) in enumerate(self.points):
-            x = left + width * (index + (0.5 if self.bars else 0)) / (count if self.bars else max(1, count - 1))
-            y = top + height * (1 - value / maximum)
-            coords.append(QPointF(x, y))
-        if self.bars:
+
+        def point_coords(points):
+            coords = []
+            for index, (_, value) in enumerate(points):
+                x = left + width * (index + (0.5 if self.bars else 0)) / (count if self.bars else max(1, count - 1))
+                y = top + height * (1 - value / maximum)
+                coords.append(QPointF(x, y))
+            return coords
+
+        coords = point_coords(self.points)
+        if self.series:
+            baseline_coords = point_coords(self.baseline) if self.baseline else []
+            if baseline_coords:
+                painter.setPen(QPen(QColor("#93a0b5"), 1, Qt.PenStyle.DashLine))
+                painter.drawPolyline(baseline_coords)
+            colors = ("#6d9dff", "#8d74ff", "#e99a25", "#55c6a5", "#e879a9")
+            for index, (_name, points) in enumerate(self.series):
+                series_coords = point_coords(points)
+                color = colors[index % len(colors)]
+                painter.setPen(QPen(QColor(color), 1.6))
+                painter.drawPolyline(series_coords)
+                if self.hover_index >= 0 and self.hover_index < len(series_coords):
+                    point = series_coords[self.hover_index]
+                    painter.setBrush(QColor("#ffffff"))
+                    painter.setPen(QPen(QColor(color), 2))
+                    painter.drawEllipse(point, 3.5, 3.5)
+        elif self.bars:
             bar_width = max(5, min(22, width / max(1, count) * 0.55))
             for index, point in enumerate(coords):
                 color = QColor("#6d9dff") if index != self.hover_index else QColor("#326ad6")
@@ -401,11 +556,23 @@ class UsagePlot(QWidget):
 
 
 class UsageTrendWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None):
         super().__init__(parent)
+        self.settings_manager = settings_manager
         self.daily_tokens = []
         self.model_usage = []
         self.selected_model = None
+        self.selected_model_key = None
+        saved_window = (
+            settings_manager.get_model_activity_window()
+            if settings_manager and hasattr(settings_manager, "get_model_activity_window") else 30
+        )
+        saved_metric = (
+            settings_manager.get_model_metric()
+            if settings_manager and hasattr(settings_manager, "get_model_metric") else "tokens"
+        )
+        self.model_activity_window = saved_window if saved_window in MODEL_ACTIVITY_WINDOWS else 30
+        self.model_metric = saved_metric if saved_metric in MODEL_METRICS else "tokens"
         self.cumulative_total = None
         self.mode = "daily"
         self.language = "zh"
@@ -517,9 +684,37 @@ class UsageTrendWidget(QWidget):
         ranking.setObjectName("surfaceCard")
         ranking_layout = QVBoxLayout(ranking)
         ranking_layout.setContentsMargins(14, 8, 14, 8)
+        model_controls = QHBoxLayout()
+        model_controls.setSpacing(2)
         self.models_title = QLabel("")
         self.models_title.setObjectName("sectionTitle")
-        ranking_layout.addWidget(self.models_title)
+        model_controls.addWidget(self.models_title)
+        model_controls.addStretch()
+        self.model_window_group = QButtonGroup(self)
+        self.model_window_group.setExclusive(True)
+        self.model_window_buttons = {}
+        for days in MODEL_ACTIVITY_WINDOWS:
+            button = QPushButton("")
+            button.setObjectName("miniTabButton")
+            button.setCheckable(True)
+            button.setFixedWidth(42)
+            button.clicked.connect(lambda checked=False, value=days: self.set_model_activity_window(value))
+            self.model_window_group.addButton(button)
+            self.model_window_buttons[days] = button
+            model_controls.addWidget(button)
+        self.model_metric_group = QButtonGroup(self)
+        self.model_metric_group.setExclusive(True)
+        self.model_metric_buttons = {}
+        for metric in MODEL_METRICS:
+            button = QPushButton("")
+            button.setObjectName("miniTabButton")
+            button.setCheckable(True)
+            button.setFixedWidth(54)
+            button.clicked.connect(lambda checked=False, value=metric: self.set_model_metric(value))
+            self.model_metric_group.addButton(button)
+            self.model_metric_buttons[metric] = button
+            model_controls.addWidget(button)
+        ranking_layout.addLayout(model_controls)
         self.models_scroll = QScrollArea()
         self.models_scroll.setWidgetResizable(True)
         self.models_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -581,7 +776,49 @@ class UsageTrendWidget(QWidget):
         self.overview_button.setText("Overview" if english else "概览")
         self.models_button.setText("Models" if english else "模型")
         self.models_title.setText("Model usage" if english else "模型使用量")
+        for days, button in self.model_window_buttons.items():
+            button.setText(f"{days}d" if english else f"{days}天")
+            button.setToolTip(
+                f"Model activity: {days} days" if english else f"模型活动范围：{days} 天"
+            )
+            button.setChecked(days == self.model_activity_window)
+        metric_labels = {
+            "tokens": "Tokens" if english else "Token",
+            "api": "API" if english else "API费用",
+        }
+        for metric, button in self.model_metric_buttons.items():
+            button.setText(metric_labels[metric])
+            button.setToolTip(
+                "Show token volume" if english and metric == "tokens" else
+                "Show exact-model API equivalent value" if english else
+                "显示 Token 数量" if metric == "tokens" else "显示按精确模型价格计算的 API 等效费用"
+            )
+            button.setChecked(metric == self.model_metric)
         self._render()
+
+    def set_model_activity_window(self, days: int):
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            return
+        if days not in MODEL_ACTIVITY_WINDOWS or days == self.model_activity_window:
+            return
+        self.model_activity_window = days
+        if self.settings_manager and hasattr(self.settings_manager, "set_model_activity_window"):
+            self.settings_manager.set_model_activity_window(days)
+            self.settings_manager.save()
+        self.model_window_buttons[days].setChecked(True)
+        self._render_models()
+
+    def set_model_metric(self, metric: str):
+        if metric not in MODEL_METRICS or metric == self.model_metric:
+            return
+        self.model_metric = metric
+        if self.settings_manager and hasattr(self.settings_manager, "set_model_metric"):
+            self.settings_manager.set_model_metric(metric)
+            self.settings_manager.save()
+        self.model_metric_buttons[metric].setChecked(True)
+        self._render_models()
 
     def _update_period_controls(self):
         english = self.language == "en"
@@ -651,7 +888,9 @@ class UsageTrendWidget(QWidget):
         self.cumulative_total = cumulative_total
         self.model_usage = list(model_usage or [])
         self.data_updated_at = datetime.now(timezone.utc)
-        if self.selected_model not in self.model_usage:
+        model_keys = {_model_key(model) for model in self.model_usage}
+        if self.selected_model_key not in model_keys:
+            self.selected_model_key = _model_key(self.model_usage[0]) if self.model_usage else None
             self.selected_model = self.model_usage[0] if self.model_usage else None
         self._render()
 
@@ -693,8 +932,101 @@ class UsageTrendWidget(QWidget):
             daily_tokens=model.daily_tokens,
         ), points
 
-    def _select_model(self, model):
-        self.selected_model = model
+    def _activity_model(self, model):
+        today = get_statistics_timezone().now_date()
+        start = model_activity_start(self.model_activity_window, today)
+        selected_days = [
+            item for item in model.daily_tokens
+            if _in_period(item.date, start, today)
+        ]
+        tokens = TokenBreakdown(
+            cached_input=sum(item.cached_input for item in selected_days),
+            uncached_input=sum(item.uncached_input for item in selected_days),
+            output=sum(item.output for item in selected_days),
+        )
+        sessions = sum(1 for active in model.session_activity.values() if _in_period(active, start, today))
+        turns = sum(1 for active in model.turn_activity.values() if _in_period(active, start, today))
+        return ModelUsage(
+            name=model.name,
+            effort=model.effort,
+            runtime=model.runtime,
+            token_total=tokens.total,
+            estimated_value=estimate_model_api_value(tokens, model.name) or 0.0,
+            pricing_coverage_pct=100.0 if prices_for_model(model.name) and tokens.total else 0.0,
+            tokens=tokens,
+            session_count=sessions,
+            turn_count=turns,
+            last_active=model.last_active,
+            daily_tokens=selected_days,
+            session_activity={
+                key: value for key, value in model.session_activity.items()
+                if _in_period(value, start, today)
+            },
+            turn_activity={
+                key: value for key, value in model.turn_activity.items()
+                if _in_period(value, start, today)
+            },
+        )
+
+    @staticmethod
+    def _merge_models(models, name=OTHER_MODEL_KEY):
+        tokens = TokenBreakdown()
+        daily = {}
+        sessions = {}
+        turns = {}
+        last_active = None
+        priced_tokens = 0.0
+        estimated_value = 0.0
+        for index, model in enumerate(models):
+            tokens.cached_input += model.tokens.cached_input
+            tokens.uncached_input += model.tokens.uncached_input
+            tokens.output += model.tokens.output
+            priced_tokens += model.token_total * model.pricing_coverage_pct / 100.0
+            estimated_value += model.estimated_value
+            if model.last_active and (last_active is None or model.last_active > last_active):
+                last_active = model.last_active
+            for item in model.daily_tokens:
+                key = _item_date(item)
+                target = daily.setdefault(
+                    key,
+                    DailyToken(date=item.date, runtime=RuntimeScope.CODEX),
+                )
+                target.cached_input += item.cached_input
+                target.uncached_input += item.uncached_input
+                target.output += item.output
+                target.total = target.cached_input + target.uncached_input + target.output
+            for key, value in model.session_activity.items():
+                sessions[f"{index}:{key}"] = value
+            for key, value in model.turn_activity.items():
+                turns[f"{index}:{key}"] = value
+        total = tokens.total
+        return ModelUsage(
+            name=name,
+            token_total=total,
+            estimated_value=estimated_value,
+            pricing_coverage_pct=(priced_tokens / total * 100.0) if total else 0.0,
+            tokens=tokens,
+            session_count=len(sessions) or sum(model.session_count for model in models),
+            turn_count=len(turns) or sum(model.turn_count for model in models),
+            last_active=last_active,
+            daily_tokens=sorted(daily.values(), key=lambda item: item.date),
+            session_activity=sessions,
+            turn_activity=turns,
+        )
+
+    @staticmethod
+    def _sum_points(point_lists):
+        point_lists = [points for points in point_lists if points]
+        if not point_lists:
+            return []
+        count = len(point_lists[0])
+        return [
+            (point_lists[0][index][0], sum(points[index][1] for points in point_lists if index < len(points)))
+            for index in range(count)
+        ]
+
+    def _select_model(self, model_key):
+        self.selected_model_key = model_key
         self._render_models()
 
     def _clear_model_rows(self):
@@ -704,7 +1036,7 @@ class UsageTrendWidget(QWidget):
             if widget:
                 widget.deleteLater()
 
-    def _render_models(self):
+    def _render_models_legacy(self):
         self._clear_model_rows()
         english = self.language == "en"
         range_text = model_period_label(self.mode, english)
@@ -757,6 +1089,121 @@ class UsageTrendWidget(QWidget):
             value_label.setText(format_tokens(value))
             name_label.setText(name)
         self.model_chart.set_points(points)
+
+    def _render_models(self):
+        self._clear_model_rows()
+        english = self.language == "en"
+        range_text = model_period_label(self.mode, english)
+        period_models = []
+        for original in self.model_usage:
+            period, _period_points = self._period_model(original)
+            if period.token_total:
+                activity = self._activity_model(original)
+                period_models.append({
+                    "key": _model_key(original),
+                    "original": original,
+                    "period": period,
+                    "activity": activity,
+                    "points": _daily_metric_points(
+                        original, self.model_activity_window, self.model_metric,
+                    ),
+                })
+        period_models.sort(
+            key=lambda item: (item["activity"].token_total, item["period"].token_total),
+            reverse=True,
+        )
+        if not period_models:
+            empty = QLabel("No model usage in this period" if english else "当前口径暂无模型用量")
+            empty.setObjectName("emptyState")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.models_list_layout.insertWidget(0, empty, 1)
+            self.model_detail_title.setText("Model details" if english else "模型详情")
+            self.model_detail_meta.setText("")
+            self.model_detail_value.setText("0")
+            for value_label, name_label in self.model_metric_labels:
+                value_label.setText("0")
+                name_label.setText("")
+            self.model_chart.set_points([], metric=self.model_metric, english=english)
+            return
+
+        visible = period_models[:8]
+        if len(period_models) > 8:
+            remainder = period_models[8:]
+            visible.append({
+                "key": OTHER_MODEL_KEY,
+                "original": self._merge_models([item["original"] for item in remainder]),
+                "period": self._merge_models([item["period"] for item in remainder]),
+                "activity": self._merge_models([item["activity"] for item in remainder]),
+                "points": self._sum_points([item["points"] for item in remainder]),
+            })
+
+        total = sum(item["period"].token_total for item in visible)
+        visible_keys = {item["key"] for item in visible}
+        if self.selected_model_key not in visible_keys:
+            self.selected_model_key = visible[0]["key"]
+        selected = next(item for item in visible if item["key"] == self.selected_model_key)
+        self.selected_model = selected["original"]
+
+        for item in visible:
+            row = ModelUsageRow(
+                item["period"], total, english, range_text, self.model_metric,
+            )
+            row.setProperty("selected", item["key"] == self.selected_model_key)
+            row.activated.connect(lambda _model, target=item["key"]: self._select_model(target))
+            self.models_list_layout.insertWidget(self.models_list_layout.count() - 1, row)
+
+        period = selected["period"]
+        effort = _effort_label(period.effort, english) if period.effort else ""
+        title = _model_label(period.name, english)
+        self.model_detail_title.setText(f"{title} · {effort}" if effort else title)
+        api_text = _api_value_text(period, english)
+        token_text = format_tokens(period.token_total)
+        if self.model_metric == "api":
+            value_text = f"{api_text} · {token_text} Token"
+        else:
+            value_text = f"{token_text} · API {api_text}"
+        self.model_detail_value.setText(value_text)
+        source = pricing_source_for_model(period.name)
+        self.model_detail_value.setToolTip(
+            source or ("No exact official price for this model ID" if english else "未找到与该模型 ID 精确匹配的官方价格")
+        )
+        share = period.token_total / max(1, total) * 100
+        last_active = (
+            get_statistics_timezone().datetime_for(period.last_active).strftime("%m/%d %H:%M")
+            if period.last_active else "--"
+        )
+        baseline_points = self._sum_points([item["points"] for item in period_models])
+        baseline_total = baseline_points[-1][1] if baseline_points else 0
+        activity_range = model_activity_range_text(self.model_activity_window, english)
+        baseline_text = format_metric_value(baseline_total, self.model_metric, english)
+        self.model_detail_meta.setText(
+            f"{period.session_count} sessions · {period.turn_count} turns · {share:.1f}% share · "
+            f"activity {activity_range} · total {baseline_text} · last active {last_active}"
+            if english else
+            f"{period.session_count} 个会话 · {period.turn_count} 个回合 · 占比 {share:.1f}% · "
+            f"活动范围 {activity_range} · 总量基线 {baseline_text} · 最近活跃 {last_active}"
+        )
+        metric_values = (period.tokens.uncached_input, period.tokens.cached_input, period.tokens.output)
+        metric_names = (
+            ("Uncached", "Cached", "Output") if english else ("未缓存", "缓存", "输出")
+        )
+        for (value_label, name_label), value, name in zip(self.model_metric_labels, metric_values, metric_names):
+            value_label.setText(format_tokens(value))
+            name_label.setText(name)
+
+        series = []
+        for item in visible:
+            model = item["activity"]
+            model_name = _model_label(model.name, english)
+            model_effort = _effort_label(model.effort, english) if model.effort else ""
+            label = f"{model_name} · {model_effort}" if model_effort else model_name
+            series.append((label, item["points"]))
+        self.model_chart.set_series(
+            series,
+            baseline=baseline_points,
+            metric=self.model_metric,
+            english=english,
+        )
 
     def _render(self):
         english = self.language == "en"

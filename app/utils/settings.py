@@ -11,6 +11,8 @@ DEFAULT_AUTO_UPDATE = True
 DEFAULT_INCLUDE_BETA = True
 DEFAULT_QUOTA_DISPLAY = "remaining"
 DEFAULT_MODEL_SCOPE = "all"
+DEFAULT_MODEL_ACTIVITY_WINDOW = 30
+DEFAULT_MODEL_METRIC = "tokens"
 DEFAULT_SHORTCUT = "Ctrl+U"
 DEFAULT_REDUCE_MOTION = False
 DEFAULT_ALWAYS_ON_TOP = False
@@ -36,6 +38,8 @@ class SettingsManager:
         self.include_beta = DEFAULT_INCLUDE_BETA
         self.quota_display = DEFAULT_QUOTA_DISPLAY
         self.model_scope = DEFAULT_MODEL_SCOPE
+        self.model_activity_window = DEFAULT_MODEL_ACTIVITY_WINDOW
+        self.model_metric = DEFAULT_MODEL_METRIC
         self.shortcut = DEFAULT_SHORTCUT
         self.reduce_motion = DEFAULT_REDUCE_MOTION
         self.always_on_top = DEFAULT_ALWAYS_ON_TOP
@@ -66,6 +70,12 @@ class SettingsManager:
 
     def get_model_scope(self) -> str:
         return self.model_scope
+
+    def get_model_activity_window(self) -> int:
+        return self.model_activity_window
+
+    def get_model_metric(self) -> str:
+        return self.model_metric
 
     def get_shortcut(self) -> str:
         return self.shortcut
@@ -102,6 +112,20 @@ class SettingsManager:
     def set_model_scope(self, scope: str):
         if scope in ("gpt", "all"):
             self.model_scope = scope
+            self._notify_listeners()
+
+    def set_model_activity_window(self, days: int):
+        try:
+            value = int(days)
+        except (TypeError, ValueError):
+            return
+        if value in (30, 60, 90, 180):
+            self.model_activity_window = value
+            self._notify_listeners()
+
+    def set_model_metric(self, metric: str):
+        if metric in ("tokens", "api"):
+            self.model_metric = metric
             self._notify_listeners()
 
     def set_shortcut(self, shortcut: str):
@@ -192,6 +216,8 @@ class SettingsManager:
                 include_beta = data.get("include_beta", DEFAULT_INCLUDE_BETA)
                 quota_display = data.get("quota_display", DEFAULT_QUOTA_DISPLAY)
                 model_scope = data.get("model_scope", DEFAULT_MODEL_SCOPE)
+                model_activity_window = data.get("model_activity_window", DEFAULT_MODEL_ACTIVITY_WINDOW)
+                model_metric = data.get("model_metric", DEFAULT_MODEL_METRIC)
                 shortcut = data.get("shortcut", DEFAULT_SHORTCUT)
                 reduce_motion = data.get("reduce_motion", DEFAULT_REDUCE_MOTION)
                 always_on_top = data.get("always_on_top", DEFAULT_ALWAYS_ON_TOP)
@@ -211,6 +237,15 @@ class SettingsManager:
                 self.include_beta = bool(include_beta)
                 self.quota_display = quota_display if quota_display in ("remaining", "used") else DEFAULT_QUOTA_DISPLAY
                 self.model_scope = model_scope if model_scope in ("gpt", "all") else DEFAULT_MODEL_SCOPE
+                try:
+                    self.model_activity_window = (
+                        int(model_activity_window)
+                        if int(model_activity_window) in (30, 60, 90, 180)
+                        else DEFAULT_MODEL_ACTIVITY_WINDOW
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    self.model_activity_window = DEFAULT_MODEL_ACTIVITY_WINDOW
+                self.model_metric = model_metric if model_metric in ("tokens", "api") else DEFAULT_MODEL_METRIC
                 self.shortcut = str(shortcut or DEFAULT_SHORTCUT)
                 self.reduce_motion = bool(reduce_motion)
                 self.always_on_top = bool(always_on_top)
@@ -235,6 +270,8 @@ class SettingsManager:
                 self.include_beta = DEFAULT_INCLUDE_BETA
                 self.quota_display = DEFAULT_QUOTA_DISPLAY
                 self.model_scope = DEFAULT_MODEL_SCOPE
+                self.model_activity_window = DEFAULT_MODEL_ACTIVITY_WINDOW
+                self.model_metric = DEFAULT_MODEL_METRIC
                 self.shortcut = DEFAULT_SHORTCUT
                 self.reduce_motion = DEFAULT_REDUCE_MOTION
                 self.always_on_top = DEFAULT_ALWAYS_ON_TOP
@@ -258,6 +295,8 @@ class SettingsManager:
             "include_beta": self.include_beta,
             "quota_display": self.quota_display,
             "model_scope": self.model_scope,
+            "model_activity_window": self.model_activity_window,
+            "model_metric": self.model_metric,
             "shortcut": self.shortcut,
             "reduce_motion": self.reduce_motion,
             "always_on_top": self.always_on_top,

@@ -73,6 +73,7 @@ class DesktopStatusPanel(QWidget):
         self._today = "0"
         self._q5 = None
         self._q7 = None
+        self._qmonth = None
         self._quota_status = "unavailable"
         self._display_mode = "remaining"
         self._press_position: QPoint | None = None
@@ -134,7 +135,8 @@ class DesktopStatusPanel(QWidget):
         self._today = format_tokens(snapshot.tokens.today.total)
         self._q5 = snapshot.quota_5h
         self._q7 = snapshot.quota_7d
-        self._quota_status = getattr(snapshot, "quota_status", "available" if self._q5 or self._q7 else "unavailable")
+        self._qmonth = getattr(snapshot, "quota_month", None)
+        self._quota_status = getattr(snapshot, "quota_status", "available" if self._q5 or self._q7 or self._qmonth else "unavailable")
         self._update_tooltip()
         self.update()
 
@@ -144,7 +146,7 @@ class DesktopStatusPanel(QWidget):
         return "暂无可验证额度" if not compact else "暂无额度"
 
     def _update_tooltip(self):
-        available = [("5H", self._q5), ("7D", self._q7)]
+        available = [("5H", self._q5), ("7D", self._q7), ("MONTH", self._qmonth)]
         available = [(label, quota) for label, quota in available if quota is not None]
         mode_label = "已用" if self._display_mode == "used" else "剩余"
         if not available:
@@ -156,8 +158,23 @@ class DesktopStatusPanel(QWidget):
                 value = quota.used_pct if self._display_mode == "used" else quota.remaining_pct
                 lines.append(f"{label} {mode_label} {value:.0f}% · {self._format_reset(quota) or '重置时间未知'}")
             lines.extend((f"今日 {self._today}", "单击中心切换口径 · 单击其他区域打开 · 双击最小化主窗口"))
+            for label, quota in available:
+                details = self._reset_details(quota)
+                if details:
+                    lines.append(f"{label} details: {details}")
             tip = "\n".join(lines)
         self.setToolTip(tip)
+
+    @staticmethod
+    def _reset_details(quota) -> str:
+        values = []
+        if quota.reset_count is not None and quota.reset_count > 0:
+            values.append(f"credits {quota.reset_count}")
+        values.extend(
+            item.astimezone(get_statistics_timezone().tzinfo()).strftime("%Y-%m-%d %H:%M:%S")
+            for item in quota.reset_times
+        )
+        return ", ".join(values)
 
     @staticmethod
     def _format_reset(quota) -> str:
@@ -346,7 +363,10 @@ class DesktopStatusPanel(QWidget):
         return rings
 
     def _available_quotas(self, secondary, primary):
-        return [item for item in (("5H", self._q5, secondary), ("7D", self._q7, primary)) if item[1] is not None]
+        available = [item for item in (("5H", self._q5, secondary), ("7D", self._q7, primary)) if item[1] is not None]
+        if available:
+            return available
+        return [("MONTH", self._qmonth, QColor("#35a58a"))] if self._qmonth is not None else []
 
     def _paint_orb(self, painter, surface, edge, track, primary, secondary, text, muted):
         """信息圆盘 A：双额度左右分栏，单额度居中。"""
@@ -764,6 +784,24 @@ class DesktopStatusPanel(QWidget):
             self._draw_reset_stamp(painter, reset_rect, label, quota, self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold), muted)
             self._draw_track(painter, QRectF(panel.left() + 18, y + 7, reset_rect.left() - panel.left() - 28, 8), value, color, track, 7)
 
+    def _draw_monthly_summary(self, painter, surface, edge, text, muted):
+        if self._qmonth is None:
+            return
+        width, height = self._layout_size()
+        value = self._quota_value(self._qmonth)
+        rect = QRectF(12, height - 28, width - 24, 18)
+        painter.setPen(QPen(edge, 1))
+        painter.setBrush(surface)
+        painter.drawRoundedRect(rect, 5, 5)
+        reset = self._short_reset("MONTH", self._qmonth)
+        self._draw_centered(
+            painter,
+            rect,
+            f"MONTH {value:.0f}%  {reset}",
+            self._scaled_font("Segoe UI Variable", 8, QFont.Weight.DemiBold),
+            text if self._theme == "dark" else muted,
+        )
+
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -799,10 +837,12 @@ class DesktopStatusPanel(QWidget):
             return
         if self._style == "capsule":
             self._paint_capsule_b_prototype(painter, surface, edge, track, primary, secondary, text, muted)
+            self._draw_monthly_summary(painter, surface, edge, text, muted)
             painter.end()
             return
         if self._style == "tracks":
             self._paint_tracks_b_prototype(painter, surface, edge, track, primary, secondary, text, muted)
+            self._draw_monthly_summary(painter, surface, edge, text, muted)
             painter.end()
             return
 

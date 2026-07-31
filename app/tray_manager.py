@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from app.data.models import MultiRuntimeUsageSnapshot, format_tokens
 from app.desktop_status import DesktopStatusPanel
+from app.utils.statistics_timezone import get_statistics_timezone
 
 
 class TrayManager(QObject):
@@ -179,7 +180,12 @@ class TrayManager(QObject):
             return
         active: set[tuple[str, str, str]] = set()
         for runtime, snapshot in (("codex", self.data.codex),):
-            quota_name, quota = ("7d", snapshot.quota_7d) if snapshot.quota_7d else ("5h", snapshot.quota_5h)
+            if snapshot.quota_7d:
+                quota_name, quota = "7d", snapshot.quota_7d
+            elif snapshot.quota_5h:
+                quota_name, quota = "5h", snapshot.quota_5h
+            else:
+                quota_name, quota = "month", snapshot.quota_month
             if quota is None or quota.remaining_pct > threshold:
                 continue
             reset = quota.reset_time.isoformat() if quota.reset_time else "unknown-reset"
@@ -201,7 +207,7 @@ class TrayManager(QObject):
         runtime = "codex"
         snapshot = self.data.codex
         mode = self.settings_manager.get_quota_display() if self.settings_manager else "remaining"
-        quota = snapshot.quota_7d or snapshot.quota_5h
+        quota = snapshot.quota_7d or snapshot.quota_5h or snapshot.quota_month
         value = None
         if quota is not None:
             value = quota.used_pct if mode == "used" else quota.remaining_pct
@@ -212,13 +218,35 @@ class TrayManager(QObject):
             self.status_icon_changed.emit(icon)
             self._icon_key = icon_key
         runtime_name = "Codex"
-        quota_name = "7d" if snapshot.quota_7d else "5h"
+        quota_name = "7d" if snapshot.quota_7d else ("5h" if snapshot.quota_5h else "month")
         quota_text = "--" if value is None else f"{value:.0f}%"
         mode_text = "已用" if mode == "used" else "剩余"
         self.tray_icon.setToolTip(
             f"CodexUU\n{runtime_name} · {quota_name} {mode_text} {quota_text}\n"
             f"今日 {format_tokens(snapshot.tokens.today.total)}\n单击打开主窗口"
         )
+        if snapshot.quota_month is not None:
+            month_value = snapshot.quota_month.used_pct if mode == "used" else snapshot.quota_month.remaining_pct
+            month_reset = self._format_local_reset(snapshot.quota_month)
+            month_details = []
+            if snapshot.quota_month.reset_count is not None and snapshot.quota_month.reset_count > 0:
+                month_details.append(f"credits {snapshot.quota_month.reset_count}")
+            month_details.extend(
+                item.astimezone(get_statistics_timezone().tzinfo()).strftime("%Y-%m-%d %H:%M:%S")
+                for item in snapshot.quota_month.reset_times
+            )
+            self.tray_icon.setToolTip(
+                self.tray_icon.toolTip()
+                + f"\nMONTH {mode_text} {month_value:.0f}%"
+                + (f" reset {month_reset}" if month_reset else "")
+                + (f"\nMONTH details: {', '.join(month_details)}" if month_details else "")
+            )
+
+    @staticmethod
+    def _format_local_reset(quota) -> str:
+        if quota is None or quota.reset_time is None:
+            return ""
+        return quota.reset_time.astimezone(get_statistics_timezone().tzinfo()).strftime("%m/%d %H:%M")
 
     @staticmethod
     def _status_icon(value, mode):

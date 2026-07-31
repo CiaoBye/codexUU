@@ -70,3 +70,17 @@ def test_quota_panel_explains_exhaustion_without_inventing_missing_windows():
     image = panel.dial.grab().toImage()
     assert image.width() > 0 and image.height() > 0
     panel.hide()
+
+
+def test_quota_panel_shows_monthly_reset_details_without_creating_a_ring():
+    app = QApplication.instance() or QApplication([])
+    panel = QuotaPanel()
+    month = QuotaInfo(used_pct=35, remaining_pct=65, window_minutes=43800)
+    panel.update_quota(None, None, "available", month)
+    panel.show()
+    app.processEvents()
+
+    assert panel.reset_strip.month_section.isVisible()
+    assert panel.dial.q5 is None and panel.dial.q7 is None
+    assert panel.dial.grab().toImage().width() > 0
+    panel.hide()

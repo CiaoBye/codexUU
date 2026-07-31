@@ -77,7 +77,31 @@
 
 推荐使用 `powershell -ExecutionPolicy Bypass -File scripts/restart.ps1` 完成重启和单实例校验。
 
+## Agent skills
+
+### Issue tracker
+
+Work is tracked in GitHub Issues for `CiaoBye/codexUU`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This is a single-context repository; `AGENTS.md`, `README.md`, and `agents/changelog.md` are the current domain sources. See `docs/agents/domain.md`.
+
 ## 最近维护记录
+
+- 2026-07-30 · 0.3.13：持久化模型趋势活动范围和 Token/API 指标选择；启动时恢复 30/60/90/180 天与 Token/API 状态，旧配置缺字段时使用默认值。#1～#5 已完成验收并关闭。
+- 2026-07-30 · 0.3.12：补齐隐藏 Codex Runtime 的可观察状态；设置页诊断现在区分未启动、初始化中、已就绪、响应超时、已断开和进程退出，并保留最近错误。新增 Runtime 状态快照回归测试。
+- 2026-07-30 · 0.3.11：模型视图新增 30/60/90/180 天活动范围和 Token/API 等效费用切换；模型趋势补齐自然日、展示 Top 8 与其他模型并叠加当前范围总量基线，未知模型保持未计价。新增多序列图表、费用 tooltip 与 offscreen 回归覆盖。
+
+- 2026-07-30 · 0.3.10：按 `session_meta.parent_thread_id` 建立分支关系，使用有限 token 指纹去除子线程继承的公共 token 前缀并保留子线程高水位基线；JSONL 行/文件、app-server 输出、聚合缓存、Runtime 线程和任务列表增加硬上限，超限安全失败。新增分支去重、损坏行、超限 token 和缓存淘汰测试，98 项测试通过。
+
+- 2026-07-30 · 0.3.09：修复 Runtime 已返回但额度窗口未知、重复、畸形或部分时仍回退旧 session 快照的问题；归一化器检查带时长的额外窗口并记录重复数量，托盘月度重置时间统一使用统计时区，前三种圆形悬浮窗不再在圆形轮廓外绘制月度摘要。新增 fail-closed、额外窗口、重复窗口、托盘时区和圆形布局回归测试，93 项测试通过。
+
+- 2026-07-30 · 0.3.08：按真实窗口时长归一化额度，300 分钟识别为 5h、10080 分钟识别为 7d、28–31 天识别为月度；接入 reset credit 次数/明细和月度 quota，不依赖 primary/secondary 顺序，未知或重复窗口 fail-closed。
+
+- 2026-07-30 · 0.3.07：修复 Runtime 断线时继续复用过期额度缓存、旧 stdout 线程污染新连接队列，以及任务归档未优先使用 `archived_at` 的问题；补充 fake app-server 握手/复用、断线回退和归档状态回归测试。
+
+- 2026-07-30 · 0.3.06：修复额度读取从 `pythonw.exe` 启动独立 Codex runtime 时弹出 `.codex\plugin...` 黑色终端的问题；Windows 子进程现在使用 `CREATE_NO_WINDOW`，保留 app-server 的标准输入输出通信，不再创建可见控制台。
 
 - 2026-07-30 · 0.3.05：修复 60 秒定时刷新重复启动/终止独立 `codex app-server`，可能触发 Codex Desktop 受管运行时反复重启的问题。实时额度成功读取后在 5 分钟内复用已验证的窗口与重置时间；本机 Token、任务、趋势等聚合仍每分钟刷新，首次启动继续读取实时额度。新增进程复用回归测试。
 

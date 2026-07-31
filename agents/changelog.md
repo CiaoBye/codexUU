@@ -1,5 +1,58 @@
 # CodexUU 更新日志
 
+## 2026-07-30 · 0.3.13 · 模型趋势偏好持久化与规格收口
+
+- 模型活动范围和 Token/API 指标选择接入 `SettingsManager`，点击后立即写入现有配置文件，启动时恢复；旧配置兼容默认 30 天 + Token。
+- #1～#5 已完成验收并关闭，保留 GitHub 评论中的测试、真实数据和 Windows 单实例证据。
+- 验证：`python -m compileall -q app main.py`、`PYTHONPATH=. python -m pytest -q`（102 passed）和重启单实例检查。
+
+## 2026-07-30 · 0.3.12 · Runtime 状态诊断
+
+- 隐藏 Codex app-server Runtime 新增只读状态快照，覆盖未启动、初始化中、已就绪、响应超时、已断开和进程退出。
+- 设置页数据源诊断展示当前 Runtime 状态与最近错误，帮助区分实时通道失败和 session 快照回退；不改变额度/任务的既有回退口径。
+- 新增 Runtime 状态和错误快照回归测试；验证 compileall、完整 pytest 与 Windows 单实例重启。
+
+## 2026-07-30 · 0.3.11 · 模型活动趋势与费用切换
+
+- 模型视图新增 30/60/90/180 天活动范围按钮，明确显示实际日期边界，并按自然日补全空日期；不改变每日/每周/每月/累计现有统计口径。
+- 模型趋势按活动范围展示 Top 8 与“其他模型”，叠加当前范围总量基线；Token/API 费用指标均支持 tooltip 和 0 基线。
+- API 费用按精确模型 ID 的官方价格逐日计算，未知/内部模型保持未计价，其他模型按实际计价合并并显示覆盖率。
+- 验证：`python -m compileall -q app main.py`、`PYTHONPATH=. python -m pytest -q`（100 passed）和 Qt offscreen 多序列渲染 smoke 通过。
+
+## 2026-07-30 · 0.3.10 · 分支 token 去重与大数据保护
+
+- 读取 `session_meta.parent_thread_id` 建立父子线程关系，按累计/本次 token 计数生成有限指纹，去除子线程继承的公共 token 前缀，并将前缀末端作为子线程累计高水位，避免首个新事件重放历史。
+- JSONL 单行/单文件、app-server stdout、聚合内存缓存、Runtime 线程列表和任务列表增加硬上限；超限或异常时安全返回空结果，损坏行跳过，文件失败时清除旧文件缓存。
+- SQLite 继续使用只读连接和 1 秒超时；rollout 文件级缓存继续最多保留 1024 项，不复制 transcript 正文到派生数据。
+- 验证：`python -m compileall -q app main.py` 通过；`PYTHONPATH=. python -m pytest -q` 为 98 passed；Qt offscreen smoke 通过。
+
+## 2026-07-30 · 0.3.09 · 额度 fail-closed 与展示边界收口
+
+- Runtime 已返回但窗口未知、重复、畸形或部分时，禁止回退旧 session 额度；只有 Runtime 无响应才允许使用持久化快照。
+- 归一化器继续保留已识别窗口供诊断，同时检查带 `windowDurationMins` / `window_minutes` 的额外字段并记录 `duplicate_count`；展示层统一隐藏不可验证窗口。
+- 托盘月度重置时间改为按所选统计时区格式化；前三种圆形悬浮窗移除圆形轮廓外的月度摘要条，月度-only 仍使用圆内单额度布局，矩形样式保留摘要。
+- 验证：`python -m compileall -q app main.py` 通过；`PYTHONPATH=. python -m pytest -q` 为 93 passed；Qt offscreen smoke 通过。
+
+## 2026-07-30 · 0.3.08 · 额度窗口归一化
+
+- 额度窗口按真实 `windowDurationMins` 识别：`300` 为 5h、`10080` 为 7d、28–31 天为月度，不再依赖 `primary/secondary` 槽位顺序。
+- 新增 reset credit 次数与完整重置时间明细；0 或缺失时不绘制占位信息，月度额度独立保留，不误写入 7d。
+- 主卡重置条、悬浮窗 tooltip 和托盘 tooltip 接入月度窗口；未知、重复、畸形窗口 fail-closed。
+- 验证：`python -m compileall -q app main.py`；`PYTHONPATH=. python -m pytest -q`（87 passed）；Qt offscreen smoke；真实 Runtime 7D 100% 数据读取。
+
+## 2026-07-30 · 0.3.07 · Runtime 断线与任务归档状态收口
+
+- Runtime 进程断线、退出或响应失败时不再在 5 分钟 TTL 内返回旧额度，改为重新尝试或回退 session 快照。
+- stdout reader 绑定所属连接的消息队列，避免旧连接 EOF 污染新连接。
+- 任务完成优先使用 `archived_at`，旧 SQLite 结构才回退 `updated_at`。
+- 验证：fake app-server 握手与单进程复用、断线回退、归档状态回归；`python -m compileall -q app main.py`；`PYTHONPATH=. python -m pytest -q`（81 passed）；Qt offscreen smoke 通过；真实 Runtime 返回 7D 100% 与北京时间 `08/05 12:43:25` 重置；重启后项目 `pythonw.exe` 严格 1 个、可见主窗口标题 `CodexUU`、隐藏 app-server 子进程 1 个；45 秒/8 次采样 PID 保持不变。
+
+## 2026-07-30 · 0.3.06 · 隐藏额度 runtime 控制台
+
+- 修复从 `pythonw.exe` 启动 `~/.codex/plugins/.plugin-appserver/codex.exe app-server --stdio` 时 Windows 弹出黑色终端的问题。
+- Windows 子进程使用 `CREATE_NO_WINDOW`，不改变 app-server 的标准输入输出和额度读取逻辑。
+- 验证：新增无窗口启动回归测试；`python -m compileall -q app main.py`；`PYTHONPATH=. python -m pytest -q`。
+
 ## 2026-07-30 · 0.3.05 · 定时刷新重启循环修复
 
 - 修复后台 60 秒刷新每次都启动并终止独立 `codex app-server` 的问题；该行为可能使 Codex Desktop 的受管 runtime 被反复回收或拉起。

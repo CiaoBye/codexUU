@@ -393,6 +393,7 @@ class QuotaDial(QWidget):
         super().__init__(parent)
         self.q5 = None
         self.q7 = None
+        self.month = None
         self.quota_status = "unavailable"
         self.language = "zh"
         self.display_mode = "remaining"
@@ -401,9 +402,10 @@ class QuotaDial(QWidget):
         # reset strip.
         self.setMinimumSize(190, 138)
 
-    def set_quota(self, q5, q7, status=None):
+    def set_quota(self, q5, q7, status=None, month=None):
         self.q5, self.q7 = q5, q7
-        self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None else "unavailable")
+        self.month = month
+        self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None or month is not None else "unavailable")
         self.update()
 
     def set_language(self, language):
@@ -425,6 +427,8 @@ class QuotaDial(QWidget):
                 ("5h", self.q5, QColor("#3992ff")),
             ) if item[1] is not None
         ]
+        if not available and self.month is not None:
+            available = [("month", self.month, QColor("#35a58a"))]
         for index, (_, quota, color) in enumerate(available):
             inset = index * 20 if len(available) > 1 else 7
             rect = bounds.adjusted(inset, inset, -inset, -inset)
@@ -521,15 +525,21 @@ class QuotaResetStrip(QFrame):
         self.setFixedHeight(52)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 7, 12, 7)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
         self.five_section, self.five_label, self.five_time = self._section("metric-today.svg", "#3992ff")
         self.seven_section, self.seven_label, self.seven_time = self._section("metric-week.svg", "#8d74ff")
+        self.month_section, self.month_label, self.month_time = self._section("metric-month.svg", "#35a58a")
         self.divider = QFrame()
         self.divider.setObjectName("quotaResetDivider")
         self.divider.setFrameShape(QFrame.Shape.VLine)
+        self.month_divider = QFrame()
+        self.month_divider.setObjectName("quotaResetDivider")
+        self.month_divider.setFrameShape(QFrame.Shape.VLine)
         layout.addWidget(self.five_section, 1)
         layout.addWidget(self.divider)
         layout.addWidget(self.seven_section, 1)
+        layout.addWidget(self.month_divider)
+        layout.addWidget(self.month_section, 1)
 
     @staticmethod
     def _section(icon_name, color):
@@ -557,18 +567,26 @@ class QuotaResetStrip(QFrame):
         if quota is None or quota.reset_time is None:
             return "--", ""
         local_time = quota.reset_time.astimezone(get_statistics_timezone().tzinfo())
+        details = [local_time.strftime("%Y-%m-%d %H:%M:%S %Z")]
+        for reset_time in quota.reset_times[1:]:
+            details.append(reset_time.astimezone(get_statistics_timezone().tzinfo()).strftime("%Y-%m-%d %H:%M:%S %Z"))
+        if quota.reset_count is not None and quota.reset_count > 0:
+            details.insert(0, f"Available reset credits: {quota.reset_count}")
         return (
             local_time.strftime("%H:%M") if prefix == "5H" else local_time.strftime("%m/%d %H:%M"),
-            local_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "\n".join(details),
         )
 
-    def update_values(self, q5, q7, english=False):
+    def update_values(self, q5, q7, month=None, english=False):
         self.five_section.setVisible(q5 is not None)
-        self.divider.setVisible(q5 is not None and q7 is not None)
+        self.divider.setVisible(q5 is not None and (q7 is not None or month is not None))
         self.seven_section.setVisible(q7 is not None)
+        self.month_divider.setVisible(q7 is not None and month is not None)
+        self.month_section.setVisible(month is not None)
         for prefix, quota, label, time, section in (
             ("5H", q5, self.five_label, self.five_time, self.five_section),
             ("7D", q7, self.seven_label, self.seven_time, self.seven_section),
+            ("MONTH", month, self.month_label, self.month_time, self.month_section),
         ):
             if quota is None:
                 continue
@@ -603,6 +621,7 @@ class QuotaPanel(Surface):
         self.language = "zh"
         self.q5 = None
         self.q7 = None
+        self.month = None
         self.quota_status = "unavailable"
         self.display_mode = "remaining"
 
@@ -617,18 +636,19 @@ class QuotaPanel(Surface):
         self.display_mode = mode if mode in ("remaining", "used") else "remaining"
         self.dial.set_display_mode(self.display_mode)
 
-    def update_quota(self, q5, q7, status=None):
+    def update_quota(self, q5, q7, status=None, month=None):
         self.q5, self.q7 = q5, q7
-        self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None else "unavailable")
-        self.dial.set_quota(q5, q7, self.quota_status)
+        self.month = month
+        self.quota_status = status or (QUOTA_STATUS_AVAILABLE if q5 is not None or q7 is not None or month is not None else "unavailable")
+        self.dial.set_quota(q5, q7, self.quota_status, month)
         english = self.language == "en"
-        self.reset_strip.update_values(q5, q7, english)
+        self.reset_strip.update_values(q5, q7, month, english)
 
     def set_language(self, language):
         self.language = language
         self.dial.set_language(language)
         self.set_display_mode(self.display_mode)
-        self.update_quota(self.q5, self.q7, self.quota_status)
+        self.update_quota(self.q5, self.q7, self.quota_status, self.month)
 
 
 class MilestoneProgress(QWidget):
@@ -1071,7 +1091,7 @@ class DashboardWidget(QWidget):
 
         self.stack = AnimatedStackedWidget()
         self.task_tab = TaskBoardWidget()
-        self.trend_tab = UsageTrendWidget()
+        self.trend_tab = UsageTrendWidget(settings_manager=self.settings_manager)
         self.project_tab = ProjectRankingWidget()
         self.skill_tab = SkillUsageWidget()
         for widget in (self.task_tab, self.trend_tab, self.project_tab, self.skill_tab):
@@ -1254,7 +1274,12 @@ class DashboardWidget(QWidget):
 
     def _update(self):
         snapshot = self.data.codex
-        self.quota_card.update_quota(snapshot.quota_5h, snapshot.quota_7d, snapshot.quota_status)
+        self.quota_card.update_quota(
+            snapshot.quota_5h,
+            snapshot.quota_7d,
+            snapshot.quota_status,
+            snapshot.quota_month,
+        )
         tasks, daily, projects, tools, skills = self._visible_data()
         self.task_tab.update_tasks(tasks)
         models = [item for item in self.data.models if item.runtime == self.current_scope]

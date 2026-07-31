@@ -171,6 +171,26 @@ def test_all_finalized_styles_render_dual_and_single_quota_in_both_themes():
     panel.hide()
 
 
+def test_circular_styles_keep_monthly_summary_inside_the_circular_layout():
+    app = QApplication.instance() or QApplication([])
+    panel = DesktopStatusPanel()
+    month = UsageSnapshot(quota_month=QuotaInfo(used_pct=35, remaining_pct=65))
+    calls = []
+
+    def unexpected_summary(*_args):
+        calls.append(True)
+
+    panel._draw_monthly_summary = unexpected_summary
+    for style in ("orb", "halo", "mini"):
+        panel.set_style(style)
+        panel.update_snapshot("codex", month)
+        panel.show()
+        app.processEvents()
+        assert panel.grab().toImage().width() == panel.width()
+    assert calls == []
+    panel.hide()
+
+
 def test_mode_toggle_hit_regions_follow_each_finalized_layout():
     panel = DesktopStatusPanel()
     panel._q5 = QuotaInfo(used_pct=32, remaining_pct=68)

@@ -12,6 +12,8 @@ def test_settings_manager_default_values():
         assert manager.get_theme() == "dark"
         assert manager.get_quota_display() == "remaining"
         assert manager.get_model_scope() == "all"
+        assert manager.get_model_activity_window() == 30
+        assert manager.get_model_metric() == "tokens"
         assert manager.get_shortcut() == "Ctrl+U"
         assert manager.get_reduce_motion() is False
         assert manager.get_window_preferences() == (False, "tray")
@@ -31,6 +33,8 @@ def test_settings_manager_save_and_load():
         manager.set_statistics_timezone("fixed", "Asia/Shanghai")
         manager.set_quota_display("used")
         manager.set_model_scope("gpt")
+        manager.set_model_activity_window(180)
+        manager.set_model_metric("api")
         manager.set_shortcut("Ctrl+Alt+K")
         manager.set_reduce_motion(True)
         manager.set_window_preferences(True, "minimize")
@@ -50,6 +54,8 @@ def test_settings_manager_save_and_load():
         assert manager2.get_statistics_timezone() == ("fixed", "Asia/Shanghai")
         assert manager2.get_quota_display() == "used"
         assert manager2.get_model_scope() == "gpt"
+        assert manager2.get_model_activity_window() == 180
+        assert manager2.get_model_metric() == "api"
         assert manager2.get_shortcut() == "Ctrl+Alt+K"
         assert manager2.get_reduce_motion() is True
         assert manager2.get_window_preferences() == (True, "minimize")

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
+from queue import Queue
 import sqlite3
 
 from app.data import codex_reader
@@ -51,6 +53,96 @@ def test_model_usage_keeps_model_effort_token_and_daily_attribution(monkeypatch)
     assert result[0].daily_tokens[0].total == 52
 
 
+def test_branch_token_prefix_is_deduplicated_with_child_high_water_mark(monkeypatch):
+    parent = Path("parent.jsonl")
+    child = Path("child.jsonl")
+
+    def token(total, last):
+        return {
+            "timestamp": f"2026-07-30T00:{total // 10:02d}:00+00:00",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": total,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": total,
+                    },
+                    "last_token_usage": {
+                        "input_tokens": last,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": last,
+                    },
+                },
+            },
+        }
+
+    parent_events = [
+        {"type": "session_meta", "payload": {"id": "parent-thread"}},
+        token(100, 100), token(160, 60), token(240, 80),
+    ]
+    child_events = [
+        {"type": "session_meta", "payload": {"id": "child-thread", "parent_thread_id": "parent-thread"}},
+        token(100, 100), token(160, 60), token(240, 80), token(275, 35),
+    ]
+    monkeypatch.setattr(codex_reader, "_cached", lambda _key: None)
+    monkeypatch.setattr(codex_reader, "_store", lambda _key, value: value)
+    monkeypatch.setattr(codex_reader, "_iter_rollout_events", lambda days=None: iter([
+        (parent, datetime.now(timezone.utc), event) for event in parent_events
+    ] + [
+        (child, datetime.now(timezone.utc), event) for event in child_events
+    ]))
+
+    records = list(codex_reader._iter_token_deltas())
+
+    assert [item[3].total for item in records] == [100, 60, 80, 35]
+    assert sum(item[3].total for item in records) == 275
+
+
+def test_unrelated_token_sequences_are_not_deduplicated():
+    assert codex_reader._inherited_prefix_length(
+        ["same", "different"], ["same", "parent-only"],
+    ) == 1
+    assert codex_reader._inherited_prefix_length(["only-child"], ["only-parent"]) == 0
+
+
+def test_rollout_reader_skips_corrupt_lines_and_fails_closed_on_overflow(monkeypatch, tmp_path):
+    path = tmp_path / "rollout-test.jsonl"
+    path.write_text('{"type":"one"}\nnot-json\n{"type":"two"}\n', encoding="utf-8")
+    stat = path.stat()
+    events = codex_reader._read_rollout_file_events(path, stat, datetime.now(timezone.utc))
+    assert [event["type"] for event in events] == ["one", "two"]
+
+    monkeypatch.setattr(codex_reader, "_MAX_ROLLOUT_LINES", 2)
+    path.write_text('{"type":"one"}\n{"type":"two"}\n{"type":"three"}\n', encoding="utf-8")
+    assert codex_reader._read_rollout_file_events(path, path.stat(), datetime.now(timezone.utc)) == []
+    assert path not in codex_reader._rollout_file_cache
+
+
+def test_token_reader_rejects_negative_or_unreasonably_large_values():
+    event = {
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {"total_token_usage": {"input_tokens": -1}},
+        },
+    }
+    assert codex_reader._read_token_event(event) is None
+    event["payload"]["info"]["total_token_usage"]["input_tokens"] = 10**16
+    assert codex_reader._read_token_event(event) is None
+
+
+def test_aggregate_cache_has_a_hard_entry_limit(monkeypatch):
+    cache = {}
+    monkeypatch.setattr(codex_reader, "_cache", cache)
+    for index in range(codex_reader._CACHE_LIMIT + 10):
+        codex_reader._store(f"key-{index}", index)
+    assert len(cache) == codex_reader._CACHE_LIMIT
+
+
 def test_snapshot_uses_detailed_daily_tokens_for_today_and_week(monkeypatch):
     configure_statistics_timezone("utc")
     today = datetime.now(timezone.utc)
@@ -86,6 +178,28 @@ def test_snapshot_uses_detailed_daily_tokens_for_today_and_week(monkeypatch):
     configure_statistics_timezone("system")
 
 
+def test_snapshot_exposes_monthly_quota_without_relabeling_it_as_seven_day(monkeypatch):
+    monthly = codex_reader.QuotaInfo(
+        used_pct=35,
+        remaining_pct=65,
+        window_minutes=43800,
+    )
+    monkeypatch.setattr(codex_reader, "read_quota_from_appserver", lambda: (None, None))
+    monkeypatch.setattr(codex_reader, "get_last_quota_windows", lambda: codex_reader.QuotaWindows(monthly=monthly, authoritative=True))
+    monkeypatch.setattr(codex_reader, "read_token_totals_from_db", lambda: None)
+    monkeypatch.setattr(codex_reader, "read_session_tokens", lambda: TokenBreakdown())
+    monkeypatch.setattr(codex_reader, "read_daily_tokens", lambda: [])
+    monkeypatch.setattr(codex_reader, "read_model_priced_values", lambda: {
+        "today": 0.0, "rolling_week": 0.0, "week": 0.0, "month": 0.0,
+        "cumulative": 0.0, "coverage_pct": 0.0, "unpriced_tokens": 0,
+    })
+
+    snapshot = codex_reader.read_codex_snapshot()
+
+    assert snapshot.quota_7d is None
+    assert snapshot.quota_month is monthly
+
+
 def test_store_app_alias_does_not_block_quota_refresh(monkeypatch):
     monkeypatch.setattr(codex_reader.shutil, "which", lambda _: r"C:\Program Files\WindowsApps\codex.exe")
     monkeypatch.setattr(codex_reader, "_codex_dir", lambda: Path("missing-codex-dir"))
@@ -116,9 +230,186 @@ def test_appserver_prefers_current_codex_bucket_and_preserves_reset_time(monkeyp
 def test_live_appserver_quota_is_reused_between_scheduled_refreshes(monkeypatch):
     quota = (None, codex_reader.QuotaInfo(used_pct=100, remaining_pct=0))
     monkeypatch.setattr(codex_reader, "_live_quota_cache", (codex_reader.time.monotonic(), quota, "available"))
+    class LiveSession:
+        is_alive = True
+    monkeypatch.setattr(codex_reader, "_appserver_session", LiveSession())
     monkeypatch.setattr(codex_reader, "_appserver_executables", lambda: (_ for _ in ()).throw(AssertionError("must not spawn")))
 
     assert codex_reader.read_quota_from_appserver() == quota
+
+
+def test_dead_runtime_does_not_reuse_stale_live_quota(monkeypatch):
+    quota = (None, codex_reader.QuotaInfo(used_pct=100, remaining_pct=0))
+    monkeypatch.setattr(codex_reader, "_live_quota_cache", (codex_reader.time.monotonic(), quota, "available"))
+
+    class DeadSession:
+        is_alive = False
+
+    monkeypatch.setattr(codex_reader, "_appserver_session", DeadSession())
+    monkeypatch.setattr(codex_reader, "_appserver_executables", lambda: ["runtime"])
+    monkeypatch.setattr(codex_reader, "_appserver_rate_limits", lambda _: None)
+
+    assert codex_reader.read_quota_from_appserver() is None
+    assert codex_reader.get_last_quota_status() == "unavailable"
+
+
+def test_appserver_quota_reader_hides_windows_console(monkeypatch):
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        raise OSError("test")
+
+    monkeypatch.setattr(codex_reader.os, "name", "nt")
+    monkeypatch.setattr(codex_reader.subprocess, "Popen", fake_popen)
+
+    assert codex_reader._appserver_rate_limits("codex.exe") is None
+    assert captured["creationflags"] == getattr(codex_reader.subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+def test_appserver_protocol_handshake_and_requests_reuse_one_process(monkeypatch):
+    class FakeStdout:
+        def __init__(self):
+            self.lines = Queue()
+
+        def push(self, message):
+            self.lines.put(json.dumps(message) + "\n")
+
+        def close(self):
+            self.lines.put(None)
+
+        def __iter__(self):
+            while True:
+                line = self.lines.get()
+                if line is None:
+                    return
+                yield line
+
+    class FakeStdin:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+        def write(self, line):
+            request = json.loads(line)
+            if request.get("method") == "initialize":
+                self.stdout.push({"jsonrpc": "2.0", "id": request["id"], "result": {}})
+            elif request.get("method") == "account/rateLimits/read":
+                self.stdout.push({"jsonrpc": "2.0", "id": request["id"], "result": {"rateLimits": {}}})
+            elif request.get("method") == "thread/list":
+                self.stdout.push({"jsonrpc": "2.0", "id": request["id"], "result": {"data": []}})
+
+        def flush(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = FakeStdout()
+            self.stdin = FakeStdin(self.stdout)
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+            self.stdout.close()
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.terminate()
+
+    started = []
+
+    def fake_popen(*args, **kwargs):
+        started.append((args, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(codex_reader.subprocess, "Popen", fake_popen)
+    session = codex_reader._CodexAppServerSession()
+    try:
+        assert session.request("runtime", "account/rateLimits/read", None) == {"rateLimits": {}}
+        assert session.request("runtime", "thread/list", {"limit": 1}) == {"data": []}
+        assert len(started) == 1
+        assert started[0][0][0] == ["runtime", "app-server", "--stdio"]
+    finally:
+        session.close()
+
+
+def test_appserver_diagnostics_exposes_connection_state_and_error():
+    session = codex_reader._CodexAppServerSession()
+    assert session.diagnostics()["status"] == codex_reader.RUNTIME_STATUS_UNAVAILABLE
+    session._set_status(codex_reader.RUNTIME_STATUS_TIMEOUT, "test timeout")
+    snapshot = session.diagnostics()
+    assert snapshot["status"] == codex_reader.RUNTIME_STATUS_TIMEOUT
+    assert snapshot["last_error"] == "test timeout"
+
+
+def test_task_board_uses_live_runtime_threads_before_sqlite(monkeypatch, tmp_path):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(codex_reader, "_cached", lambda _: None)
+    class FakeSession:
+        is_alive = True
+    monkeypatch.setattr(codex_reader, "_appserver_session", FakeSession())
+    monkeypatch.setattr(codex_reader, "_appserver_executables", lambda: ["runtime"])
+    monkeypatch.setattr(codex_reader, "_appserver_thread_list", lambda _: [{
+        "id": "thread-1",
+        "title": "Live task",
+        "preview": "Live preview",
+        "cwd": r"C:\\Work\\demo",
+        "archived": False,
+        "createdAt": now.isoformat(),
+        "updatedAt": now.isoformat(),
+        "recencyAt": now.isoformat(),
+        "archivedAt": None,
+    }])
+    monkeypatch.setattr(codex_reader, "_state_db_path", lambda: (_ for _ in ()).throw(AssertionError("must use runtime")))
+    monkeypatch.setattr(codex_reader, "_automations_dir", lambda: tmp_path / "automations")
+
+    result = codex_reader.read_task_board()
+
+    assert len(result) == 1
+    assert result[0].id == "thread-1"
+    assert result[0].status == "running"
+    assert result[0].project == "demo"
+
+
+def test_archived_at_is_authoritative_for_runtime_task_completion():
+    now = datetime.now(timezone.utc)
+    item = codex_reader._tasks_from_runtime_rows([{
+        "id": "thread-archived",
+        "name": "Archived task",
+        "cwd": r"C:\\Work\\demo",
+        "archived": False,
+        "createdAt": now.isoformat(),
+        "updatedAt": now.isoformat(),
+        "recencyAt": now.isoformat(),
+        "archivedAt": (now - timedelta(minutes=5)).isoformat(),
+    }], now)[0]
+
+    assert item.status == "completed"
+    assert item.updated_at == now - timedelta(minutes=5)
+
+
+def test_quota_and_tasks_share_runtime_session(monkeypatch):
+    calls = []
+
+    class FakeSession:
+        def request(self, executable, method, params):
+            calls.append((executable, method, params))
+            if method == "account/rateLimits/read":
+                return {"rateLimits": {"primary": None, "secondary": None}}
+            return {"data": []}
+
+    monkeypatch.setattr(codex_reader, "_appserver_session", FakeSession())
+
+    assert codex_reader._appserver_rate_limits("runtime") is not None
+    assert codex_reader._appserver_thread_list("runtime") == []
+    assert [method for _, method, _ in calls] == ["account/rateLimits/read", "thread/list"]
 
 
 def test_project_directory_accepts_current_project_and_rejects_deleted_or_dated_workspace(tmp_path):
@@ -137,6 +428,126 @@ def test_current_rate_limit_schema_maps_windows_by_duration():
     })
     assert q5.remaining_pct == 80
     assert q7.remaining_pct == 65
+
+
+def test_rate_limit_normalizer_ignores_slot_order_and_supports_monthly_window():
+    normalized = codex_reader._normalize_rate_limits({
+        "primary": {"usedPercent": 35, "windowDurationMins": 43800, "resetsAt": 1_800_000_000},
+        "secondary": {"usedPercent": 20, "windowDurationMins": 300, "resetsAt": 1_800_001_000},
+    })
+
+    assert normalized.five_hour.window_minutes == 300
+    assert normalized.monthly.window_minutes == 43800
+    assert normalized.seven_day is None
+    assert normalized.authoritative is True
+
+
+def test_monthly_only_rate_limit_is_available_without_filling_seven_day_slot():
+    normalized = codex_reader._normalize_rate_limits({
+        "primary": {"usedPercent": 35, "windowDurationMins": 43800},
+    })
+
+    assert normalized.pair == (None, None)
+    assert normalized.monthly is not None
+    assert codex_reader._status_from_rate_limits(
+        {"primary": {"windowDurationMins": 43800}},
+        normalized.pair,
+        normalized.authoritative,
+        normalized.monthly,
+    ) == "available"
+
+
+def test_rate_limit_normalizer_fails_closed_for_unknown_or_duplicate_windows():
+    unknown = codex_reader._normalize_rate_limits({
+        "primary": {"usedPercent": 20, "windowDurationMins": 1440},
+    })
+    duplicate = codex_reader._normalize_rate_limits({
+        "primary": {"usedPercent": 20, "windowDurationMins": 300},
+        "secondary": {"usedPercent": 21, "windowDurationMins": 300},
+    })
+
+    assert unknown.five_hour is None
+    assert unknown.unclassified_count == 1
+    assert unknown.authoritative is False
+    assert duplicate.five_hour is None
+    assert duplicate.duplicate_count == 1
+    assert duplicate.authoritative is False
+
+
+def test_rate_limit_normalizer_checks_extra_duration_window_even_with_named_slots():
+    normalized = codex_reader._normalize_rate_limits({
+        "5h": {"usedPercent": 20, "windowDurationMins": 300},
+        "7d": {"usedPercent": 30, "windowDurationMins": 10080},
+        "tertiary": {"usedPercent": 40, "windowDurationMins": 1440},
+    })
+
+    assert normalized.unclassified_count == 1
+    assert normalized.five_hour is not None
+    assert normalized.seven_day is not None
+    assert normalized.authoritative is False
+
+
+def test_partial_known_rate_limit_is_marked_unavailable_instead_of_trusted():
+    limits = {
+        "primary": {"usedPercent": 20, "windowDurationMins": 10080},
+        "secondary": {"usedPercent": 30, "windowDurationMins": 1440},
+    }
+    normalized = codex_reader._normalize_rate_limits(limits)
+
+    assert normalized.seven_day is not None
+    assert codex_reader._status_from_rate_limits(
+        limits, normalized.pair, normalized.authoritative,
+    ) == "unavailable"
+
+
+def test_reader_hides_partial_rate_limit_windows_in_fail_closed_mode(monkeypatch):
+    class LiveSession:
+        is_alive = False
+
+    monkeypatch.setattr(codex_reader, "_live_quota_cache", None)
+    monkeypatch.setattr(codex_reader, "_appserver_session", LiveSession())
+    monkeypatch.setattr(codex_reader, "_appserver_executables", lambda: ["runtime"])
+    monkeypatch.setattr(codex_reader, "_appserver_rate_limits", lambda _: {
+        "rateLimits": {
+            "primary": {"usedPercent": 20, "windowDurationMins": 10080},
+            "secondary": {"usedPercent": 30, "windowDurationMins": 1440},
+        }
+    })
+
+    assert codex_reader.read_quota_from_appserver() == (None, None)
+    assert codex_reader.get_last_quota_windows().authoritative is False
+    assert codex_reader.get_last_quota_windows().seven_day is None
+
+
+def test_snapshot_does_not_revive_session_quota_after_invalid_runtime_response(monkeypatch):
+    monkeypatch.setattr(codex_reader, "read_quota_from_appserver", lambda: (None, None))
+    monkeypatch.setattr(codex_reader, "get_last_quota_status", lambda: "unavailable")
+    monkeypatch.setattr(codex_reader, "read_quota_from_session_events", lambda: (
+        codex_reader.QuotaInfo(used_pct=10, remaining_pct=90), None
+    ))
+    monkeypatch.setattr(codex_reader, "read_token_totals_from_db", lambda: None)
+    monkeypatch.setattr(codex_reader, "read_session_tokens", lambda: TokenBreakdown())
+    monkeypatch.setattr(codex_reader, "read_daily_tokens", lambda: [])
+    monkeypatch.setattr(codex_reader, "read_model_priced_values", lambda: {
+        "today": 0.0, "rolling_week": 0.0, "week": 0.0, "month": 0.0,
+        "cumulative": 0.0, "coverage_pct": 0.0, "unpriced_tokens": 0,
+    })
+
+    snapshot = codex_reader.read_codex_snapshot()
+
+    assert snapshot.quota_5h is None
+    assert snapshot.quota_7d is None
+
+
+def test_reset_credit_metadata_preserves_zero_and_full_details():
+    normalized = codex_reader._normalize_rate_limits(
+        {"primary": {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1_800_000_000}},
+        reset_count=0,
+        reset_times=(codex_reader._parse_reset(1_800_000_000),),
+    )
+
+    assert normalized.seven_day.reset_count == 0
+    assert normalized.seven_day.reset_times == (codex_reader._parse_reset(1_800_000_000),)
 
 
 def test_current_rate_limit_schema_can_honestly_return_only_seven_days():

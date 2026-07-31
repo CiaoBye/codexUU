@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import atexit
+import hashlib
 import json
 import os
 import re
@@ -8,7 +10,7 @@ import sqlite3
 import subprocess
 import time
 from queue import Empty, Queue
-from threading import Thread
+from threading import Lock, Thread
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +21,7 @@ from app.data.models import (
     ModelUsage,
     ProjectStats,
     QuotaInfo,
+    QuotaWindows,
     RuntimeScope,
     SkillUsage,
     SessionUsage,
@@ -39,15 +42,30 @@ from app.constants import APP_VERSION
 
 _cache: dict[str, tuple[float, object]] = {}
 _CACHE_TTL = 60
+_CACHE_LIMIT = 128
 _rollout_file_cache: dict[Path, tuple[int, int, datetime, list[dict]]] = {}
 _ROLLOUT_FILE_CACHE_LIMIT = 1024
+_MAX_ROLLOUT_LINES = 100_000
+_MAX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024
+_MAX_ROLLOUT_EVENTS = 250_000
+_MAX_APP_SERVER_LINE_BYTES = 4 * 1024 * 1024
+_MAX_RUNTIME_THREADS = 300
+_MAX_TASK_ITEMS = 300
+_MAX_TOKEN_VALUE = 10**15
 _last_quota_status = QUOTA_STATUS_UNAVAILABLE
+_last_quota_windows = QuotaWindows()
+RUNTIME_STATUS_UNAVAILABLE = "unavailable"
+RUNTIME_STATUS_STARTING = "starting"
+RUNTIME_STATUS_READY = "ready"
+RUNTIME_STATUS_TIMEOUT = "timeout"
+RUNTIME_STATUS_DISCONNECTED = "disconnected"
+RUNTIME_STATUS_EXITED = "exited"
 # Spawning the Desktop-managed standalone runtime for every 60-second token
 # refresh can make Codex repeatedly recycle that helper process.  Keep a
 # successfully verified live quota briefly; session/token aggregation still
 # refreshes on every cycle.
 _LIVE_QUOTA_TTL_SECONDS = 300
-_live_quota_cache: Optional[tuple[float, tuple[Optional[QuotaInfo], Optional[QuotaInfo]], str]] = None
+_live_quota_cache: Optional[tuple] = None
 
 
 def _cached(key: str):
@@ -58,15 +76,19 @@ def _cached(key: str):
 
 
 def _store(key: str, value):
+    if key not in _cache and len(_cache) >= _CACHE_LIMIT:
+        oldest = min(_cache, key=lambda item: _cache[item][0])
+        _cache.pop(oldest, None)
     _cache[key] = (time.time(), value)
     return value
 
 
 def clear_cache():
     """清除聚合快照；保留 rollout 文件级缓存，避免重复解析未变化日志。"""
-    global _last_quota_status
+    global _last_quota_status, _last_quota_windows
     _cache.clear()
     _last_quota_status = QUOTA_STATUS_UNAVAILABLE
+    _last_quota_windows = QuotaWindows()
 
 
 def _codex_dir() -> Path:
@@ -118,11 +140,19 @@ def get_last_quota_status() -> str:
     return _last_quota_status
 
 
+def get_last_quota_windows() -> QuotaWindows:
+    return _last_quota_windows
+
+
 def _status_from_rate_limits(
     limits: object,
     quota: tuple[Optional[QuotaInfo], Optional[QuotaInfo]],
+    authoritative: Optional[bool] = None,
+    extra_quota: Optional[QuotaInfo] = None,
 ) -> str:
-    if any(quota):
+    if authoritative is False:
+        return QUOTA_STATUS_UNAVAILABLE
+    if any(quota) or extra_quota is not None:
         return QUOTA_STATUS_AVAILABLE
     # The Codex rollout schema keeps the limit id but clears both windows when
     # the account has exhausted its allowance.  Treat only this explicit
@@ -168,85 +198,221 @@ def _appserver_executables() -> list[str]:
     return usable
 
 
-def _appserver_rate_limits(executable: str) -> Optional[dict]:
-    """Read one current rate-limit response without closing app-server early."""
-    process = None
-    response_lines: Queue[str] = Queue()
+_NO_APP_SERVER_RESPONSE = object()
 
-    def consume_stdout(stream):
+
+class _CodexAppServerSession:
+    """Keep one hidden app-server connection for quota and thread reads."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._process = None
+        self._executable = ""
+        self._messages: Queue[dict] = Queue()
+        self._next_request_id = 1
+        self._state_lock = Lock()
+        self._status = RUNTIME_STATUS_UNAVAILABLE
+        self._last_error = ""
+        self._status_changed_at = None
+
+    def _set_status(self, status: str, error: str = ""):
+        with self._state_lock:
+            self._status = status
+            self._last_error = str(error or "")[:500]
+            self._status_changed_at = datetime.now(timezone.utc)
+
+    def diagnostics(self) -> dict:
+        with self._state_lock:
+            return {
+                "status": self._status,
+                "executable": self._executable,
+                "last_error": self._last_error,
+                "changed_at": self._status_changed_at,
+                "alive": self._process is not None and self._process.poll() is None,
+            }
+
+    def _read_stdout(self, stream, messages: Queue):
         try:
             for line in stream:
-                response_lines.put(line)
-        finally:
-            stream.close()
-
-    try:
-        process = subprocess.Popen(
-            [executable, "app-server", "--stdio"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-        if process.stdin is None or process.stdout is None:
-            return None
-        reader = Thread(target=consume_stdout, args=(process.stdout,), daemon=True)
-        reader.start()
-
-        def send(message: dict):
-            process.stdin.write(json.dumps(message) + "\n")
-            process.stdin.flush()
-
-        send({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"clientInfo": {"name": "CodexUU", "version": APP_VERSION.lstrip("v")}},
-        })
-        deadline = time.monotonic() + 3.0
-        initialized = False
-        while time.monotonic() < deadline:
-            try:
-                message = json.loads(response_lines.get(timeout=0.15))
-            except Empty:
-                continue
-            except json.JSONDecodeError:
-                continue
-            if message.get("id") == 1 and "result" in message:
-                initialized = True
-                break
-        if not initialized:
-            return None
-
-        send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
-        # Current protocol defines this request with null params.  Empty object
-        # worked in older builds but is rejected by newer app-server versions.
-        send({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": None})
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            try:
-                message = json.loads(response_lines.get(timeout=0.15))
-            except Empty:
-                continue
-            except json.JSONDecodeError:
-                continue
-            if message.get("id") == 2 and isinstance(message.get("result"), dict):
-                return message["result"]
-        return None
-    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-        return None
-    finally:
-        if process is not None:
-            try:
-                if process.stdin is not None:
-                    process.stdin.close()
-            except OSError:
-                pass
-            if process.poll() is None:
-                process.terminate()
+                if len(line) > _MAX_APP_SERVER_LINE_BYTES:
+                    continue
                 try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+                    message = json.loads(line)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(message, dict):
+                    messages.put(message)
+        finally:
+            messages.put({"_codexu_eof": True})
+
+    def _write(self, message: dict) -> bool:
+        if self._process is None or self._process.stdin is None:
+            return False
+        try:
+            self._process.stdin.write(json.dumps(message) + "\n")
+            self._process.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    @property
+    def is_alive(self) -> bool:
+        alive = self._process is not None and self._process.poll() is None
+        if not alive and self._process is not None and self._process.poll() is not None:
+            self._set_status(RUNTIME_STATUS_EXITED, f"process exited: {self._process.returncode}")
+        return alive
+
+    def _wait_for_response(self, request_id: int, timeout: float):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                message = self._messages.get(timeout=0.15)
+            except Empty:
+                if self._process is None or self._process.poll() is not None:
+                    self._set_status(RUNTIME_STATUS_EXITED, "app-server process exited while waiting")
+                    return _NO_APP_SERVER_RESPONSE
+                continue
+            if message.get("_codexu_eof"):
+                self._set_status(RUNTIME_STATUS_DISCONNECTED, "app-server stdout closed")
+                return _NO_APP_SERVER_RESPONSE
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                self._set_status(RUNTIME_STATUS_DISCONNECTED, str(message.get("error")))
+                return _NO_APP_SERVER_RESPONSE
+            return message.get("result", _NO_APP_SERVER_RESPONSE)
+        self._set_status(RUNTIME_STATUS_TIMEOUT, f"response timeout after {timeout:g}s")
+        return _NO_APP_SERVER_RESPONSE
+
+    def _stop_locked(self):
+        process = self._process
+        self._process = None
+        self._executable = ""
+        if process is None:
+            return
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except (OSError, ValueError):
+            pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+
+    def _start_locked(self, executable: str) -> bool:
+        if self._process is not None and self._process.poll() is None and self._executable == executable:
+            return True
+        self._stop_locked()
+        self._set_status(RUNTIME_STATUS_STARTING)
+        creation_flags = 0
+        if os.name == "nt":
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            process = subprocess.Popen(
+                [executable, "app-server", "--stdio"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                creationflags=creation_flags,
+            )
+        except (OSError, subprocess.SubprocessError):
+            self._set_status(RUNTIME_STATUS_UNAVAILABLE, "unable to start app-server")
+            return False
+        if process.stdin is None or process.stdout is None:
+            process.kill()
+            self._set_status(RUNTIME_STATUS_EXITED, "app-server pipes unavailable")
+            return False
+        self._process = process
+        self._executable = executable
+        messages: Queue[dict] = Queue()
+        self._messages = messages
+        Thread(target=self._read_stdout, args=(process.stdout, messages), daemon=True).start()
+        initialize_id = self._next_request_id
+        self._next_request_id += 1
+        if not self._write({
+            "jsonrpc": "2.0",
+            "id": initialize_id,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "CodexUU", "version": APP_VERSION.lstrip("v")}},
+        }):
+            self._set_status(RUNTIME_STATUS_DISCONNECTED, "failed to write initialize request")
+            self._stop_locked()
+            return False
+        if self._wait_for_response(initialize_id, 8.0) is _NO_APP_SERVER_RESPONSE:
+            self._stop_locked()
+            return False
+        if not self._write({"jsonrpc": "2.0", "method": "initialized", "params": {}}):
+            self._set_status(RUNTIME_STATUS_DISCONNECTED, "failed to write initialized notification")
+            self._stop_locked()
+            return False
+        self._set_status(RUNTIME_STATUS_READY)
+        return True
+
+    def request(self, executable: str, method: str, params=None):
+        with self._lock:
+            if not self._start_locked(executable):
+                return None
+            request_id = self._next_request_id
+            self._next_request_id += 1
+            if not self._write({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }):
+                self._set_status(RUNTIME_STATUS_DISCONNECTED, f"failed to write {method} request")
+                self._stop_locked()
+                return None
+            result = self._wait_for_response(request_id, 8.0)
+            if result is _NO_APP_SERVER_RESPONSE:
+                self._stop_locked()
+                return None
+            self._set_status(RUNTIME_STATUS_READY)
+            return result
+
+    def close(self):
+        with self._lock:
+            self._stop_locked()
+
+
+_appserver_session = _CodexAppServerSession()
+atexit.register(_appserver_session.close)
+
+
+def get_appserver_diagnostics() -> dict:
+    """Return a bounded, read-only snapshot for the settings diagnostics UI."""
+    return _appserver_session.diagnostics()
+
+
+def _appserver_rate_limits(executable: str) -> Optional[dict]:
+    """Read one current rate-limit response over the shared session."""
+    result = _appserver_session.request(executable, "account/rateLimits/read", None)
+    return result if isinstance(result, dict) else None
+
+
+def _appserver_thread_list(executable: str) -> Optional[list[dict]]:
+    """Read current threads over the same app-server session as quota."""
+    result = _appserver_session.request(
+        executable,
+        "thread/list",
+        {"limit": 300, "sortKey": "recency_at", "sortDirection": "desc", "useStateDbOnly": True},
+    )
+    if not isinstance(result, dict):
+        return None
+    rows = result.get("data", result.get("threads"))
+    if not isinstance(rows, list):
+        return None
+    # A valid but unexpectedly large response is safer as an empty board than
+    # as an unbounded UI/memory allocation or a stale fallback.
+    return rows if len(rows) <= _MAX_RUNTIME_THREADS else []
 
 
 def _codex_rate_limits_from_response(payload: dict) -> dict:
@@ -263,72 +429,201 @@ def _codex_rate_limits_from_response(payload: dict) -> dict:
     return {}
 
 
+def _reset_metadata_from_payload(payload: dict) -> tuple[Optional[int], tuple[datetime, ...]]:
+    metadata = payload.get("rateLimitResetCredits", payload.get("rate_limit_reset_credits"))
+    if not isinstance(metadata, dict):
+        return None, ()
+    count = metadata.get("availableCount", metadata.get("available_count"))
+    try:
+        count = int(count) if count is not None else None
+    except (TypeError, ValueError, OverflowError):
+        count = None
+    if count is not None and count < 0:
+        count = None
+    credits = metadata.get("credits")
+    if not isinstance(credits, list):
+        credits = []
+    times = []
+    for credit in credits:
+        if isinstance(credit, dict):
+            times.extend(_quota_reset_times(credit))
+    return count, tuple(sorted(set(times)))
+
+
 def read_quota_from_appserver() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
     """Read rolling rate limits when the local Codex CLI is available."""
-    global _live_quota_cache
+    global _last_quota_windows, _live_quota_cache
     now = time.monotonic()
     if _live_quota_cache is not None:
-        checked_at, quota, status = _live_quota_cache
-        if now - checked_at < _LIVE_QUOTA_TTL_SECONDS:
+        checked_at, quota, status = _live_quota_cache[:3]
+        if _appserver_session.is_alive and now - checked_at < _LIVE_QUOTA_TTL_SECONDS:
             _set_quota_status(status)
+            _last_quota_windows = (
+                _live_quota_cache[3]
+                if len(_live_quota_cache) > 3
+                else QuotaWindows(five_hour=quota[0], seven_day=quota[1], authoritative=True)
+            )
             return quota
+        # A dead Runtime must not keep serving its last window during the TTL;
+        # the caller needs to attempt a fresh read or fall back to session data.
+        _live_quota_cache = None
     for executable in _appserver_executables():
         payload = _appserver_rate_limits(executable)
         if not isinstance(payload, dict):
             continue
         limits = _codex_rate_limits_from_response(payload)
-        quota = _quota_pair_from_rate_limits(limits)
-        status = _status_from_rate_limits(limits, quota)
+        reset_count, reset_times = _reset_metadata_from_payload(payload)
+        windows = _displayable_quota_windows(_normalize_rate_limits(limits, reset_count, reset_times))
+        quota = windows.pair
+        status = _status_from_rate_limits(limits, quota, windows.authoritative, windows.monthly)
         _set_quota_status(status)
-        _live_quota_cache = (now, quota, status)
+        _last_quota_windows = windows
+        _live_quota_cache = (now, quota, status, windows)
         return quota
+    _last_quota_windows = QuotaWindows()
     _set_quota_status(QUOTA_STATUS_UNAVAILABLE)
     return None
 
 
-def _quota_pair_from_rate_limits(limits: dict) -> tuple[Optional[QuotaInfo], Optional[QuotaInfo]]:
-    if not isinstance(limits, dict):
-        return None, None
+def _quota_reset_times(item: dict) -> tuple[datetime, ...]:
+    values = item.get(
+        "reset_times",
+        item.get("resetTimes", item.get("resetsAt", item.get("expiresAt", item.get("expires_at")))),
+    )
+    if values is None:
+        values = item.get("resets_at", item.get("resetAt"))
+    if not isinstance(values, (list, tuple)):
+        values = [values] if values is not None else []
+    return tuple(reset for reset in (_parse_reset(value) for value in values) if reset is not None)
 
-    def make_quota(item) -> tuple[Optional[int], Optional[QuotaInfo]]:
-        if not isinstance(item, dict):
-            return None, None
-        used = item.get("used_percent", item.get("usedPercent", item.get("used")))
-        maximum = item.get("max", item.get("limit"))
+
+def _quota_from_item(
+    item: object,
+    reset_count: Optional[int] = None,
+    reset_times: tuple[datetime, ...] = (),
+) -> tuple[Optional[int], Optional[QuotaInfo], bool]:
+    if item is None:
+        return None, None, False
+    if not isinstance(item, dict):
+        return None, None, True
+    raw_window = item.get("window_minutes", item.get("windowDurationMins"))
+    try:
+        window = int(raw_window) if raw_window is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None, None, True
+    used = item.get("used_percent", item.get("usedPercent", item.get("used")))
+    maximum = item.get("max", item.get("limit"))
+    try:
         if maximum not in (None, 0):
             used_pct = float(used or 0) / float(maximum) * 100
         elif used is not None:
             used_pct = float(used)
         else:
-            return None, None
-        window = item.get("window_minutes", item.get("windowDurationMins"))
-        used_pct = max(0.0, min(100.0, used_pct))
-        return int(window) if window is not None else None, QuotaInfo(
-            used_pct=used_pct,
-            remaining_pct=100.0 - used_pct,
-            reset_time=_parse_reset(item.get("resets_at", item.get("resetsAt", item.get("resetAt")))),
-        )
+            return window, None, True
+    except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+        return window, None, True
+    if not 0 <= used_pct <= 100:
+        return window, None, True
+    item_reset_count = item.get("reset_count", item.get("resetCount"))
+    if item_reset_count is not None:
+        try:
+            item_reset_count = int(item_reset_count)
+        except (TypeError, ValueError, OverflowError):
+            return window, None, True
+        if item_reset_count < 0:
+            return window, None, True
+    item_reset_times = _quota_reset_times(item) or reset_times
+    return window, QuotaInfo(
+        used_pct=used_pct,
+        remaining_pct=100.0 - used_pct,
+        reset_time=item_reset_times[0] if item_reset_times else None,
+        window_minutes=window,
+        reset_count=item_reset_count if item_reset_count is not None else reset_count,
+        reset_times=item_reset_times,
+    ), False
 
-    q5 = q7 = None
-    candidates = []
-    for key in ("5h", "7d", "primary", "secondary"):
-        if key in limits:
-            window, quota = make_quota(limits.get(key))
-            if quota is not None:
-                candidates.append((key, window, quota))
-    for key, window, quota in candidates:
-        if key == "5h" or window == 300:
-            q5 = quota
-        elif key == "7d" or window == 10080:
-            q7 = quota
-    return q5, q7
+
+def _normalize_rate_limits(
+    limits: object,
+    reset_count: Optional[int] = None,
+    reset_times: tuple[datetime, ...] = (),
+) -> QuotaWindows:
+    if not isinstance(limits, dict):
+        return QuotaWindows(malformed_count=1)
+    known_keys = ("5h", "7d", "monthly", "primary", "secondary")
+    keys = [key for key in known_keys if key in limits]
+    # New Runtime versions may add another named slot.  Only treat an extra
+    # dictionary as a quota candidate when it carries an explicit duration;
+    # unrelated scalar metadata remains ignored.
+    for key, item in limits.items():
+        if key in known_keys or not isinstance(item, dict):
+            continue
+        if "window_minutes" in item or "windowDurationMins" in item:
+            keys.append(key)
+    candidates: dict[str, list[QuotaInfo]] = {"five_hour": [], "seven_day": [], "monthly": []}
+    unclassified = 0
+    malformed = 0
+    for key in keys:
+        if limits.get(key) is None:
+            continue
+        window, quota, invalid = _quota_from_item(limits.get(key), reset_count, reset_times)
+        if invalid:
+            malformed += 1
+            continue
+        if window == 300:
+            candidates["five_hour"].append(quota)
+        elif window == 10080:
+            candidates["seven_day"].append(quota)
+        elif window is not None and 28 * 24 * 60 <= window <= 31 * 24 * 60:
+            candidates["monthly"].append(quota)
+        else:
+            unclassified += 1
+    five_hour = candidates["five_hour"][0] if len(candidates["five_hour"]) == 1 else None
+    seven_day = candidates["seven_day"][0] if len(candidates["seven_day"]) == 1 else None
+    monthly = candidates["monthly"][0] if len(candidates["monthly"]) == 1 else None
+    duplicate_count = sum(max(0, len(items) - 1) for items in candidates.values())
+    has_window_fields = bool(keys)
+    authoritative = (
+        has_window_fields
+        and not malformed
+        and not unclassified
+        and duplicate_count == 0
+    )
+    return QuotaWindows(
+        five_hour=five_hour,
+        seven_day=seven_day,
+        monthly=monthly,
+        unclassified_count=unclassified,
+        malformed_count=malformed,
+        duplicate_count=duplicate_count,
+        authoritative=authoritative,
+    )
+
+
+def _quota_pair_from_rate_limits(limits: dict) -> tuple[Optional[QuotaInfo], Optional[QuotaInfo]]:
+    return _normalize_rate_limits(limits).pair
+
+
+def _displayable_quota_windows(windows: QuotaWindows) -> QuotaWindows:
+    if windows.authoritative:
+        return windows
+    return QuotaWindows(
+        unclassified_count=windows.unclassified_count,
+        malformed_count=windows.malformed_count,
+        duplicate_count=windows.duplicate_count,
+        authoritative=False,
+    )
 
 
 def read_quota_from_session_events() -> Optional[tuple[Optional[QuotaInfo], Optional[QuotaInfo]]]:
     """Read the newest persisted Codex rate-limit snapshot without a full history scan."""
+    global _last_quota_windows
     cached = _cached("quota_session_events")
     if cached is not None:
         _set_quota_status(_cached("quota_session_status") or QUOTA_STATUS_UNAVAILABLE)
+        _last_quota_windows = _cached("quota_session_windows") or QuotaWindows(
+            five_hour=cached[0], seven_day=cached[1], authoritative=True,
+        )
         return cached
     # The current quota is written into recent token_count events.  Sampling the
     # newest files is both the most current local source available to the Store
@@ -339,16 +634,21 @@ def read_quota_from_session_events() -> Optional[tuple[Optional[QuotaInfo], Opti
             limits = payload.get("rate_limits") if isinstance(payload, dict) else None
             if not isinstance(limits, dict):
                 continue
-            result = _quota_pair_from_rate_limits(limits)
-            status = _status_from_rate_limits(limits, result)
+            reset_count, reset_times = _reset_metadata_from_payload(payload)
+            windows = _displayable_quota_windows(_normalize_rate_limits(limits, reset_count, reset_times))
+            result = windows.pair
+            status = _status_from_rate_limits(limits, result, windows.authoritative, windows.monthly)
             # A newest event with explicit empty windows is authoritative: do
             # not resurrect an older quota snapshot after a reset or account
             # state change.  Codex uses this empty shape after exhaustion, so
             # preserve the status even though there is no honest window to draw.
             _set_quota_status(status)
+            _last_quota_windows = windows
             _store("quota_session_status", status)
+            _store("quota_session_windows", windows)
             return _store("quota_session_events", result)
     _set_quota_status(QUOTA_STATUS_UNAVAILABLE)
+    _last_quota_windows = QuotaWindows()
     _store("quota_session_status", QUOTA_STATUS_UNAVAILABLE)
     return _store("quota_session_events", None)
 
@@ -378,14 +678,71 @@ def _read_rollout_file_events(path: Path, stat: os.stat_result, mtime: datetime)
     events: list[dict] = []
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
+            for line_number, line in enumerate(handle, 1):
+                if line_number > _MAX_ROLLOUT_LINES or len(line) > _MAX_ROLLOUT_LINE_BYTES:
+                    _rollout_file_cache.pop(path, None)
+                    return []
                 event = parse_jsonl_line(line)
                 if event:
                     events.append(event)
     except (OSError, UnicodeError):
+        _rollout_file_cache.pop(path, None)
         return []
     _rollout_file_cache[path] = (stat.st_mtime_ns, stat.st_size, mtime, events)
     return events
+
+
+def _safe_token_int(value) -> Optional[int]:
+    if value is None:
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number < 0 or number > _MAX_TOKEN_VALUE:
+        return None
+    return number
+
+
+def _token_sample_values(sample: object) -> tuple[Optional[int], ...]:
+    if not isinstance(sample, dict):
+        return (None, None, None, None, None)
+    values = []
+    for key in (
+        ("input_tokens", "input"),
+        ("cached_input_tokens", "cached_input"),
+        ("output_tokens", "output"),
+        ("reasoning_output_tokens", "reasoning_output", "reasoning"),
+        ("total_tokens", "total"),
+    ):
+        raw = next((sample[name] for name in key if name in sample), None)
+        values.append(_safe_token_int(raw) if raw is not None else None)
+    return tuple(values)
+
+
+def _token_event_fingerprint(event: dict) -> Optional[str]:
+    """Hash only bounded token counters; never retain transcript content."""
+    if not isinstance(event, dict):
+        return None
+    payload = event.get("payload")
+    total = None
+    last = None
+    if event.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "token_count":
+        info = payload.get("info", {})
+        if isinstance(info, dict):
+            total = info.get("total_token_usage")
+            last = info.get("last_token_usage")
+            if total is None and last is None:
+                last = info
+    else:
+        last = event.get("token_count")
+    if total is None and last is None:
+        return None
+    encoded = json.dumps(
+        (_token_sample_values(total), _token_sample_values(last)),
+        separators=(",", ":"),
+    ).encode("ascii", errors="replace")
+    return hashlib.blake2b(encoded, digest_size=16).hexdigest()
 
 
 def _read_token_event(event: dict) -> Optional[tuple[str, TokenBreakdown, bool]]:
@@ -403,12 +760,18 @@ def _read_token_event(event: dict) -> Optional[tuple[str, TokenBreakdown, bool]]
     if not isinstance(usage, dict):
         return None
 
-    cached = int(usage.get("cached_input_tokens", usage.get("cached_input", 0)) or 0)
-    input_tokens = int(usage.get("input_tokens", usage.get("input", 0)) or 0)
+    cached = _safe_token_int(usage.get("cached_input_tokens", usage.get("cached_input", 0)))
+    input_tokens = _safe_token_int(usage.get("input_tokens", usage.get("input", 0)))
+    if cached is None or input_tokens is None:
+        return None
     uncached = usage.get("uncached_input")
     if uncached is None:
         uncached = max(0, input_tokens - cached)
-    output = int(usage.get("output_tokens", usage.get("output", 0)) or 0)
+    else:
+        uncached = _safe_token_int(uncached)
+    output = _safe_token_int(usage.get("output_tokens", usage.get("output", 0)))
+    if uncached is None or output is None:
+        return None
     return str(timestamp), TokenBreakdown(
         cached_input=max(0, cached),
         uncached_input=max(0, int(uncached or 0)),
@@ -459,6 +822,33 @@ def _model_context_from_event(event: dict) -> tuple[str, str, str]:
     return model, effort, turn_id
 
 
+def _session_link_from_events(path: Path, events: list[dict]) -> tuple[str, str]:
+    session_id = ""
+    parent_id = ""
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "session_meta":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        session_id = str(payload.get("id") or payload.get("session_id") or event.get("session_id") or "").strip()
+        parent_id = str(payload.get("parent_thread_id") or payload.get("parentThreadId") or "").strip()
+        if session_id or parent_id:
+            break
+    if not session_id and isinstance(path, Path):
+        match = re.search(r"([0-9a-f]{8}-[0-9a-f-]{27,})$", path.stem, re.IGNORECASE)
+        session_id = match.group(1).lower() if match else ""
+    return session_id, parent_id
+
+
+def _inherited_prefix_length(child: list[str], parent: list[str]) -> int:
+    index = 0
+    upper_bound = min(len(child), len(parent))
+    while index < upper_bound and child[index] and child[index] == parent[index]:
+        index += 1
+    return index
+
+
 def _iter_token_deltas(days: Optional[int] = None) -> Iterator[tuple[Path, datetime, str, TokenBreakdown, dict]]:
     cache_key = f"token_deltas:{days if days is not None else 'all'}"
     cached = _cached(cache_key)
@@ -466,30 +856,59 @@ def _iter_token_deltas(days: Optional[int] = None) -> Iterator[tuple[Path, datet
         yield from cached
         return
     previous: dict[Path, TokenBreakdown] = {}
-    active_models: dict[Path, str] = {}
-    active_efforts: dict[Path, str] = {}
-    active_turns: dict[Path, str] = {}
     records: list[tuple[Path, datetime, str, TokenBreakdown, dict]] = []
+    grouped: dict[Path, tuple[datetime, list[dict]]] = {}
     for path, mtime, event in _iter_rollout_events(days=days):
-        model, effort, turn_id = _model_context_from_event(event)
-        if model:
-            active_models[path] = model
-        if effort:
-            active_efforts[path] = effort
-        if turn_id:
-            active_turns[path] = turn_id
-        parsed = _read_token_event(event)
-        if not parsed:
-            continue
-        timestamp, current, cumulative = parsed
-        delta = _delta_breakdown(previous.get(path), current) if cumulative else current
-        if cumulative:
-            previous[path] = current
-        if delta.total > 0:
-            event["_codexu_model"] = active_models.get(path, "")
-            event["_codexu_effort"] = active_efforts.get(path, "")
-            event["_codexu_turn_id"] = active_turns.get(path, "")
-            records.append((path, mtime, timestamp, delta, event))
+        if path not in grouped:
+            grouped[path] = (mtime, [])
+        grouped[path][1].append(event)
+
+    token_entries: dict[Path, list[tuple[str, TokenBreakdown, bool, dict, str, str, str, str]]] = {}
+    session_paths: dict[str, Path] = {}
+    parent_by_path: dict[Path, str] = {}
+    for path, (mtime, events) in grouped.items():
+        session_id, parent_id = _session_link_from_events(path, events)
+        if session_id:
+            session_paths[session_id] = path
+        parent_by_path[path] = parent_id
+        active_model = active_effort = active_turn = ""
+        entries = []
+        for event in events:
+            model, effort, turn_id = _model_context_from_event(event)
+            if model:
+                active_model = model
+            if effort:
+                active_effort = effort
+            if turn_id:
+                active_turn = turn_id
+            parsed = _read_token_event(event)
+            if parsed:
+                timestamp, current, cumulative = parsed
+                entries.append((timestamp, current, cumulative, event, active_model, active_effort, active_turn, _token_event_fingerprint(event) or ""))
+        token_entries[path] = entries
+
+    for path, entries in token_entries.items():
+        parent_path = session_paths.get(parent_by_path.get(path, ""))
+        inherited = 0
+        if parent_path is not None:
+            inherited = _inherited_prefix_length(
+                [entry[7] for entry in entries],
+                [entry[7] for entry in token_entries.get(parent_path, ())],
+            )
+            if inherited and entries[inherited - 1][2]:
+                previous[path] = entries[inherited - 1][1]
+            entries = entries[inherited:]
+        for timestamp, current, cumulative, event, model, effort, turn_id, _fingerprint in entries:
+            delta = _delta_breakdown(previous.get(path), current) if cumulative else current
+            if cumulative:
+                previous[path] = current
+            if delta.total > 0:
+                event["_codexu_model"] = model
+                event["_codexu_effort"] = effort
+                event["_codexu_turn_id"] = turn_id
+                records.append((path, grouped[path][0], timestamp, delta, event))
+                if len(records) > _MAX_ROLLOUT_EVENTS:
+                    return
     _store(cache_key, records)
     yield from records
 
@@ -516,6 +935,8 @@ def _iter_rollout_events(days: Optional[int] = None) -> Iterator[tuple[Path, dat
                 seen_files.add(path)
                 events = _read_rollout_file_events(path, stat, mtime)
                 records.extend((path, mtime, event) for event in events)
+                if len(records) > _MAX_ROLLOUT_EVENTS:
+                    return _store(cache_key, [])
             except (OSError, UnicodeError):
                 continue
     for stale_path in set(_rollout_file_cache) - seen_files:
@@ -780,9 +1201,12 @@ def _classify_thread_task(archived, created_at, updated_at, recency_at, archived
     recency = _parse_updated(recency_at)
     archived_time = _parse_updated(archived_at)
     statistics = get_statistics_timezone()
+    # Newer thread records carry the authoritative archive timestamp.  Older
+    # SQLite layouts may only expose the boolean and updated timestamp.
+    if archived_time is not None:
+        return "completed", archived_time
     if bool(archived):
-        activity = archived_time or updated
-        return ("completed", activity) if activity else None
+        return ("completed", updated) if updated else None
     today = statistics.date_for(now)
     candidates = [value for value in (created, updated, recency) if value is not None]
     if not candidates or not any(statistics.date_for(value) == today for value in candidates):
@@ -792,13 +1216,59 @@ def _classify_thread_task(archived, created_at, updated_at, recency_at, archived
     return ("running" if age <= timedelta(hours=2) else "pending"), activity
 
 
+def _thread_field(row: dict, *names, default=None):
+    for name in names:
+        if name in row:
+            return row[name]
+    return default
+
+
+def _tasks_from_runtime_rows(rows: list[dict], now: datetime) -> list[TaskItem]:
+    tasks: list[TaskItem] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        classification = _classify_thread_task(
+            _thread_field(row, "archived", default=False),
+            _thread_field(row, "createdAt", "created_at"),
+            _thread_field(row, "updatedAt", "updated_at"),
+            _thread_field(row, "recencyAt", "recency_at"),
+            _thread_field(row, "archivedAt", "archived_at"),
+            now,
+        )
+        if classification is None:
+            continue
+        status, activity_at = classification
+        cwd = _thread_field(row, "cwd", "workingDirectory", "working_directory", default="")
+        title = _thread_field(row, "title", "name", default="")
+        preview = _thread_field(row, "preview", "firstUserMessage", default="")
+        tasks.append(TaskItem(
+            id=str(_thread_field(row, "id", "threadId", default="")),
+            title=_clean_task_title(title or preview),
+            status=status,
+            runtime=RuntimeScope.CODEX,
+            updated_at=activity_at,
+            project=Path(str(cwd).replace("\\\\?\\", "")).name if cwd else "",
+        ))
+    return tasks
+
+
 def read_task_board() -> list[TaskItem]:
     cached = _cached("task_board")
     if cached is not None:
         return cached
     tasks: list[TaskItem] = []
-    db_path = _state_db_path()
-    if db_path:
+    runtime_rows = None
+    if _appserver_session.is_alive:
+        for executable in _appserver_executables():
+            runtime_rows = _appserver_thread_list(executable)
+            if runtime_rows is not None:
+                break
+    if runtime_rows is not None:
+        tasks.extend(_tasks_from_runtime_rows(runtime_rows, datetime.now(timezone.utc)))
+    else:
+        db_path = _state_db_path()
+    if runtime_rows is None and db_path:
         try:
             with _connect_state_db(db_path) as conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(threads)")}
@@ -851,7 +1321,7 @@ def read_task_board() -> list[TaskItem]:
                 ))
             except (OSError, UnicodeError):
                 continue
-    return _store("task_board", tasks)
+    return _store("task_board", tasks[:_MAX_TASK_ITEMS])
 
 
 def read_projects() -> list[ProjectStats]:
@@ -1198,13 +1668,16 @@ def read_skill_usage() -> list[SkillUsage]:
 def read_codex_snapshot() -> UsageSnapshot:
     _set_quota_status(QUOTA_STATUS_UNAVAILABLE)
     quota = read_quota_from_appserver()
-    if quota is None or (
-        not any(quota) and get_last_quota_status() == QUOTA_STATUS_UNAVAILABLE
-    ):
+    # A tuple, including (None, None), means Runtime answered.  Its empty or
+    # malformed result is authoritative for this refresh and must not revive
+    # an older session snapshot.  Only a missing Runtime response may fall
+    # back to persisted session events.
+    if quota is None:
         session_quota = read_quota_from_session_events()
         if session_quota is not None or get_last_quota_status() != QUOTA_STATUS_UNAVAILABLE:
             quota = session_quota
     quota_status = get_last_quota_status()
+    quota_windows = get_last_quota_windows()
     db_tokens = read_token_totals_from_db()
     session_tokens = read_session_tokens()
     daily = read_daily_tokens()
@@ -1248,6 +1721,7 @@ def read_codex_snapshot() -> UsageSnapshot:
     return UsageSnapshot(
         quota_5h=quota[0] if quota else None,
         quota_7d=quota[1] if quota else None,
+        quota_month=quota_windows.monthly,
         quota_status=quota_status,
         tokens=tokens,
         api_equivalent_value=float(priced["cumulative"]),

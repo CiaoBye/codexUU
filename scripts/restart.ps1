@@ -13,6 +13,7 @@ foreach ($process in $existing) {
 
 $pythonw = (Get-Command pythonw.exe).Source
 $started = Start-Process -FilePath $pythonw -ArgumentList ('"' + $mainPath + '"') -WorkingDirectory $workspace -PassThru
+$startedPid = $started.Id
 Start-Sleep -Seconds 2
 
 $running = @(Get-CimInstance Win32_Process | Where-Object {
@@ -63,15 +64,15 @@ namespace CodexUU {
 
 $windowReady = $false
 for ($attempt = 0; $attempt -lt 16; $attempt++) {
-    if ([CodexUU.NativeWindowProbe]::HasVisibleMainWindow([uint32]$started.Id)) {
+    if ([CodexUU.NativeWindowProbe]::HasVisibleMainWindow([uint32]$startedPid)) {
         $windowReady = $true
         break
     }
     Start-Sleep -Milliseconds 500
 }
 if (-not $windowReady) {
-    Stop-Process -Id $started.Id -Force -ErrorAction SilentlyContinue
+    Stop-Process -Id $startedPid -Force -ErrorAction SilentlyContinue
     throw "CodexUU restart failed: process started but no visible main window appeared."
 }
 
-Write-Output "CodexUU restarted: PID $($started.Id)"
+Write-Output "CodexUU restarted: PID $startedPid"

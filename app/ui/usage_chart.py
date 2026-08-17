@@ -5,9 +5,10 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QPointF, QRectF, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QPointF, QRect, QRectF, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QGraphicsOpacityEffect,
@@ -409,6 +410,28 @@ class UsagePlot(QWidget):
         self.hover_index = -1
         self.update()
 
+    @staticmethod
+    def _tooltip_position(global_pos: QPoint, text: str, available: QRect) -> QPoint:
+        """Keep the native tooltip inside the current screen and window bounds."""
+        metrics = QFontMetrics(QApplication.font())
+        lines = text.splitlines() or [""]
+        width = max(metrics.horizontalAdvance(line) for line in lines) + 24
+        height = metrics.lineSpacing() * len(lines) + 16
+        edge = 8
+        width = min(width, max(1, available.width() - edge * 2))
+        height = min(height, max(1, available.height() - edge * 2))
+
+        x = global_pos.x() + 12
+        if x + width > available.right() - edge + 1:
+            x = global_pos.x() - width - 12
+        x = max(available.left() + edge, min(x, available.right() - width + 1 - edge))
+
+        y = global_pos.y() - height - 12
+        if y < available.top() + edge:
+            y = global_pos.y() + 18
+        y = max(available.top() + edge, min(y, available.bottom() - height + 1 - edge))
+        return QPoint(x, y)
+
     def mouseMoveEvent(self, event):
         if not self.points:
             return
@@ -434,9 +457,17 @@ class UsagePlot(QWidget):
             value = self.points[self.hover_index][1]
             unit = "API value" if self.value_metric == "api" else "token"
             tooltip_text = f"{label}\n{format_metric_value(value, self.value_metric, self.english)} {unit}"
-        # Always open above the cursor so a point on the zero baseline cannot
-        # push the tooltip underneath the card/window boundary.
-        tooltip_pos = event.globalPosition().toPoint() + QPoint(12, -54)
+        global_pos = event.globalPosition().toPoint()
+        screen = QApplication.screenAt(global_pos) or self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QRect(global_pos.x() - 1000, global_pos.y() - 1000, 2000, 2000)
+        window = self.window()
+        if window is not None and window.isVisible():
+            window_bounds = window.frameGeometry()
+            if window_bounds.isValid():
+                bounded = available.intersected(window_bounds)
+                if bounded.isValid():
+                    available = bounded
+        tooltip_pos = self._tooltip_position(global_pos, tooltip_text, available)
         QToolTip.showText(tooltip_pos, tooltip_text, self)
         self.update()
 
@@ -579,6 +610,7 @@ class UsageTrendWidget(QWidget):
         self.data_updated_at = datetime.now(timezone.utc)
         self._mode_animation = None
         self.reduce_motion = False
+        self._resizing = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -681,35 +713,49 @@ class UsageTrendWidget(QWidget):
         columns.setSpacing(10)
 
         ranking = QFrame()
-        ranking.setObjectName("surfaceCard")
+        ranking.setObjectName("modelColumn")
         ranking_layout = QVBoxLayout(ranking)
-        ranking_layout.setContentsMargins(14, 8, 14, 8)
+        ranking_layout.setContentsMargins(12, 10, 12, 10)
         model_controls = QHBoxLayout()
-        model_controls.setSpacing(2)
+        model_controls.setSpacing(4)
         self.models_title = QLabel("")
         self.models_title.setObjectName("sectionTitle")
         model_controls.addWidget(self.models_title)
         model_controls.addStretch()
+        self.model_window_label = QLabel("")
+        self.model_window_label.setObjectName("modelFilterLabel")
+        self.model_window_label.setToolTip("模型活动范围")
+        model_controls.addWidget(self.model_window_label)
         self.model_window_group = QButtonGroup(self)
         self.model_window_group.setExclusive(True)
         self.model_window_buttons = {}
         for days in MODEL_ACTIVITY_WINDOWS:
             button = QPushButton("")
-            button.setObjectName("miniTabButton")
+            button.setObjectName("modelFilterButton")
             button.setCheckable(True)
-            button.setFixedWidth(42)
+            button.setFixedSize(45, 24)
             button.clicked.connect(lambda checked=False, value=days: self.set_model_activity_window(value))
             self.model_window_group.addButton(button)
             self.model_window_buttons[days] = button
             model_controls.addWidget(button)
+        divider = QFrame()
+        divider.setObjectName("modelFilterDivider")
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setFixedHeight(18)
+        model_controls.addWidget(divider)
+
         self.model_metric_group = QButtonGroup(self)
         self.model_metric_group.setExclusive(True)
         self.model_metric_buttons = {}
+        self.model_metric_label = QLabel("")
+        self.model_metric_label.setObjectName("modelFilterLabel")
+        self.model_metric_label.setToolTip("指标")
+        model_controls.addWidget(self.model_metric_label)
         for metric in MODEL_METRICS:
             button = QPushButton("")
-            button.setObjectName("miniTabButton")
+            button.setObjectName("modelFilterButton")
             button.setCheckable(True)
-            button.setFixedWidth(54)
+            button.setFixedSize(58 if metric == "tokens" else 64, 24)
             button.clicked.connect(lambda checked=False, value=metric: self.set_model_metric(value))
             self.model_metric_group.addButton(button)
             self.model_metric_buttons[metric] = button
@@ -729,9 +775,9 @@ class UsageTrendWidget(QWidget):
         columns.addWidget(ranking, 1)
 
         detail = QFrame()
-        detail.setObjectName("surfaceCard")
+        detail.setObjectName("modelColumn")
         detail_layout = QVBoxLayout(detail)
-        detail_layout.setContentsMargins(14, 8, 14, 8)
+        detail_layout.setContentsMargins(12, 10, 12, 10)
         detail_header = QHBoxLayout()
         self.model_detail_title = QLabel("")
         self.model_detail_title.setObjectName("sectionTitle")
@@ -744,6 +790,7 @@ class UsageTrendWidget(QWidget):
         self.model_detail_meta = QLabel("")
         self.model_detail_meta.setObjectName("metricHint")
         self.model_detail_meta.setWordWrap(True)
+        self.model_detail_meta.setMaximumHeight(34)
         detail_layout.addWidget(self.model_detail_meta)
         metrics = QHBoxLayout()
         metrics.setSpacing(7)
@@ -776,6 +823,8 @@ class UsageTrendWidget(QWidget):
         self.overview_button.setText("Overview" if english else "概览")
         self.models_button.setText("Models" if english else "模型")
         self.models_title.setText("Model usage" if english else "模型使用量")
+        self.model_window_label.setText("Range" if english else "范围")
+        self.model_metric_label.setText("Metric" if english else "指标")
         for days, button in self.model_window_buttons.items():
             button.setText(f"{days}d" if english else f"{days}天")
             button.setToolTip(
@@ -845,6 +894,21 @@ class UsageTrendWidget(QWidget):
 
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
+        if self.reduce_motion:
+            self._stop_mode_animation()
+
+    def set_resizing(self, enabled):
+        self._resizing = bool(enabled)
+        if self._resizing:
+            self._stop_mode_animation()
+
+    def _stop_mode_animation(self):
+        animation = self._mode_animation
+        self._mode_animation = None
+        if animation is not None:
+            animation.stop()
+            animation.deleteLater()
+        self.charts_host.setGraphicsEffect(None)
 
     def set_mode(self, mode):
         if mode not in MODES or mode == self.mode:
@@ -852,7 +916,8 @@ class UsageTrendWidget(QWidget):
         self.mode = mode
         self.mode_buttons[mode].setChecked(True)
         self._update_period_controls()
-        if not self.isVisible() or self.reduce_motion:
+        self._stop_mode_animation()
+        if not self.isVisible() or self.reduce_motion or self._resizing:
             self._render()
             return
         effect = QGraphicsOpacityEffect(self.charts_host)

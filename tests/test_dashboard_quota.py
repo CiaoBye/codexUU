@@ -16,6 +16,7 @@ from app.data.models import (
     UsageSnapshot,
 )
 from app.ui.dashboard import DashboardWidget, ProviderScopeButton, ProviderUsageLabel, QuotaPanel
+from app.utils.settings import SettingsManager
 from datetime import datetime
 
 
@@ -180,6 +181,30 @@ def test_dashboard_provider_scope_uses_provider_data_and_all_restores_codex_data
     assert not dashboard.quota_card.provider_mode
     assert not dashboard.value_card.provider_mode
     assert dashboard.today_card._tokens.total == 900
+    dashboard.deleteLater()
+    app.processEvents()
+
+
+def test_dashboard_model_scope_switch_updates_with_settings_manager(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    manager = SettingsManager(tmp_path / "config.json")
+    manager.set_model_scope("provider")
+    dashboard = DashboardWidget(settings_manager=manager)
+    dashboard.data.ccswitch = _provider_snapshot()
+    dashboard.data.codex = UsageSnapshot(tokens=TokenStats(
+        today=TokenBreakdown(uncached_input=900),
+        current_week=TokenBreakdown(uncached_input=900),
+        current_month=TokenBreakdown(uncached_input=900),
+        cumulative=TokenBreakdown(uncached_input=900),
+    ))
+
+    dashboard._update()
+    assert dashboard.quota_card.provider_mode
+    dashboard._set_model_scope("gpt")
+    app.processEvents()
+    assert dashboard.current_model_scope == "gpt"
+    assert dashboard.model_scope_buttons["gpt"].isChecked()
+    assert not dashboard.quota_card.provider_mode
     dashboard.deleteLater()
     app.processEvents()
 

@@ -236,8 +236,10 @@ class TaskColumn(QFrame):
     def update_tasks(self, tasks):
         while self.container_layout.count():
             item = self.container_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
         filtered = [t for t in tasks if t.status == self.status]
         self.count_label.setText(str(len(filtered)))
         for task in filtered:

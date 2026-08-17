@@ -3,7 +3,7 @@ import ctypes
 import os
 import uuid
 from pathlib import Path
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
 
@@ -38,6 +38,20 @@ class _RECT(ctypes.Structure):
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long))
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = (("x", ctypes.c_long), ("y", ctypes.c_long))
+
+
+class _MINMAXINFO(ctypes.Structure):
+    _fields_ = (
+        ("ptReserved", _POINT),
+        ("ptMaxSize", _POINT),
+        ("ptMaxPosition", _POINT),
+        ("ptMinTrackSize", _POINT),
+        ("ptMaxTrackSize", _POINT),
+    )
+
+
 class _MSG(ctypes.Structure):
     _fields_ = (
         ("hwnd", ctypes.c_void_p),
@@ -54,6 +68,22 @@ class MainAppWindow(QMainWindow):
     DESIGN_WIDTH = 1060
     DESIGN_HEIGHT = 720
     DESIGN_ASPECT = DESIGN_WIDTH / DESIGN_HEIGHT
+    DEFAULT_DPI = 96
+
+    WM_GETMINMAXINFO = 0x0024
+    WM_SIZING = 0x0214
+    WM_ENTERSIZEMOVE = 0x0231
+    WM_EXITSIZEMOVE = 0x0232
+    WM_DPICHANGED = 0x02E0
+
+    WMSZ_LEFT = 1
+    WMSZ_RIGHT = 2
+    WMSZ_TOP = 3
+    WMSZ_TOPLEFT = 4
+    WMSZ_TOPRIGHT = 5
+    WMSZ_BOTTOM = 6
+    WMSZ_BOTTOMLEFT = 7
+    WMSZ_BOTTOMRIGHT = 8
 
     def __init__(self, parent=None, settings_manager=None,
                  translation_manager: TranslationManager = None,
@@ -64,9 +94,14 @@ class MainAppWindow(QMainWindow):
         self.theme_manager = theme_manager
         self.setWindowTitle("CodexUU")
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "icons" / "codexu-logo.svg")))
-        self._aspect_adjusting = False
-        self._pending_aspect_size = None
+        self._windows_sizing = False
+        self._sizing_start_rect = None
         self._last_normal_size = QSize(self.DESIGN_WIDTH, self.DESIGN_HEIGHT)
+        self._native_dpi = self.DEFAULT_DPI
+        self._native_event_error = None
+        self._resize_settle_timer = QTimer(self)
+        self._resize_settle_timer.setSingleShot(True)
+        self._resize_settle_timer.timeout.connect(self._finish_resize_interaction)
         # The dashboard is authored and tested at this logical client size.
         # Allowing a smaller window compresses fixed-height metric/model rows
         # and makes stacked pages paint outside their visible viewport.
@@ -112,91 +147,259 @@ class MainAppWindow(QMainWindow):
             width = round(height * cls.DESIGN_ASPECT)
         return QSize(width, height)
 
-    def _normal_resize_target(self, size: QSize) -> QSize:
-        previous = self._last_normal_size
-        width_delta = abs(size.width() - previous.width()) / max(1, previous.width())
-        height_delta = abs(size.height() - previous.height()) / max(1, previous.height())
-        drive = "width" if width_delta >= height_delta else "height"
-        target = self.constrained_client_size(size.width(), size.height(), drive)
-        screen = self.screen()
-        if screen:
-            available = screen.availableGeometry().size()
-            frame_width = max(0, self.frameGeometry().width() - self.width())
-            frame_height = max(0, self.frameGeometry().height() - self.height())
-            max_width = max(self.DESIGN_WIDTH, available.width() - frame_width)
-            max_height = max(self.DESIGN_HEIGHT, available.height() - frame_height)
-            if target.width() > max_width or target.height() > max_height:
-                scale = min(max_width / target.width(), max_height / target.height())
-                fitted_width = max(self.DESIGN_WIDTH, round(target.width() * scale))
-                target = self.constrained_client_size(fitted_width, self.DESIGN_HEIGHT, "width")
-        return target
+    @staticmethod
+    def logical_to_native(value: int, dpi: int = DEFAULT_DPI) -> int:
+        """Convert a Qt logical pixel value to a Windows physical pixel value."""
+        return max(1, round(int(value) * max(1, int(dpi)) / MainAppWindow.DEFAULT_DPI))
 
-    def _apply_pending_aspect_resize(self):
-        target = self._pending_aspect_size
-        self._pending_aspect_size = None
-        if target is None or self.isMaximized() or self.isFullScreen() or self.isMinimized():
+    @classmethod
+    def native_minimum_outer_size(cls, dpi: int, margins) -> tuple[int, int]:
+        """Return the minimum native tracking size for the logical client canvas."""
+        left, top, right, bottom = (max(0, int(value)) for value in margins)
+        return (
+            cls.logical_to_native(cls.DESIGN_WIDTH, dpi) + left + right,
+            cls.logical_to_native(cls.DESIGN_HEIGHT, dpi) + top + bottom,
+        )
+
+    @staticmethod
+    def constrained_outer_rect(
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        edge: int,
+        client_aspect: float,
+        min_width: int,
+        min_height: int,
+        frame_width: int = 0,
+        frame_height: int = 0,
+        start_width: int | None = None,
+        start_height: int | None = None,
+    ) -> tuple[int, int, int, int]:
+        """Constrain a Windows sizing rectangle without moving its fixed edges."""
+        requested_width = max(1, int(right) - int(left))
+        requested_height = max(1, int(bottom) - int(top))
+        min_width = max(1, int(min_width))
+        min_height = max(1, int(min_height))
+        client_aspect = max(0.01, float(client_aspect))
+        frame_width = max(0, int(frame_width))
+        frame_height = max(0, int(frame_height))
+
+        horizontal_edges = {MainAppWindow.WMSZ_LEFT, MainAppWindow.WMSZ_RIGHT}
+        vertical_edges = {MainAppWindow.WMSZ_TOP, MainAppWindow.WMSZ_BOTTOM}
+        if edge in horizontal_edges:
+            drive = "width"
+        elif edge in vertical_edges:
+            drive = "height"
+        else:
+            reference_width = max(1, int(start_width or requested_width))
+            reference_height = max(1, int(start_height or requested_height))
+            width_delta = abs(requested_width - reference_width) / reference_width
+            height_delta = abs(requested_height - reference_height) / reference_height
+            drive = "width" if width_delta >= height_delta else "height"
+
+        if drive == "width":
+            width = max(min_width, requested_width)
+            client_width = max(1, width - frame_width)
+            client_height = round(client_width / client_aspect)
+            height = client_height + frame_height
+            if height < min_height:
+                height = min_height
+                client_height = max(1, height - frame_height)
+                client_width = round(client_height * client_aspect)
+                width = max(width, client_width + frame_width)
+        else:
+            height = max(min_height, requested_height)
+            client_height = max(1, height - frame_height)
+            client_width = round(client_height * client_aspect)
+            width = client_width + frame_width
+            if width < min_width:
+                width = min_width
+                client_width = max(1, width - frame_width)
+                client_height = round(client_width / client_aspect)
+                height = max(height, client_height + frame_height)
+
+        if edge in {MainAppWindow.WMSZ_LEFT, MainAppWindow.WMSZ_TOPLEFT, MainAppWindow.WMSZ_BOTTOMLEFT}:
+            left = int(right) - width
+        else:
+            right = int(left) + width
+        if edge in {MainAppWindow.WMSZ_TOP, MainAppWindow.WMSZ_TOPLEFT, MainAppWindow.WMSZ_TOPRIGHT}:
+            top = int(bottom) - height
+        else:
+            bottom = int(top) + height
+        return int(left), int(top), int(right), int(bottom)
+
+    def _window_dpi(self, hwnd=None) -> int:
+        if os.name != "nt":
+            return self.DEFAULT_DPI
+        try:
+            hwnd = int(hwnd or self.winId())
+            get_dpi = ctypes.windll.user32.GetDpiForWindow
+            get_dpi.argtypes = (ctypes.c_void_p,)
+            get_dpi.restype = ctypes.c_uint
+            dpi = int(get_dpi(hwnd))
+            if dpi > 0:
+                return dpi
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        return self.DEFAULT_DPI
+
+    def _native_window_rect(self, hwnd=None):
+        if os.name != "nt":
+            frame = self.frameGeometry()
+            return frame.left(), frame.top(), frame.right() + 1, frame.bottom() + 1
+        try:
+            hwnd = int(hwnd or self.winId())
+            rect = _RECT()
+            get_rect = ctypes.windll.user32.GetWindowRect
+            get_rect.argtypes = (ctypes.c_void_p, ctypes.POINTER(_RECT))
+            get_rect.restype = ctypes.c_int
+            if get_rect(hwnd, ctypes.byref(rect)):
+                return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        frame = self.frameGeometry()
+        return frame.left(), frame.top(), frame.right() + 1, frame.bottom() + 1
+
+    def _native_frame_margins(self, hwnd=None):
+        """Read the real non-client margins instead of estimating title-bar size."""
+        if os.name == "nt":
+            try:
+                hwnd = int(hwnd or self.winId())
+                window = _RECT()
+                client = _RECT()
+                origin = _POINT(0, 0)
+                user32 = ctypes.windll.user32
+                get_window_rect = user32.GetWindowRect
+                get_window_rect.argtypes = (ctypes.c_void_p, ctypes.POINTER(_RECT))
+                get_window_rect.restype = ctypes.c_int
+                get_client_rect = user32.GetClientRect
+                get_client_rect.argtypes = (ctypes.c_void_p, ctypes.POINTER(_RECT))
+                get_client_rect.restype = ctypes.c_int
+                client_to_screen = user32.ClientToScreen
+                client_to_screen.argtypes = (ctypes.c_void_p, ctypes.POINTER(_POINT))
+                client_to_screen.restype = ctypes.c_int
+                if (
+                    get_window_rect(hwnd, ctypes.byref(window))
+                    and get_client_rect(hwnd, ctypes.byref(client))
+                    and client_to_screen(hwnd, ctypes.byref(origin))
+                ):
+                    client_width = max(0, int(client.right) - int(client.left))
+                    client_height = max(0, int(client.bottom) - int(client.top))
+                    return (
+                        max(0, int(origin.x) - int(window.left)),
+                        max(0, int(origin.y) - int(window.top)),
+                        max(0, int(window.right) - int(origin.x) - client_width),
+                        max(0, int(window.bottom) - int(origin.y) - client_height),
+                    )
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
+
+        dpi = self._window_dpi(hwnd)
+        frame = self.frameGeometry()
+        return (
+            max(0, self.logical_to_native(frame.width() - self.width(), dpi) // 2),
+            max(0, self.logical_to_native(frame.height() - self.height(), dpi) // 2),
+            max(0, self.logical_to_native(frame.width() - self.width(), dpi) // 2),
+            max(0, self.logical_to_native(frame.height() - self.height(), dpi) // 2),
+        )
+
+    def resize_normal_client(self, width: int, height: int, drive: str = "width"):
+        """Apply an intentional programmatic normal-window resize."""
+        if self.isMaximized() or self.isFullScreen() or self.isMinimized():
             return
-        if self.size() == target:
-            self._last_normal_size = QSize(target)
-            return
-        self._aspect_adjusting = True
+        target = self.constrained_client_size(width, height, drive)
         self.resize(target)
-        self._aspect_adjusting = False
-        self._last_normal_size = QSize(target)
+
+    def _mark_resize_interaction(self):
+        dashboard = getattr(self, "dashboard", None)
+        if dashboard is not None:
+            dashboard.set_resizing(True)
+        self._resize_settle_timer.start(160)
+
+    def _finish_resize_interaction(self):
+        dashboard = getattr(self, "dashboard", None)
+        if dashboard is not None:
+            dashboard.set_resizing(False)
 
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
-        if self._aspect_adjusting or self.isMaximized() or self.isFullScreen() or self.isMinimized():
+        if self.isMinimized():
             return
-        target = self._normal_resize_target(event.size())
-        self._last_normal_size = QSize(event.size())
-        if abs(target.width() - event.size().width()) <= 1 and abs(target.height() - event.size().height()) <= 1:
-            self._last_normal_size = QSize(target)
-            return
-        self._pending_aspect_size = target
-        QTimer.singleShot(0, self._apply_pending_aspect_resize)
+        self._mark_resize_interaction()
+        # The Windows sizing loop is the only authority for interactive
+        # aspect locking. A resize event is a layout notification only; a
+        # second Qt resize here creates a visible feedback loop on Windows.
+        if not self._windows_sizing and not self.isMaximized() and not self.isFullScreen():
+            self._last_normal_size = QSize(event.size())
+
+    def changeEvent(self, event: QEvent):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            # Maximize/restore can resize the whole dashboard without going
+            # through the normal drag path. Stop value and tab animations for
+            # that transition as well.
+            self._mark_resize_interaction()
 
     def nativeEvent(self, event_type, message):
-        """Lock interactive Windows edge/corner resizing to the design ratio."""
-        if os.name == "nt" and not self.isMaximized() and not self.isFullScreen():
+        """Apply Windows-native tracking constraints without fighting Qt layout."""
+        if os.name == "nt":
             try:
                 msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
-                if msg.message == 0x0214 and msg.lParam:  # WM_SIZING
+                if msg.message == self.WM_GETMINMAXINFO and msg.lParam:
+                    info = ctypes.cast(int(msg.lParam), ctypes.POINTER(_MINMAXINFO)).contents
+                    dpi = self._window_dpi()
+                    self._native_dpi = dpi
+                    margins = self._native_frame_margins()
+                    min_width, min_height = self.native_minimum_outer_size(dpi, margins)
+                    info.ptMinTrackSize.x = max(int(info.ptMinTrackSize.x), min_width)
+                    info.ptMinTrackSize.y = max(int(info.ptMinTrackSize.y), min_height)
+                    return True, 0
+                if msg.message == self.WM_ENTERSIZEMOVE:
+                    self._windows_sizing = True
+                    self._sizing_start_rect = self._native_window_rect()
+                    self._mark_resize_interaction()
+                    return False, 0
+                if msg.message == self.WM_EXITSIZEMOVE:
+                    self._windows_sizing = False
+                    self._sizing_start_rect = None
+                    self._last_normal_size = QSize(self.size())
+                    self._mark_resize_interaction()
+                    return False, 0
+                if msg.message == self.WM_DPICHANGED:
+                    dpi = int(msg.wParam) & 0xFFFF
+                    if dpi > 0:
+                        self._native_dpi = dpi
+                    self._mark_resize_interaction()
+                    # Qt 6 is Per-Monitor-DPI aware and applies the suggested
+                    # rectangle after this hook. Do not call resize() here.
+                    return False, 0
+                if msg.message == self.WM_SIZING and msg.lParam and not self.isMaximized() and not self.isFullScreen():
+                    self._windows_sizing = True
+                    self._mark_resize_interaction()
                     rect = ctypes.cast(msg.lParam, ctypes.POINTER(_RECT)).contents
-                    current = self.frameGeometry()
-                    frame_width = max(0, current.width() - self.width())
-                    frame_height = max(0, current.height() - self.height())
-                    min_outer_width = self.DESIGN_WIDTH + frame_width
-                    min_outer_height = self.DESIGN_HEIGHT + frame_height
-                    outer_aspect = min_outer_width / max(1, min_outer_height)
-                    width = max(min_outer_width, rect.right - rect.left)
-                    height = max(min_outer_height, rect.bottom - rect.top)
-                    horizontal_edges = (1, 2)
-                    vertical_edges = (3, 6)
-                    if msg.wParam in horizontal_edges:
-                        drive = "width"
-                    elif msg.wParam in vertical_edges:
-                        drive = "height"
-                    else:
-                        dw = abs(width - current.width()) / max(1, current.width())
-                        dh = abs(height - current.height()) / max(1, current.height())
-                        drive = "width" if dw >= dh else "height"
-                    if drive == "width":
-                        height = max(min_outer_height, round(width / outer_aspect))
-                        width = round(height * outer_aspect)
-                    else:
-                        width = max(min_outer_width, round(height * outer_aspect))
-                        height = round(width / outer_aspect)
-                    if msg.wParam in (1, 4, 7):
-                        rect.left = rect.right - width
-                    else:
-                        rect.right = rect.left + width
-                    if msg.wParam in (3, 4, 5):
-                        rect.top = rect.bottom - height
-                    else:
-                        rect.bottom = rect.top + height
-            except Exception:
-                pass
+                    dpi = self._window_dpi()
+                    self._native_dpi = dpi
+                    margins = self._native_frame_margins()
+                    min_width, min_height = self.native_minimum_outer_size(dpi, margins)
+                    left, top, right, bottom = self.constrained_outer_rect(
+                        rect.left,
+                        rect.top,
+                        rect.right,
+                        rect.bottom,
+                        int(msg.wParam),
+                        self.DESIGN_ASPECT,
+                        min_width,
+                        min_height,
+                        frame_width=margins[0] + margins[2],
+                        frame_height=margins[1] + margins[3],
+                        start_width=(self._sizing_start_rect[2] - self._sizing_start_rect[0]) if self._sizing_start_rect else None,
+                        start_height=(self._sizing_start_rect[3] - self._sizing_start_rect[1]) if self._sizing_start_rect else None,
+                    )
+                    rect.left, rect.top, rect.right, rect.bottom = left, top, right, bottom
+                    return False, 0
+            except Exception as exc:
+                self._native_event_error = f"{type(exc).__name__}: {exc}"
         return super().nativeEvent(event_type, message)
 
     def _apply_manager_theme(self):

@@ -48,6 +48,8 @@ _ROLLOUT_FILE_CACHE_LIMIT = 1024
 _MAX_ROLLOUT_LINES = 100_000
 _MAX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024
 _MAX_ROLLOUT_EVENTS = 250_000
+_MAX_ROLLOUT_EVENT_TEXT_BYTES = 16 * 1024
+_MAX_ROLLOUT_EVENT_ITEMS = 128
 _MAX_APP_SERVER_LINE_BYTES = 4 * 1024 * 1024
 _MAX_RUNTIME_THREADS = 300
 _MAX_TASK_ITEMS = 300
@@ -671,6 +673,139 @@ def _recent_rollout_files(days: int, limit: int) -> list[tuple[Path, datetime, o
     return candidates[:limit]
 
 
+_TOKEN_USAGE_FIELDS = (
+    "input_tokens", "input", "cached_input_tokens", "cached_input",
+    "uncached_input", "output_tokens", "output", "reasoning_output_tokens",
+    "reasoning_output", "reasoning", "total_tokens", "total",
+)
+_EVENT_CONTEXT_FIELDS = (
+    "id", "session_id", "parent_thread_id", "parentThreadId", "cwd", "directory",
+    "model", "effort", "reasoning_effort", "turn_id", "name",
+)
+_RATE_LIMIT_FIELDS = (
+    "rate_limits", "rateLimitResetCredits", "rate_limit_reset_credits",
+)
+
+
+def _compact_event_text(value) -> str:
+    if isinstance(value, str):
+        return value[:_MAX_ROLLOUT_EVENT_TEXT_BYTES]
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        encoded = str(value)
+    return encoded[:_MAX_ROLLOUT_EVENT_TEXT_BYTES]
+
+
+def _compact_event_value(value, depth: int = 0):
+    """Copy a small metadata value while dropping unbounded transcript data."""
+    if depth > 3:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:_MAX_ROLLOUT_EVENT_TEXT_BYTES]
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_event_value(item, depth + 1)
+            for key, item in list(value.items())[:_MAX_ROLLOUT_EVENT_ITEMS]
+        }
+    if isinstance(value, list):
+        return [
+            _compact_event_value(item, depth + 1)
+            for item in value[:_MAX_ROLLOUT_EVENT_ITEMS]
+        ]
+    return str(value)[:_MAX_ROLLOUT_EVENT_TEXT_BYTES]
+
+
+def _compact_token_usage(value):
+    if not isinstance(value, dict):
+        return None
+    return {
+        key: value[key]
+        for key in _TOKEN_USAGE_FIELDS
+        if key in value and isinstance(value[key], (bool, int, float, str))
+    }
+
+
+def _compact_context(value):
+    if not isinstance(value, dict):
+        return None
+    result = {
+        key: _compact_event_value(value[key])
+        for key in _EVENT_CONTEXT_FIELDS
+        if key in value
+    }
+    collaboration = value.get("collaboration_mode")
+    if isinstance(collaboration, dict):
+        settings = collaboration.get("settings")
+        if isinstance(settings, dict) and "reasoning_effort" in settings:
+            result["collaboration_mode"] = {
+                "settings": {"reasoning_effort": _compact_event_value(settings["reasoning_effort"])}
+            }
+    return result
+
+
+def _compact_rollout_event(event: dict) -> dict:
+    """Keep only fields consumed by the dashboard's aggregators.
+
+    Rollout lines can contain hundreds of megabytes of prompt/tool content.
+    The dashboard needs metadata and token counters, not transcript bodies.
+    """
+    compact = {
+        key: _compact_event_value(event[key])
+        for key in (
+            "timestamp", "created_at", "type", "session_id", "cwd", "directory",
+            "model", "effort", "reasoning_effort", "turn_id", "skill", "skills",
+        )
+        if key in event
+    }
+    token_count = _compact_token_usage(event.get("token_count"))
+    if token_count:
+        compact["token_count"] = token_count
+
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return compact
+
+    compact_payload = {
+        key: _compact_event_value(payload[key])
+        for key in _EVENT_CONTEXT_FIELDS
+        if key in payload
+    }
+    if "type" in payload:
+        compact_payload["type"] = _compact_event_value(payload["type"])
+    for key in ("skill", "skills"):
+        if key in payload:
+            compact_payload[key] = _compact_event_value(payload[key])
+    for key in _RATE_LIMIT_FIELDS:
+        if key in payload:
+            compact_payload[key] = _compact_event_value(payload[key])
+
+    payload_type = payload.get("type")
+    if payload_type == "token_count":
+        info = payload.get("info")
+        if isinstance(info, dict):
+            compact_info = {}
+            for key in ("total_token_usage", "last_token_usage"):
+                usage = _compact_token_usage(info.get(key))
+                if usage:
+                    compact_info[key] = usage
+            if compact_info:
+                compact_payload["info"] = compact_info
+    elif payload_type in ("function_call", "custom_tool_call"):
+        for key in ("arguments", "input"):
+            if key in payload:
+                compact_payload[key] = _compact_event_text(payload[key])
+
+    thread_settings = payload.get("thread_settings")
+    if isinstance(thread_settings, dict):
+        compact_payload["thread_settings"] = _compact_context(thread_settings)
+    if compact_payload:
+        compact["payload"] = compact_payload
+    return compact
+
+
 def _read_rollout_file_events(path: Path, stat: os.stat_result, mtime: datetime) -> list[dict]:
     cached_file = _rollout_file_cache.get(path)
     if cached_file and cached_file[0] == stat.st_mtime_ns and cached_file[1] == stat.st_size:
@@ -684,7 +819,7 @@ def _read_rollout_file_events(path: Path, stat: os.stat_result, mtime: datetime)
                     return []
                 event = parse_jsonl_line(line)
                 if event:
-                    events.append(event)
+                    events.append(_compact_rollout_event(event))
     except (OSError, UnicodeError):
         _rollout_file_cache.pop(path, None)
         return []

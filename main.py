@@ -19,12 +19,38 @@ from app.utils.update_checker import check_for_update
 from app.constants import APP_NAME, APP_VERSION
 
 
+def _enable_windows_per_monitor_dpi():
+    """Opt into the Windows-native DPI model before QApplication is created."""
+    if os.name != "nt":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        set_context = user32.SetProcessDpiAwarenessContext
+        set_context.argtypes = (ctypes.c_void_p,)
+        set_context.restype = ctypes.c_int
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is (HANDLE)-4.
+        if set_context(ctypes.c_void_p(-4)):
+            return
+    except (AttributeError, OSError, OverflowError, TypeError, ValueError):
+        pass
+    try:
+        shcore = ctypes.windll.shcore
+        set_awareness = shcore.SetProcessDpiAwareness
+        set_awareness.argtypes = (ctypes.c_int,)
+        set_awareness.restype = ctypes.c_long
+        # PROCESS_PER_MONITOR_DPI_AWARE.
+        set_awareness(2)
+    except (AttributeError, OSError, OverflowError, TypeError, ValueError):
+        pass
+
+
 class UpdateBridge(QObject):
     finished = Signal(object)
 
 
 class CodexUApplication:
     def __init__(self):
+        _enable_windows_per_monitor_dpi()
         self.app = QApplication(sys.argv)
         self.app.setApplicationName(APP_NAME)
         self.app.setApplicationVersion(APP_VERSION)

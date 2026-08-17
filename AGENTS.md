@@ -88,6 +88,10 @@ Work is tracked in GitHub Issues for `CiaoBye/codexUU`. See `docs/agents/issue-t
 This is a single-context repository; `AGENTS.md`, `README.md`, and `agents/changelog.md` are the current domain sources. See `docs/agents/domain.md`.
 
 ## 最近维护记录
+- 2026-07-31 · 0.3.22：修复大型 Codex rollout 导致后台刷新长期占用内存的问题；文件级缓存现在丢弃 transcript、`base_instructions` 和 `dynamic_tools`，仅保留 token、模型/强度、会话关系、项目、工具、Skill 和额度统计字段，工具参数只保留有界文本用于 Skill 识别。
+- 2026-07-31 · 0.3.21：按 Windows 原生窗口调整模型重构主窗口尺寸约束；`resizeEvent()` 不再反向调用 `resize()`，普通窗口由 `WM_GETMINMAXINFO` 和 `WM_SIZING` 维护 1060:720 客户区比例与最小外框，按当前 DPI 换算非客户区；启动时启用 Per-Monitor V2 DPI 感知，最大化/全屏不再干预。
+- 2026-07-31 · 0.3.20：将模型趋势筛选收口为单行紧凑分段控件，避免两行布局挤压模型列表；窗口最大化/全屏时统一停止进行中的数值和 Tab 动画，放大画布保持边界稳定；Tooltip 限制在屏幕与主窗口交集内，避免右下角溢出。
+- 2026-07-31 · 0.3.17：收敛 Windows 主窗口比例调整为单一同步约束，拖拽期间暂停几何/数值动画；修复最小窗口顶部标签的固定宽度裁切；设置页改为可调整大小的西侧分类 Tab、全页滚动和固定保存栏；新增 Dashboard 无 Qt 状态边界、深浅主题语义令牌与 UI 离屏回归测试。
 - 2026-07-31 · 0.3.16：将 CCS 中转从品牌区小字改为按当前站点名称显示的独立范围标签，新增中转 Token/趋势/成本与供应商余额口径；参考上游单额度布局放大 7D 紫色单环并保留缺失窗口的 fail-closed 行为。
 - 2026-07-31 · 0.3.15：修复 CC Switch 供应商解析或聚合异常时错误处理引用未初始化供应商变量的问题；应用退出前等待 Dashboard/设置页后台线程，避免刷新进行中重启导致 Qt 异常退出；新增后台测试启动模式，窗口可见但不抢前台焦点。
 

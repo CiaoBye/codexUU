@@ -51,6 +51,7 @@ QLabel#metricBreakdown { color: #9aa8bd; font-size: 9px; }
 QFrame#modelUsageRow { background: #151b25; border: 1px solid #283246; border-radius: 9px; }
 QFrame#modelUsageRow:hover { background: #1d2736; border-color: #425a80; }
 QFrame#modelUsageRow[selected="true"] { background: #202d45; border-color: #5e91f4; }
+QFrame#modelColumn { background: #171d28; border: 1px solid #2b3548; border-radius: 10px; }
 QLabel#modelUsageName { color: #f3f6fb; font-size: 11px; font-weight: 650; }
 QLabel#modelUsageValue { color: #f8fafc; font-family: 'Segoe UI Variable Display'; font-size: 13px; font-weight: 700; }
 QFrame#modelMetricTile { background: #131a25; border: 1px solid #283246; border-radius: 8px; }
@@ -86,11 +87,16 @@ QPushButton#quotaToggle:checked { color: #ffffff; background: #315ba0; }
 QPushButton#miniTabButton { background: transparent; color: #91a0b7; border: 0; border-radius: 6px; padding: 6px 11px; }
 QPushButton#miniTabButton:hover { background: #1f2734; color: #ffffff; }
 QPushButton#miniTabButton:checked { background: #2b3f64; color: #ffffff; font-weight: 700; }
+QPushButton#modelFilterButton { background: transparent; color: #91a0b7; border: 0; border-radius: 5px; padding: 2px 3px; font-size: 10px; }
+QPushButton#modelFilterButton:hover { background: #1f2734; color: #ffffff; }
+QPushButton#modelFilterButton:checked { background: #2b3f64; color: #ffffff; font-weight: 700; }
+QLabel#modelFilterLabel { color: #748197; font-size: 10px; }
+QFrame#modelFilterDivider { color: #2b3546; }
 QLabel#planBadge { background: #252d3b; color: #dbe4f3; border: 1px solid #354157; border-radius: 16px; font-weight: 700; }
 QLabel#statusPill { background: #1d2a3b; color: #9fc1ff; border: 1px solid #30435f; border-radius: 8px; padding: 5px 9px; font-size: 10px; }
 QFrame#rangeStrip { background: #151d29; border: 1px solid #2b374a; border-radius: 8px; }
 QLabel#rangeValue { color: #dce8ff; font-family: 'Segoe UI Variable'; font-size: 10px; font-weight: 700; }
-QFrame#quotaResetStrip { background: #121924; border: 1px solid #2d3c54; border-radius: 12px; }
+QFrame#quotaResetStrip { background: transparent; border: 0; border-top: 1px solid #2d3c54; border-radius: 0; }
 QFrame#quotaResetDivider { background: #34435b; max-width: 1px; }
 QLabel#quotaResetTime { color: #f3f6fb; font-family: 'Segoe UI Variable Display'; font-size: 16px; font-weight: 700; }
 QLabel#positiveBadge { background: #16382d; color: #55d89a; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
@@ -181,6 +187,7 @@ QLabel#metricBreakdown { color: #667085; font-size: 9px; }
 QFrame#modelUsageRow { background: #f8faff; border: 1px solid #dfe6f2; border-radius: 9px; }
 QFrame#modelUsageRow:hover { background: #f1f6ff; border-color: #b7ccec; }
 QFrame#modelUsageRow[selected="true"] { background: #eaf2ff; border-color: #6d9dff; }
+QFrame#modelColumn { background: #ffffff; border: 1px solid #dfe6f2; border-radius: 10px; }
 QLabel#modelUsageName { color: #26344b; font-size: 11px; font-weight: 650; }
 QLabel#modelUsageValue { color: #172033; font-family: 'Segoe UI Variable Display'; font-size: 13px; font-weight: 700; }
 QFrame#modelMetricTile { background: #f8faff; border: 1px solid #dfe6f2; border-radius: 8px; }
@@ -216,11 +223,16 @@ QPushButton#quotaToggle:checked { color: #1d54b1; background: #dbe8ff; }
 QPushButton#miniTabButton { background: transparent; color: #667085; border: 0; border-radius: 6px; padding: 6px 11px; }
 QPushButton#miniTabButton:hover { background: #edf2f9; color: #26344b; }
 QPushButton#miniTabButton:checked { background: #dbe8ff; color: #1d54b1; font-weight: 700; }
+QPushButton#modelFilterButton { background: transparent; color: #667085; border: 0; border-radius: 5px; padding: 2px 3px; font-size: 10px; }
+QPushButton#modelFilterButton:hover { background: #edf2f9; color: #26344b; }
+QPushButton#modelFilterButton:checked { background: #dbe8ff; color: #1d54b1; font-weight: 700; }
+QLabel#modelFilterLabel { color: #748197; font-size: 10px; }
+QFrame#modelFilterDivider { color: #d2dceb; }
 QLabel#planBadge { background: #ffffff; color: #526071; border: 1px solid #d7dfeb; border-radius: 16px; font-weight: 700; }
 QLabel#statusPill { background: #e8f1ff; color: #285fbd; border: 1px solid #c8daf8; border-radius: 8px; padding: 5px 9px; font-size: 10px; }
 QFrame#rangeStrip { background: #f8faff; border: 1px solid #d8e1ef; border-radius: 8px; }
 QLabel#rangeValue { color: #172744; font-family: 'Segoe UI Variable'; font-size: 10px; font-weight: 700; }
-QFrame#quotaResetStrip { background: #f8faff; border: 1px solid #d8e1ef; border-radius: 12px; }
+QFrame#quotaResetStrip { background: transparent; border: 0; border-top: 1px solid #d8e1ef; border-radius: 0; }
 QFrame#quotaResetDivider { background: #d2dceb; max-width: 1px; }
 QLabel#quotaResetTime { color: #172744; font-family: 'Segoe UI Variable Display'; font-size: 16px; font-weight: 700; }
 QLabel#positiveBadge { background: #e3f7ee; color: #18845c; border: 0; border-radius: 7px; padding: 3px 6px; font-family: 'Segoe UI Variable'; font-size: 9px; }
@@ -266,6 +278,51 @@ QMenu::item:selected { background: #dbe8ff; }
 """
 
 
+DARK_TOKENS = {
+    "dialog": "#101722",
+    "surface": "#171f2d",
+    "surface_alt": "#121a26",
+    "border": "#2c3b52",
+    "text": "#f3f6fb",
+    "muted": "#9cabc0",
+    "accent": "#5e91f4",
+}
+
+LIGHT_TOKENS = {
+    "dialog": "#f4f7fc",
+    "surface": "#ffffff",
+    "surface_alt": "#f8fafc",
+    "border": "#dce4ef",
+    "text": "#172033",
+    "muted": "#6e7c91",
+    "accent": "#326ad6",
+}
+
+
+def _settings_stylesheet(tokens):
+    """Keep settings hierarchy on semantic tokens instead of component colors."""
+    return f"""
+QDialog#settingsDialog {{ background: {tokens['dialog']}; color: {tokens['text']}; }}
+QDialog#settingsDialog QLabel#settingsHeading {{ color: {tokens['text']}; font-size: 22px; font-weight: 700; }}
+QDialog#settingsDialog QLabel#settingsEyebrow {{ color: {tokens['muted']}; font-size: 11px; font-weight: 600; }}
+QDialog#settingsDialog QTabWidget::pane {{ border: 0; background: transparent; }}
+QDialog#settingsDialog QTabBar#settingsTabBar {{ background: transparent; }}
+QDialog#settingsDialog QTabBar#settingsTabBar::tab {{ color: {tokens['muted']}; min-width: 116px; min-height: 36px; padding: 7px 14px; border: 0; border-radius: 7px; text-align: center; }}
+QDialog#settingsDialog QTabBar#settingsTabBar::tab:hover {{ color: {tokens['text']}; background: {tokens['surface_alt']}; }}
+QDialog#settingsDialog QTabBar#settingsTabBar::tab:selected {{ color: {tokens['text']}; background: {tokens['surface']}; border: 1px solid {tokens['border']}; font-weight: 700; }}
+QDialog#settingsDialog QGroupBox#surfaceCard {{ background: {tokens['surface']}; border: 1px solid {tokens['border']}; border-radius: 10px; margin-top: 14px; padding-top: 8px; }}
+QDialog#settingsDialog QGroupBox#surfaceCard::title {{ subcontrol-origin: margin; left: 14px; padding: 0 7px; color: {tokens['text']}; background: {tokens['surface']}; font-size: 13px; font-weight: 700; }}
+QDialog#settingsDialog QLabel#caption, QDialog#settingsDialog QLabel#settingsHint {{ color: {tokens['muted']}; font-size: 11px; line-height: 1.35; }}
+QDialog#settingsDialog QLabel#diagnosticText {{ color: {tokens['text']}; background: {tokens['surface_alt']}; border: 1px solid {tokens['border']}; border-radius: 8px; padding: 10px; line-height: 1.4; }}
+QDialog#settingsDialog QCheckBox {{ color: {tokens['text']}; min-height: 30px; padding: 2px 0; }}
+QDialog#settingsDialog QComboBox, QDialog#settingsDialog QLineEdit, QDialog#settingsDialog QDoubleSpinBox, QDialog#settingsDialog QPushButton#shortcutRecorder {{ background: {tokens['surface_alt']}; color: {tokens['text']}; border: 1px solid {tokens['border']}; border-radius: 7px; min-height: 30px; padding: 5px 10px; }}
+QDialog#settingsDialog QComboBox:hover, QDialog#settingsDialog QLineEdit:hover, QDialog#settingsDialog QDoubleSpinBox:hover, QDialog#settingsDialog QPushButton#shortcutRecorder:hover {{ border-color: {tokens['accent']}; }}
+QDialog#settingsDialog QComboBox:focus, QDialog#settingsDialog QLineEdit:focus, QDialog#settingsDialog QDoubleSpinBox:focus, QDialog#settingsDialog QPushButton#shortcutRecorder:focus {{ border-color: {tokens['accent']}; }}
+QDialog#settingsDialog QScrollArea {{ background: transparent; }}
+QDialog#settingsDialog QFrame#settingsFooter {{ border-top: 1px solid {tokens['border']}; }}
+"""
+
+
 class ThemeManager:
     def __init__(self):
         self.theme = "dark"
@@ -280,7 +337,14 @@ class ThemeManager:
             self._notify_listeners()
 
     def get_stylesheet(self) -> str:
-        return DARK_THEME if self.get_effective_theme() == "dark" else LIGHT_THEME
+        effective = self.get_effective_theme()
+        base = DARK_THEME if effective == "dark" else LIGHT_THEME
+        tokens = DARK_TOKENS if effective == "dark" else LIGHT_TOKENS
+        return base + _settings_stylesheet(tokens)
+
+    def get_tokens(self) -> dict[str, str]:
+        effective = self.get_effective_theme()
+        return dict(DARK_TOKENS if effective == "dark" else LIGHT_TOKENS)
 
     def get_effective_theme(self) -> str:
         return self._detect_system_theme() if self.theme == "auto" else self.theme

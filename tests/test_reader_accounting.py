@@ -122,6 +122,31 @@ def test_rollout_reader_skips_corrupt_lines_and_fails_closed_on_overflow(monkeyp
     assert path not in codex_reader._rollout_file_cache
 
 
+def test_rollout_reader_drops_transcript_fields_and_bounds_tool_arguments(tmp_path):
+    path = tmp_path / "rollout-compact.jsonl"
+    path.write_text(json.dumps({
+        "timestamp": "2026-07-31T00:00:00+00:00",
+        "type": "event_msg",
+        "content": "transcript" * 100_000,
+        "payload": {
+            "type": "function_call",
+            "name": "shell_command",
+            "cwd": str(tmp_path),
+            "arguments": "Get-Content C:\\Users\\A\\.codex\\skills\\imagegen\\SKILL.md " + "x" * 100_000,
+            "base_instructions": "discard" * 100_000,
+        },
+    }) + "\n", encoding="utf-8")
+
+    events = codex_reader._read_rollout_file_events(path, path.stat(), datetime.now(timezone.utc))
+    event = events[0]
+    assert "content" not in event
+    assert event["payload"]["type"] == "function_call"
+    assert event["payload"]["name"] == "shell_command"
+    assert event["payload"]["cwd"] == str(tmp_path)
+    assert len(event["payload"]["arguments"]) <= codex_reader._MAX_ROLLOUT_EVENT_TEXT_BYTES
+    assert "base_instructions" not in event["payload"]
+
+
 def test_token_reader_rejects_negative_or_unreasonably_large_values():
     event = {
         "type": "event_msg",

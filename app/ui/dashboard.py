@@ -7,9 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QEasingCurve,
-    QPoint,
     QPointF,
-    QParallelAnimationGroup,
     QPropertyAnimation,
     QRect,
     QRectF,
@@ -22,7 +20,7 @@ from PySide6.QtCore import (
     QTimer,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -55,7 +53,6 @@ from app.data.ccswitch_reader import (
 from app.data.models import (
     DailyToken,
     FULL_MONTHLY_VALUE,
-    MultiRuntimeUsageSnapshot,
     QUOTA_STATUS_AVAILABLE,
     QUOTA_STATUS_EXHAUSTED,
     RuntimeScope,
@@ -68,6 +65,7 @@ from app.ui.project_ranking import ProjectRankingWidget
 from app.ui.skill_usage import SkillUsageWidget
 from app.ui.task_board import TaskBoardWidget
 from app.ui.usage_chart import UsageTrendWidget
+from app.ui.dashboard_state import DashboardViewModel
 from app.utils.statistics_timezone import get_statistics_timezone
 
 
@@ -328,6 +326,7 @@ class MetricCard(Surface):
         self._display_total = 0
         self._value_animation = None
         self.reduce_motion = False
+        self._resizing = False
 
     def update_value(self, tokens, estimated_value: float, total_override: int | None = None):
         self._tokens = tokens
@@ -353,10 +352,29 @@ class MetricCard(Surface):
 
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
+        if self.reduce_motion:
+            self._stop_value_animation()
+
+    def set_resizing(self, enabled):
+        self._resizing = bool(enabled)
+        if self._resizing:
+            self._stop_value_animation()
+
+    def _stop_value_animation(self):
+        animation = self._value_animation
+        self._value_animation = None
+        if animation is not None:
+            animation.stop()
+            animation.deleteLater()
+
+    def _set_animated_total(self, value):
+        self._display_total = int(value)
+        self.value.setText(format_tokens(self._display_total))
 
     def _animate_total(self, target):
         target = int(target or 0)
-        if self.reduce_motion or self._display_total == 0:
+        self._stop_value_animation()
+        if self.reduce_motion or self._resizing or self._display_total == 0:
             self._display_total = target
             self.value.setText(format_tokens(target))
             return
@@ -365,10 +383,15 @@ class MetricCard(Surface):
         animation.setStartValue(self._display_total)
         animation.setEndValue(target)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        animation.valueChanged.connect(lambda value: self.value.setText(format_tokens(int(value))))
-        animation.finished.connect(lambda: setattr(self, "_display_total", target))
+        animation.valueChanged.connect(self._set_animated_total)
+        animation.finished.connect(lambda: self._finish_value_animation(target))
         self._value_animation = animation
         animation.start()
+
+    def _finish_value_animation(self, target):
+        self._display_total = int(target)
+        self.value.setText(format_tokens(self._display_total))
+        self._value_animation = None
 
     def _update_detail(self):
         tokens = self._tokens
@@ -504,8 +527,9 @@ class QuotaDial(QWidget):
             inset = index * 20 if len(available) > 1 else 8
             rect = bounds.adjusted(inset, inset, -inset, -inset)
             width = 15 if len(available) == 1 else 11
-            track_color = QColor(color)
-            track_color.setAlpha(48 if len(available) == 1 else 38)
+            # The track is structural; only the measured progress carries the
+            # 5H/7D semantic color. This keeps a zero remaining quota legible.
+            track_color = QColor(139, 153, 177, 78 if len(available) == 1 else 58)
             painter.setPen(QPen(track_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawArc(rect, 0, 360 * 16)
             value = quota.used_pct if self.display_mode == "used" else quota.remaining_pct
@@ -516,8 +540,6 @@ class QuotaDial(QWidget):
             painter.drawArc(rect, 270 * 16, span)
             if len(available) == 1:
                 self.single_ring_rect = QRectF(rect)
-                if value <= 0:
-                    painter.drawEllipse(QRectF(rect.center().x() - width / 2, rect.bottom() - width / 2, width, width))
 
         text_color = QColor("#172033") if self.palette().window().color().lightness() > 128 else QColor("#f8fafc")
         painter.setPen(text_color)
@@ -580,7 +602,7 @@ class QuotaDial(QWidget):
                 Qt.AlignmentFlag.AlignCenter,
                 f"{value:.0f}%",
             )
-        painter.setPen(QPen(QColor(149, 166, 193, 100), 1))
+        painter.setPen(QPen(QColor(149, 166, 193, 120), 1))
         painter.drawLine(QPointF(center.x() - 55, center.y() + 3), QPointF(center.x() + 55, center.y() + 3))
 
     def mouseReleaseEvent(self, event):
@@ -764,6 +786,7 @@ class MilestoneProgress(QWidget):
         self.value = 0.0
         self.reduce_motion = False
         self._animation = None
+        self._resizing = False
         self.setMinimumHeight(34)
 
     @staticmethod
@@ -779,7 +802,8 @@ class MilestoneProgress(QWidget):
 
     def set_value(self, value: float):
         target = max(0.0, value)
-        if self.reduce_motion or self.value == 0:
+        self._stop_animation()
+        if self.reduce_motion or self._resizing or self.value == 0:
             self.value = target
             self.update()
             return
@@ -792,12 +816,27 @@ class MilestoneProgress(QWidget):
         self._animation = animation
         animation.start()
 
+    def _stop_animation(self):
+        animation = self._animation
+        self._animation = None
+        if animation is not None:
+            animation.stop()
+            animation.deleteLater()
+
     def _set_animated_value(self, value):
         self.value = float(value)
         self.update()
 
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
+        if self.reduce_motion:
+            self._stop_animation()
+        self.update()
+
+    def set_resizing(self, enabled):
+        self._resizing = bool(enabled)
+        if self._resizing:
+            self._stop_animation()
         self.update()
 
     def paintEvent(self, event):
@@ -906,6 +945,9 @@ class ValueCard(Surface):
 
     def set_reduce_motion(self, enabled):
         self.bar.set_reduce_motion(enabled)
+
+    def set_resizing(self, enabled):
+        self.bar.set_resizing(enabled)
 
     def _update_hint(self):
         if self.provider_mode:
@@ -1040,9 +1082,10 @@ class ProviderScopeButton(QPushButton):
         self.language = "zh"
         self.setObjectName("topToggleButton")
         self.setCheckable(True)
-        self.setMinimumWidth(58)
-        self.setMaximumWidth(132)
+        self.setMinimumWidth(72)
+        self.setMaximumWidth(160)
         self.setFixedHeight(28)
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.set_snapshot(None)
 
     def set_language(self, language):
@@ -1057,7 +1100,13 @@ class ProviderScopeButton(QPushButton):
         snapshot = self.snapshot
         english = self.language == "en"
         name = str(getattr(snapshot, "provider_name", "") or "").strip()
-        self.setText(name or ("Relay" if english else "\u4e2d\u8f6c"))
+        label = name or ("Relay" if english else "\u4e2d\u8f6c")
+        label = QFontMetrics(self.font()).elidedText(
+            label,
+            Qt.TextElideMode.ElideRight,
+            self.maximumWidth() - 18,
+        )
+        self.setText(label)
         self.setEnabled(bool(name))
         self.setToolTip(_provider_scope_tooltip(snapshot, english))
 
@@ -1066,48 +1115,58 @@ class AnimatedStackedWidget(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._animation = None
+        self._animated_widget = None
         self.reduce_motion = False
+        self._resizing = False
 
     def set_reduce_motion(self, enabled):
         self.reduce_motion = bool(enabled)
+        if self.reduce_motion:
+            self._stop_animation()
+
+    def set_resizing(self, enabled):
+        self._resizing = bool(enabled)
+        if self._resizing:
+            self._stop_animation()
+
+    def _stop_animation(self):
+        animation = self._animation
+        self._animation = None
+        if animation is not None:
+            animation.stop()
+            animation.deleteLater()
+        if self._animated_widget is not None:
+            self._animated_widget.setGraphicsEffect(None)
+            self._animated_widget = None
 
     def animate_to(self, index: int):
         if index == self.currentIndex() or not 0 <= index < self.count():
             return
-        if self.reduce_motion:
+        self._stop_animation()
+        if self.reduce_motion or self._resizing:
             self.setCurrentIndex(index)
             return
-        direction = 1 if index > self.currentIndex() else -1
         widget = self.widget(index)
         self.setCurrentIndex(index)
-        base = widget.pos()
         effect = QGraphicsOpacityEffect(widget)
         widget.setGraphicsEffect(effect)
+        self._animated_widget = widget
         effect.setOpacity(0.0)
-        widget.move(base + QPoint(direction * 10, 0))
 
-        fade = QPropertyAnimation(effect, b"opacity", widget)
+        fade = QPropertyAnimation(effect, b"opacity", self)
         fade.setDuration(160)
         fade.setStartValue(0.0)
         fade.setEndValue(1.0)
         fade.setEasingCurve(QEasingCurve.Type.OutCubic)
-        slide = QPropertyAnimation(widget, b"pos", widget)
-        slide.setDuration(160)
-        slide.setStartValue(base + QPoint(direction * 10, 0))
-        slide.setEndValue(base)
-        slide.setEasingCurve(QEasingCurve.Type.OutCubic)
-        group = QParallelAnimationGroup(widget)
-        group.addAnimation(fade)
-        group.addAnimation(slide)
 
         def finish():
-            widget.move(base)
             widget.setGraphicsEffect(None)
+            self._animated_widget = None
             self._animation = None
 
-        group.finished.connect(finish)
-        self._animation = group
-        group.start()
+        fade.finished.connect(finish)
+        self._animation = fade
+        fade.start()
 
 
 class SlidingTabBar(QWidget):
@@ -1115,13 +1174,16 @@ class SlidingTabBar(QWidget):
 
     def __init__(self, labels, parent=None):
         super().__init__(parent)
-        self.setFixedSize(488, 38)
+        self.setMinimumSize(360, 38)
+        self.setMaximumHeight(38)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.current_index = 0
         self.indicator = QFrame(self)
         self.indicator.setObjectName("tabIndicator")
         self.buttons = []
         self._animation = None
         self.reduce_motion = False
+        self._resizing = False
         for index, label in enumerate(labels):
             button = QPushButton(label, self)
             button.setObjectName("animatedTabButton")
@@ -1132,6 +1194,7 @@ class SlidingTabBar(QWidget):
         self.indicator.lower()
 
     def resizeEvent(self, event):
+        self._stop_animation()
         width = self.width() // max(1, len(self.buttons))
         for index, button in enumerate(self.buttons):
             button.setGeometry(index * width, 0, width, self.height())
@@ -1150,7 +1213,8 @@ class SlidingTabBar(QWidget):
         self.current_index = index
         for button_index, button in enumerate(self.buttons):
             button.setChecked(button_index == index)
-        if changed and self.isVisible() and not self.reduce_motion:
+        self._stop_animation()
+        if changed and self.isVisible() and not self.reduce_motion and not self._resizing:
             animation = QPropertyAnimation(self.indicator, b"geometry", self)
             animation.setDuration(180)
             animation.setStartValue(self.indicator.geometry())
@@ -1164,6 +1228,24 @@ class SlidingTabBar(QWidget):
         if emit and changed:
             self.changed.emit(index)
 
+    def _stop_animation(self):
+        animation = self._animation
+        self._animation = None
+        if animation is not None:
+            animation.stop()
+            animation.deleteLater()
+
+    def set_reduce_motion(self, enabled):
+        self.reduce_motion = bool(enabled)
+        if self.reduce_motion:
+            self._stop_animation()
+
+    def set_resizing(self, enabled):
+        self._resizing = bool(enabled)
+        if self._resizing:
+            self._stop_animation()
+            self.indicator.setGeometry(self._indicator_rect(self.current_index))
+
 
 class DashboardWidget(QWidget):
     open_settings = Signal()
@@ -1174,12 +1256,14 @@ class DashboardWidget(QWidget):
         self.settings_manager = settings_manager
         self.translation_manager = translation_manager
         self.theme_manager = theme_manager
-        self.current_scope = RuntimeScope.CODEX
-        self.current_model_scope = settings_manager.get_model_scope() if settings_manager else "all"
-        self.data = MultiRuntimeUsageSnapshot()
+        self.view_model = DashboardViewModel(
+            runtime_scope=RuntimeScope.CODEX,
+            model_scope=settings_manager.get_model_scope() if settings_manager else "all",
+        )
         self._refresh_thread = None
         self._refresh_worker = None
         self._silent_refresh = False
+        self._resizing = False
 
         self.setObjectName("dashboard")
         root = QVBoxLayout(self)
@@ -1195,6 +1279,30 @@ class DashboardWidget(QWidget):
             self.settings_manager.add_listener(self._on_settings_changed)
         self.update_text()
         self._on_settings_changed()
+
+    @property
+    def data(self):
+        return self.view_model.data
+
+    @data.setter
+    def data(self, value):
+        self.view_model.data = value
+
+    @property
+    def current_scope(self):
+        return self.view_model.runtime_scope
+
+    @current_scope.setter
+    def current_scope(self, value):
+        self.view_model.runtime_scope = value
+
+    @property
+    def current_model_scope(self):
+        return self.view_model.model_scope
+
+    @current_model_scope.setter
+    def current_model_scope(self, value):
+        self.view_model.model_scope = value
 
     def _build_header(self):
         header = QHBoxLayout()
@@ -1231,7 +1339,8 @@ class DashboardWidget(QWidget):
             button = QPushButton(text)
             button.setObjectName("topToggleButton")
             button.setCheckable(True)
-            button.setFixedSize(width, 28)
+            button.setMinimumSize(width + 12, 28)
+            button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, scope=value: self._set_model_scope(scope))
             self.model_scope_group.addButton(button)
             self.model_scope_buttons[value] = button
@@ -1280,7 +1389,8 @@ class DashboardWidget(QWidget):
             button = QPushButton(text)
             button.setObjectName("topToggleButton")
             button.setCheckable(True)
-            button.setFixedSize(36, 28)
+            button.setMinimumSize(42, 28)
+            button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, lang=value: self._set_language(lang))
             self.language_group.addButton(button)
             self.language_buttons[value] = button
@@ -1363,8 +1473,7 @@ class DashboardWidget(QWidget):
             button.setIconSize(QSize(15, 15))
         self.tab_bar.changed.connect(self._show_tab)
         self.tab_buttons = self.tab_bar.buttons
-        tab_row.addWidget(self.tab_bar)
-        tab_row.addStretch()
+        tab_row.addWidget(self.tab_bar, 1)
         self.tab_summary = QLabel("0 事项")
         self.tab_summary.setObjectName("metricLabel")
         tab_row.addWidget(self.tab_summary)
@@ -1410,8 +1519,7 @@ class DashboardWidget(QWidget):
             self.settings_manager.save()
 
     def _provider_snapshot(self):
-        snapshot = self.data.ccswitch
-        return snapshot if snapshot is not None and snapshot.provider_name else None
+        return self.view_model.provider_snapshot()
 
     def _sync_provider_scope_button(self):
         snapshot = self.data.ccswitch
@@ -1426,12 +1534,12 @@ class DashboardWidget(QWidget):
         if scope == "provider" and self._provider_snapshot() is None:
             self.model_scope_buttons["all"].setChecked(True)
             return
+        self.current_model_scope = scope
+        self.model_scope_buttons[scope].setChecked(True)
         if self.settings_manager:
             self.settings_manager.set_model_scope(scope)
             self.settings_manager.save()
-        else:
-            self.current_model_scope = scope
-            self._update()
+        self._update()
 
     def _on_settings_changed(self):
         if not self.settings_manager:
@@ -1449,11 +1557,20 @@ class DashboardWidget(QWidget):
         self.quota_card.set_display_mode(self.settings_manager.get_quota_display())
         reduce_motion = self.settings_manager.get_reduce_motion()
         self.stack.set_reduce_motion(reduce_motion)
-        self.tab_bar.reduce_motion = reduce_motion
+        self.tab_bar.set_reduce_motion(reduce_motion)
         self.trend_tab.set_reduce_motion(reduce_motion)
         for card in (self.today_card, self.week_card, self.month_card, self.cumulative_card):
             card.set_reduce_motion(reduce_motion)
         self.value_card.set_reduce_motion(reduce_motion)
+
+    def set_resizing(self, enabled):
+        self._resizing = bool(enabled)
+        self.stack.set_resizing(enabled)
+        self.tab_bar.set_resizing(enabled)
+        self.trend_tab.set_resizing(enabled)
+        for card in (self.today_card, self.week_card, self.month_card, self.cumulative_card):
+            card.set_resizing(enabled)
+        self.value_card.set_resizing(enabled)
 
     def _tr(self, key, fallback):
         return self.translation_manager.tr(key) if self.translation_manager else fallback
@@ -1532,14 +1649,7 @@ class DashboardWidget(QWidget):
 
     def _on_refresh_loaded(self, result):
         codex, tasks, daily, projects, tools, skills, models, ccswitch = result
-        self.data.codex = codex
-        self.data.ccswitch = ccswitch
-        self.data.tasks = tasks
-        self.data.daily_tokens = sorted(daily, key=lambda item: item.date, reverse=True)
-        self.data.projects = sorted(projects, key=lambda item: item.token_total, reverse=True)
-        self.data.tools = tools
-        self.data.skills = skills
-        self.data.models = models
+        self.view_model.set_records(codex, tasks, daily, projects, tools, skills, models, ccswitch)
         if not self._silent_refresh:
             self.refresh_button.setEnabled(True)
             self._restore_refresh_button()
@@ -1566,14 +1676,7 @@ class DashboardWidget(QWidget):
         return bool(self.translation_manager and self.translation_manager.get_language() == "en")
 
     def _visible_data(self):
-        scope = self.current_scope
-        return (
-            [item for item in self.data.tasks if item.runtime == scope],
-            [item for item in self.data.daily_tokens if item.runtime == scope],
-            [item for item in self.data.projects if item.runtime == scope],
-            [item for item in self.data.tools if item.runtime == scope],
-            [item for item in self.data.skills if item.runtime == scope],
-        )
+        return self.view_model.visible_data()
 
     def _update_tab_summary(self):
         tasks, daily, projects, tools, skills = self._visible_data()
@@ -1602,7 +1705,7 @@ class DashboardWidget(QWidget):
             )
         tasks, daily, projects, tools, skills = self._visible_data()
         self.task_tab.update_tasks(tasks)
-        models = [item for item in self.data.models if item.runtime == self.current_scope]
+        models = self.view_model.visible_models()
         model_scope = self.current_model_scope
         if provider is not None:
             periods = provider.tokens

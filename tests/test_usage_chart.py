@@ -1,6 +1,7 @@
 from calendar import monthrange
 from datetime import datetime, timedelta
 
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtWidgets import QApplication
 
 from app.data.models import DailyToken, ModelUsage, RuntimeScope, TokenBreakdown
@@ -17,6 +18,53 @@ from app.ui.usage_chart import (
     period_range_text,
 )
 from app.utils.statistics_timezone import configure_statistics_timezone, get_statistics_timezone
+
+
+def test_usage_plot_tooltip_position_flips_and_clamps_to_work_area():
+    app = QApplication.instance() or QApplication([])
+    available = QRect(0, 0, 800, 600)
+    bottom_right = UsagePlot._tooltip_position(QPoint(790, 590), "2026/07/31\n1,234 token", available)
+    top_left = UsagePlot._tooltip_position(QPoint(4, 4), "2026/07/31\n1,234 token", available)
+
+    assert bottom_right.x() < 790
+    assert bottom_right.y() < 590
+    assert top_left.x() >= available.left() + 8
+    assert top_left.y() >= available.top() + 8
+    assert bottom_right.x() >= available.left() + 8
+    assert bottom_right.y() >= available.top() + 8
+
+
+def test_model_filters_share_one_compact_row_without_collision():
+    app = QApplication.instance() or QApplication([])
+    widget = UsageTrendWidget()
+    widget.resize(1060, 520)
+    widget.show()
+    widget._set_view(1)
+    app.processEvents()
+
+    controls = [
+        widget.models_title,
+        widget.model_window_label,
+        *widget.model_window_buttons.values(),
+        widget.model_metric_label,
+        *widget.model_metric_buttons.values(),
+    ]
+    positions = [
+        (control.mapTo(widget, QPoint(0, 0)), control.size())
+        for control in controls
+    ]
+    assert len({position.y() for position, _size in positions}) == 1
+    ordered = sorted(
+        (position.x(), position.x() + size.width())
+        for position, size in positions
+    )
+    assert all(next_left >= current_right for (_left, current_right), (next_left, _right) in zip(ordered, ordered[1:]))
+    assert len({
+        widget.model_window_buttons[days].mapTo(widget, QPoint(0, 0)).y()
+        for days in MODEL_ACTIVITY_WINDOWS
+    }) == 1
+    widget.deleteLater()
+    app.processEvents()
 
 
 def test_daily_points_fill_missing_calendar_days():

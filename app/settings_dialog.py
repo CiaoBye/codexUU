@@ -7,7 +7,7 @@ from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QListView, QMessageBox, QPushButton, QScrollArea, QStyledItemDelegate, QTabWidget, QDoubleSpinBox,
-    QVBoxLayout, QWidget, QApplication,
+    QVBoxLayout, QWidget, QApplication, QSizePolicy,
 )
 
 from app.constants import APP_REPO, APP_VERSION
@@ -154,8 +154,9 @@ class SettingsDialog(QDialog):
 
         self.setObjectName("settingsDialog")
         self.setWindowTitle("CodexUU 设置")
-        self.setMinimumSize(660, 600)
-        self.resize(700, 680)
+        self.setMinimumSize(740, 600)
+        self.resize(800, 680)
+        self.setSizeGripEnabled(True)
         self.settings_manager.add_listener(self._on_settings_changed)
         self.translation_manager.add_listener(self._retranslate_ui)
         self.theme_manager.add_listener(self._on_theme_changed)
@@ -165,41 +166,62 @@ class SettingsDialog(QDialog):
         root.setSpacing(14)
         heading = QHBoxLayout()
         self.heading_title = QLabel("设置")
-        self.heading_title.setObjectName("pageTitle")
+        self.heading_title.setObjectName("settingsHeading")
         heading.addWidget(self.heading_title)
         heading.addStretch()
-        heading.addWidget(QLabel("CodexUU", objectName="caption"))
+        heading_brand = QLabel("CodexUU", objectName="settingsEyebrow")
+        heading.addWidget(heading_brand)
         root.addLayout(heading)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("settingsTabs")
+        # Native west tabs rotate Chinese labels and collapse them into a
+        # vertical strip on Windows.  Keep the category bar readable.
+        self.tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self.tabs.setDocumentMode(True)
+        self.tabs.setUsesScrollButtons(False)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideNone)
         self.tabs.addTab(self._general_tab(), "通用")
         self.tabs.addTab(self._display_tab(), "外观")
         self.tabs.addTab(self._system_tab(), "系统")
+        self.tabs.tabBar().setObjectName("settingsTabBar")
         for index, icon in enumerate(("settings-general.svg", "settings-display.svg", "settings-system.svg")):
             self.tabs.setTabIcon(index, QIcon(str(ICONS_DIR / icon)))
         root.addWidget(self.tabs, 1)
 
-        footer = QHBoxLayout()
+        footer_frame = QFrame()
+        footer_frame.setObjectName("settingsFooter")
+        footer_frame.setMinimumHeight(52)
+        footer = QHBoxLayout(footer_frame)
+        footer.setContentsMargins(0, 10, 0, 0)
         footer.addStretch()
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setObjectName("iconButton")
         self.cancel_btn.setMinimumWidth(84)
+        self.cancel_btn.setMinimumHeight(36)
         self.cancel_btn.clicked.connect(self.reject)
         footer.addWidget(self.cancel_btn)
         self.save_btn = QPushButton("保存设置")
         self.save_btn.setObjectName("primaryButton")
         self.save_btn.setMinimumWidth(104)
+        self.save_btn.setMinimumHeight(36)
         self.save_btn.clicked.connect(self._apply_settings)
         footer.addWidget(self.save_btn)
-        root.addLayout(footer)
+        root.addWidget(footer_frame)
         self._retranslate_ui()
+        self.save_btn.setEnabled(False)
 
     def _card(self, title: str):
         card = QGroupBox(title)
         card.setObjectName("surfaceCard")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         layout = QFormLayout(card)
         layout.setContentsMargins(18, 20, 18, 16)
-        layout.setVerticalSpacing(14)
+        layout.setHorizontalSpacing(22)
+        layout.setVerticalSpacing(12)
+        layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         return card, layout
 
     def _general_tab(self):
@@ -210,7 +232,9 @@ class SettingsDialog(QDialog):
         scroll.setObjectName("settingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         scroll.setWidget(content)
         outer.addWidget(scroll)
         layout = QVBoxLayout(content)
@@ -297,7 +321,18 @@ class SettingsDialog(QDialog):
 
     def _display_tab(self):
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 14, 8, 8)
         self.appearance_card, form = self._card("外观")
         card = self.appearance_card
@@ -316,9 +351,10 @@ class SettingsDialog(QDialog):
         self.reduce_motion_cb = _check("减少动态效果", self.settings_manager.get_reduce_motion())
         self.reduce_motion_cb.stateChanged.connect(self._save_display_preferences)
         form.addRow(self.reduce_motion_cb)
-        self.display_note = QLabel("界面会根据主题自动调整背景、卡片、文字和控件对比度。")
-        self.display_note.setObjectName("caption")
+        self.display_note = QLabel("主题会同步调整背景、卡片、文字和控件对比度。")
+        self.display_note.setObjectName("settingsHint")
         self.display_note.setWordWrap(True)
+        self.display_note.setMinimumHeight(30)
         form.addRow("说明", self.display_note)
         layout.addWidget(card)
         layout.addStretch()
@@ -331,7 +367,9 @@ class SettingsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         scroll.setWidget(content)
         outer.addWidget(scroll)
         layout = QVBoxLayout(content)
@@ -386,6 +424,7 @@ class SettingsDialog(QDialog):
         self.diagnostic_label = QLabel()
         self.diagnostic_label.setObjectName("diagnosticText")
         self.diagnostic_label.setWordWrap(True)
+        self.diagnostic_label.setMinimumHeight(54)
         diagnostic_form.addRow(self.diagnostic_label)
         self.data_scope_label = QLabel("所有用量、趋势和项目数字均来自本机记录；不会上传线程正文或项目路径。")
         self.data_scope_label.setObjectName("caption")
@@ -406,7 +445,7 @@ class SettingsDialog(QDialog):
         self.quota_alert_combo.currentIndexChanged.connect(self._save_quota_alert)
         alert_form.addRow("提醒阈值", self.quota_alert_combo)
         alert_note = QLabel("额度低于阈值时，每个额度窗口在本次重置周期内只通知一次。")
-        alert_note.setObjectName("caption")
+        alert_note.setObjectName("settingsHint")
         alert_note.setWordWrap(True)
         self.alert_note = alert_note
         alert_form.addRow("说明", alert_note)
@@ -542,10 +581,14 @@ class SettingsDialog(QDialog):
         self.desktop_size_combo.blockSignals(True)
         self.desktop_size_combo.setCurrentIndex(max(0, self.desktop_size_combo.findData(self.settings_manager.get_desktop_status_size())))
         self.desktop_size_combo.blockSignals(False)
+        self.desktop_scale_spin.blockSignals(True)
+        self.desktop_scale_spin.setValue(round(self.settings_manager.get_desktop_status_scale() * 100))
+        self.desktop_scale_spin.blockSignals(False)
         self.lightweight_mode_cb.setChecked(self.settings_manager.get_lightweight_mode())
         self.shortcut_edit.set_sequence(self.settings_manager.get_shortcut())
         self.shortcut_status.setText("")
         self._settings_dirty = False
+        self.save_btn.setEnabled(False)
         super().reject()
 
     def _refresh_diagnostics(self):
@@ -672,8 +715,8 @@ class SettingsDialog(QDialog):
         self.window_form.labelForField(self.close_combo).setText("Close main window" if english else "关闭主窗口")
         self.appearance_form.labelForField(self.display_note).setText("About" if english else "说明")
         self.display_note.setText(
-            "The interface automatically adjusts surfaces, text, and controls for the selected theme."
-            if english else "界面会根据主题自动调整背景、卡片、文字和控件对比度。"
+            "Theme changes apply to surfaces, text, and controls."
+            if english else "主题会同步调整背景、卡片、文字和控件对比度。"
         )
         self.update_form.labelForField(self.check_update_btn).setText("Manual check" if english else "手动检查")
         self.update_form.labelForField(self.update_status_label).setText("Status" if english else "状态")

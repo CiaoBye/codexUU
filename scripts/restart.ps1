@@ -1,78 +1,33 @@
 $ErrorActionPreference = "Stop"
 
 $workspace = Split-Path -Parent $PSScriptRoot
-$mainPath = Join-Path $workspace "main.py"
-$escapedMainPath = [regex]::Escape($mainPath)
+$releaseExe = Join-Path $workspace "src-tauri\target\release\codexuu.exe"
+$debugExe = Join-Path $workspace "src-tauri\target\debug\codexuu.exe"
 
-$existing = Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -eq "pythonw.exe" -and $_.CommandLine -match $escapedMainPath
-}
-foreach ($process in $existing) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+$targetExe = if (Test-Path $releaseExe) { $releaseExe } else { $debugExe }
+
+if (-not (Test-Path $targetExe)) {
+    throw "CodexUU binary not found. Please run 'cargo build --release' in src-tauri first."
 }
 
-$pythonw = (Get-Command pythonw.exe).Source
-$started = Start-Process -FilePath $pythonw -ArgumentList ('"' + $mainPath + '"') -WorkingDirectory $workspace -PassThru
-$startedPid = $started.Id
+# Stop any running instances
+Get-Process codexuu -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -like "*$workspace*" -or $_.CommandLine -like "*$workspace*"
+} | Stop-Process -Force -ErrorAction SilentlyContinue
+
+Start-Sleep -Milliseconds 500
+
+$taskName = "CodexUU_Restart"
+$taskRun = "`"$targetExe`""
+
+# Launch on interactive desktop Session 1
+schtasks.exe /Create /TN $taskName /TR $taskRun /SC ONCE /ST 23:59 /F /IT | Out-Null
+schtasks.exe /Run /TN $taskName | Out-Null
 Start-Sleep -Seconds 2
+schtasks.exe /Delete /TN $taskName /F | Out-Null
 
-$running = @(Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -eq "pythonw.exe" -and $_.CommandLine -match $escapedMainPath
-})
-if ($running.Count -ne 1) {
-    throw "CodexUU restart failed: expected 1 process, found $($running.Count)."
+$running = Get-Process codexuu -ErrorAction SilentlyContinue
+if (-not $running) {
+    throw "CodexUU restart failed: codexuu process not found."
 }
-
-if (-not ("CodexUU.NativeWindowProbe" -as [type])) {
-    Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-namespace CodexUU {
-    public static class NativeWindowProbe {
-        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-        [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
-        public static bool HasVisibleMainWindow(uint targetProcessId) {
-            bool found = false;
-            EnumWindows((hWnd, lParam) => {
-                uint processId;
-                GetWindowThreadProcessId(hWnd, out processId);
-                if (processId != targetProcessId || !IsWindowVisible(hWnd)) return true;
-                var title = new StringBuilder(256);
-                GetWindowText(hWnd, title, title.Capacity);
-                RECT rect;
-                GetWindowRect(hWnd, out rect);
-                int width = rect.Right - rect.Left;
-                int height = rect.Bottom - rect.Top;
-                if (title.ToString() == "CodexUU" && width >= 800 && height >= 600) {
-                    found = true;
-                    return false;
-                }
-                return true;
-            }, IntPtr.Zero);
-            return found;
-        }
-    }
-}
-"@
-}
-
-$windowReady = $false
-for ($attempt = 0; $attempt -lt 16; $attempt++) {
-    if ([CodexUU.NativeWindowProbe]::HasVisibleMainWindow([uint32]$startedPid)) {
-        $windowReady = $true
-        break
-    }
-    Start-Sleep -Milliseconds 500
-}
-if (-not $windowReady) {
-    Stop-Process -Id $startedPid -Force -ErrorAction SilentlyContinue
-    throw "CodexUU restart failed: process started but no visible main window appeared."
-}
-
-Write-Output "CodexUU restarted: PID $startedPid"
+Write-Output "CodexUU restarted (Native Tauri 2 Release): PID $($running[0].Id)"

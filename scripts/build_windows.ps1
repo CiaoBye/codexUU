@@ -7,35 +7,26 @@ $ErrorActionPreference = "Stop"
 $workspace = Split-Path -Parent $PSScriptRoot
 Set-Location $workspace
 
-$dirty = @(
-    git diff --name-only
-    git diff --cached --name-only
-    git ls-files --others --exclude-standard -- app main.py resources VERSION requirements.txt CodexUU.spec installer scripts
-) | Where-Object { $_ }
+Write-Output "Building CodexUU $Version for Windows..."
+
+# 1. Build frontend assets
+pnpm build
 if ($LASTEXITCODE -ne 0) {
-    throw "Unable to verify the source tree before building."
-}
-if ($dirty) {
-    throw "Refusing to build from an uncommitted worktree. Commit or remove local changes first."
+    throw "Frontend build failed."
 }
 
-if (-not (Get-Command pyinstaller.exe -ErrorAction SilentlyContinue)) {
-    throw "PyInstaller was not found. Run: python -m pip install pyinstaller"
+# 2. Build Tauri release binary
+Set-Location (Join-Path $workspace "src-tauri")
+cargo build --release
+if ($LASTEXITCODE -ne 0) {
+    throw "Cargo release build failed."
 }
 
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist
-pyinstaller --noconfirm --clean --windowed --name CodexUU `
-    --add-data "resources;resources" `
-    --add-data "VERSION;." `
-    --collect-data tzdata `
-    main.py
+Set-Location $workspace
+$outputExe = Join-Path $workspace "src-tauri\target\release\codexuu.exe"
 
-if ($Installer) {
-    $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if (-not $iscc) {
-        throw "Inno Setup was not found. Install Inno Setup and retry."
-    }
-    & $iscc.Source "installer\CodexUU.iss" "/DMyAppVersion=$Version"
+if (-not (Test-Path $outputExe)) {
+    throw "Build output not found at $outputExe"
 }
 
-Write-Output "Windows build completed: dist\CodexUU"
+Write-Output "Windows build completed successfully: $outputExe"

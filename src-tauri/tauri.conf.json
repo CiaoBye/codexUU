@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CodexUU",
+  "version": "1.0.2",
+  "identifier": "com.ciaobye.codexuu",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CodexUU",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 1060,
+        "minHeight": 720,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "focus": true
+      },
+      {
+        "label": "widget",
+        "title": "CodexUU Widget",
+        "url": "/#widget",
+        "width": 260,
+        "height": 130,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: asset:; font-src 'self' data:;"
+    }
+  },
+  "plugins": {}
+}

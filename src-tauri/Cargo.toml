@@ -1,0 +1,28 @@
+[package]
+name = "codexuu"
+version = "1.0.2"
+description = "CodexUU - Local AI Coding Activity & Quota Console for Windows"
+authors = ["CodexUU Team"]
+edition = "2021"
+
+[lib]
+name = "codexuu_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.2", features = [] }
+
+[dependencies]
+tauri = { version = "2.2", features = ["tray-icon", "image-ico", "image-png"] }
+tauri-plugin-single-instance = "2.2"
+tauri-plugin-global-shortcut = "2.2"
+tauri-plugin-notification = "2.2"
+tauri-plugin-opener = "2.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.33", features = ["bundled", "chrono", "blob"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6.0"

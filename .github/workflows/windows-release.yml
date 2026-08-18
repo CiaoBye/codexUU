@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "要构建的 Git ref（分支、提交或标签）"
+        description: "Git ref to build (branch, commit, or tag)"
         required: true
         default: "main"
         type: string
       publish_release:
-        description: "构建完成后发布 GitHub Release"
+        description: "Publish GitHub Release after build"
         required: true
         default: false
         type: boolean
       release_tag:
-        description: "发布 Release 时使用的标签，例如 v0.1.06"
+        description: "Release tag, e.g. v1.0.0"
         required: false
         type: string
 
@@ -22,42 +22,86 @@ permissions:
   contents: write
 
 jobs:
-  package:
+  build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-python@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.13"
-      - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
-          choco install innosetup --no-progress --yes
-      - name: Build Windows installer
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run frontend tests
+        run: pnpm test
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build Tauri app
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          .\scripts\build_windows.ps1 -Version $version -Installer
-          Get-FileHash "dist\installer\CodexUU-$version-win-x64-setup.exe" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content "dist\installer\CodexUU-$version-win-x64-setup.exe.sha256"
-      - name: Upload Windows installer artifact
+          Write-Output "Building CodexUU v$version"
+          npx tauri build
+
+      - name: Collect build artifacts
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $bundleDir = "src-tauri/target/release/bundle"
+          $outDir = "release-artifacts"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          # Copy MSI if exists
+          if (Test-Path "$bundleDir/msi") {
+            Copy-Item "$bundleDir/msi/*.msi" $outDir -Force
+          }
+          # Copy NSIS installer if exists
+          if (Test-Path "$bundleDir/nsis") {
+            Copy-Item "$bundleDir/nsis/*.exe" $outDir -Force
+          }
+          # Generate SHA256 checksums
+          Get-ChildItem $outDir -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Set-Content "$($_.FullName).sha256"
+          }
+          Get-ChildItem $outDir
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CodexUU-windows-installer
-          path: |
-            dist/installer/*.exe
-            dist/installer/*.sha256
+          name: CodexUU-windows-build
+          path: release-artifacts/*
           if-no-files-found: error
           retention-days: 14
+
       - name: Validate release inputs
         if: inputs.publish_release
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace("${{ inputs.release_tag }}")) {
-            throw "发布 Release 时必须填写 release_tag。"
+            throw "release_tag is required when publishing a release."
           }
+
       - name: Publish GitHub Release
         if: inputs.publish_release
         uses: softprops/action-gh-release@v2
@@ -65,6 +109,4 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           target_commitish: ${{ inputs.ref }}
           generate_release_notes: true
-          files: |
-            dist/installer/*.exe
-            dist/installer/*.sha256
+          files: release-artifacts/*

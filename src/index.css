@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-canvas: #0b0f14;
+    --bg-elevated: #111821;
+    --bg-card: #151e29;
+    --bg-subtle: #192431;
+
+    --border-default: #273443;
+    --border-strong: #3a4a5d;
+
+    --text-primary: #f3f6fa;
+    --text-secondary: #a7b2c0;
+    --text-muted: #778596;
+
+    --accent-brand: #2c9f9b;
+    --quota-5h: #4d9fff;
+    --quota-7d: #8b75ff;
+    --token-uncached: #4d9fff;
+    --token-cached: #8b75ff;
+    --token-output: #eca64c;
+
+    --success: #39c98a;
+    --warning: #e9b44c;
+    --danger: #ef6b74;
+    --info: #63a9ff;
+  }
+
+  .light {
+    --bg-canvas: #f4f6f9;
+    --bg-elevated: #ffffff;
+    --bg-card: #ffffff;
+    --bg-subtle: #eaeff5;
+
+    --border-default: #d2dbe5;
+    --border-strong: #b4c2d3;
+
+    --text-primary: #121a24;
+    --text-secondary: #4a5b6d;
+    --text-muted: #7e90a2;
+
+    --accent-brand: #0f766e;
+    --quota-5h: #2563eb;
+    --quota-7d: #7c3aed;
+    --token-uncached: #2563eb;
+    --token-cached: #7c3aed;
+    --token-output: #d97706;
+
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --info: #3b82f6;
+  }
+
+  html, body, #root {
+    background-color: transparent !important;
+  }
+
+  body {
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--text-primary);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  code, pre, .font-mono {
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  }
+}
+
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}

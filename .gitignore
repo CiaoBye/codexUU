@@ -1,3 +1,4 @@
+# Legacy Python (kept for historical reference)
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -5,13 +6,32 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+
+# IDE
 .idea/
 .vscode/
-*.log
-artifacts/
-screenshot*.png
 .mimocode/
+
+# Local agent/skill tooling
+.agents/
+
+# Legacy Python (kept for historical reference)
+old/tmp/
+
+# Logs & screenshots
+*.log
+screenshot*.png
+
+# pnpm local store
+.pnpm-store/
+
+# Build artifacts
 /build/
 /dist/
 /*.spec
 /tmp/
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/tools_bin/
+artifacts/

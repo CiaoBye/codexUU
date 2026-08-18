@@ -23,11 +23,16 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
   const top3Tokens = projects.slice(0, 3).reduce((sum, p) => sum + p.tokens.total, 0);
   const top1Pct = Math.round((top1Tokens / totalTokens) * 100);
   const top3Pct = Math.round((top3Tokens / totalTokens) * 100);
+  const recentProject = projects.reduce<ProjectRankingItem | undefined>(
+    (latest, project) => !latest || project.last_active_at > latest.last_active_at ? project : latest,
+    undefined,
+  );
 
   const handleExport = async (format: 'json' | 'csv' | 'markdown') => {
     try {
       const res = await exportData(format, channel);
-      const blob = new Blob([res], { type: 'text/plain;charset=utf-8' });
+      const mime = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/markdown';
+      const blob = new Blob([res], { type: `${mime};charset=utf-8` });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -182,10 +187,10 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
               <span>最近活跃项目</span>
             </div>
             <div className="font-semibold text-xs text-[var(--text-primary)] mt-1 truncate">
-              {projects[0]?.name || '暂无项目'}
+              {recentProject?.name || '暂无项目'}
             </div>
             <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
-              {projects[0]?.last_active_at || '—'}
+              {recentProject?.last_active_at || '—'}
             </div>
           </div>
         </div>

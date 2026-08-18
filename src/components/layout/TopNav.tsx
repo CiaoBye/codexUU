@@ -11,8 +11,6 @@ import {
   Bot,
   Layers,
 } from 'lucide-react';
-import { minimizeMainWindow, closeMainWindow } from '../../api';
-
 interface TopNavProps {
   channel: string;
   onChannelChange: (ch: string) => void;
@@ -22,6 +20,8 @@ interface TopNavProps {
   onOpenExport: () => void;
   theme: string;
   onToggleTheme: () => void;
+  onMinimize: () => void | Promise<void>;
+  onClose: () => void | Promise<void>;
   lastUpdated?: string;
 }
 
@@ -34,6 +34,8 @@ export const TopNav: React.FC<TopNavProps> = ({
   onOpenExport,
   theme,
   onToggleTheme,
+  onMinimize,
+  onClose,
   lastUpdated,
 }) => {
   const channels = [
@@ -131,14 +133,14 @@ export const TopNav: React.FC<TopNavProps> = ({
 
         {/* Window controls */}
         <button
-          onClick={() => minimizeMainWindow()}
+          onClick={onMinimize}
           title="最小化"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition"
         >
           <Minus className="w-4 h-4" />
         </button>
         <button
-          onClick={() => closeMainWindow()}
+          onClick={onClose}
           title="关闭"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-red-400 hover:bg-red-500/10 transition"
         >

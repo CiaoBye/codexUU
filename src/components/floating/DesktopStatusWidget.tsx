@@ -38,7 +38,7 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
 
   const handleDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    showMainWindow();
+    void showMainWindow().catch((error) => console.error('显示主窗口失败', error));
   };
 
   // SVG Ring params

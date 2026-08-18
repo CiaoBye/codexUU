@@ -5,6 +5,8 @@ import {
   fetchSettings,
   triggerRefresh,
   updateSettings,
+  minimizeMainWindow,
+  closeMainWindow,
   DEFAULT_SETTINGS,
   EMPTY_SNAPSHOT,
 } from './api';
@@ -68,6 +70,7 @@ export const App: React.FC = () => {
   // Load initial settings and snapshot
   useEffect(() => {
     async function init() {
+      if (isWidgetWindow) return;
       try {
         const s = await fetchSettings();
         setSettings(s);
@@ -82,6 +85,44 @@ export const App: React.FC = () => {
     }
     init();
   }, []);
+
+  // The widget is a separate webview. Refresh its settings and snapshot so
+  // style/scale/quota changes made in the main window become visible without
+  // restarting the desktop widget.
+  useEffect(() => {
+    if (!isWidgetWindow) return;
+    let disposed = false;
+    const refreshWidget = async () => {
+      try {
+        const currentSettings = await fetchSettings();
+        const currentSnapshot = await fetchDashboardSnapshot(
+          currentSettings.default_channel || 'codex',
+          currentSettings.timezone,
+        );
+        if (!disposed) {
+          setSettings(currentSettings);
+          setActiveChannel(currentSettings.default_channel || 'codex');
+          setSnapshot(currentSnapshot);
+        }
+      } catch (err) {
+        if (!disposed) setError(`悬浮窗刷新失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    void refreshWidget();
+    const timer = window.setInterval(refreshWidget, 30_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [isWidgetWindow]);
+
+  const handleWindowCommand = async (command: () => Promise<void>, label: string) => {
+    try {
+      await command();
+    } catch (err) {
+      setError(`${label}失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   // Handle Channel Change
   const handleChannelChange = async (ch: string) => {
@@ -171,6 +212,8 @@ export const App: React.FC = () => {
         onOpenExport={() => setActiveTab('projects')}
         theme={settings.theme}
         onToggleTheme={handleToggleTheme}
+        onMinimize={() => handleWindowCommand(minimizeMainWindow, '最小化窗口')}
+        onClose={() => handleWindowCommand(closeMainWindow, '关闭窗口')}
         lastUpdated={snapshot.timestamp}
       />
 

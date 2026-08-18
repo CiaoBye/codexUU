@@ -26,6 +26,14 @@
   - `.gitignore` 忽略 `old/tmp/` 与 `.agents/`，避免临时虚拟环境和本地技能模板入库。
   - 新增 `public/logo.svg`，修复 `index.html` favicon 404。
 
+- 本轮完整修复：
+  - Codex 额度优先通过真实 `app-server` JSON-RPC 查询，失败时仅使用明确存在的 session 快照；缺少字段保持不可用，不再显示固定假额度。
+  - 定价改为精确模型 ID 白名单，补充 GPT-5.6 Sol/Terra/Luna 官方价格；未知模型显示“未计价”，不会按前缀或包含关系误计价。
+  - Codex 分支/归档会话按 thread ID 预去重；工具统计仅接受显式 `function_call`/`custom_tool_call` 等事件；Antigravity 未识别模型不再默认为 Gemini。
+  - 任务按项目与状态聚合并显示线程数，接入 `~/.codex/automations` 的启用定时任务；项目排行过滤临时、缓存、运行时和已删除目录。
+  - 全量趋势不再截断为最近 30 天；设置真正应用全局快捷键、Windows 登录启动、关闭到托盘、置顶和悬浮窗可见性；修复悬浮窗命令名与刷新同步。
+  - 移除趋势页和独立 UI 的假活动数据；导出增加 CSV/Markdown 转义；构建链路改用仓库锁定的 `@tauri-apps/cli` 与 `pnpm exec tauri build`。
+
 ### 影响范围
 
 - 涉及 Rust 后端聚合、Antigravity/Codex 数据解析、前端趋势/项目排行/设置/主题/错误处理，以及构建脚本与 pnpm 配置。
@@ -35,8 +43,10 @@
 
 - `pnpm test`：4/4 passed，无 act 警告。
 - `pnpm run typecheck`：0 错误。
-- `cargo test` in `src-tauri`：1/1 passed，0 警告。
+- `cargo test --all-targets` in `src-tauri`：3/3 passed，0 警告。
 - `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm build`：通过；`pnpm tauri build`：通过，隔离产物生成于 `src-tauri/target/tauri-verify/release/codexuu.exe`，并成功生成 MSI/NSIS 安装包。
+- 追加验证：精确模型定价、未知模型 fail-closed、前端类型检查、Tauri CLI 构建链路与 Rust 设置运行时逻辑已纳入本轮门禁。
 
 ## 2026-08-18 · 1.0.1 · 审计修复与依赖清理
 

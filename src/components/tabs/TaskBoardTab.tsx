@@ -88,6 +88,10 @@ export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
                             <Sparkles className="w-2.5 h-2.5" />
                             Antigravity
                           </span>
+                        ) : task.channel === 'all' ? (
+                          <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20 font-medium">
+                            Codex + Antigravity
+                          </span>
                         ) : (
                           <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
                             <Bot className="w-2.5 h-2.5" />
@@ -107,7 +111,7 @@ export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
                       <span>{task.updated_at}</span>
                       <div className="flex items-center gap-1">
                         <span className={`w-1.5 h-1.5 rounded-full ${col.dotColor}`} />
-                        <span>{col.title}</span>
+                        <span>{col.title} · {task.thread_count} 线程</span>
                       </div>
                     </div>
                   </div>

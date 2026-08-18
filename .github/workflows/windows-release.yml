@@ -53,16 +53,26 @@ jobs:
       - name: Run frontend tests
         run: pnpm test
 
+      - name: Check frontend types
+        run: pnpm run typecheck
+
       - name: Run Rust tests
         working-directory: src-tauri
         run: cargo test
+
+      - name: Check Rust warnings
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build frontend
+        run: pnpm build
 
       - name: Build Tauri app
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           Write-Output "Building CodexUU v$version"
-          npx tauri build
+          pnpm tauri build
 
       - name: Collect build artifacts
         shell: pwsh

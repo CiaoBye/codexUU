@@ -47,17 +47,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
     ? today
     : new Date().toISOString().slice(0, 10);
 
-  const allActivities = dailyActivities.length > 0 ? dailyActivities : [
-    { date: '2026-08-11', tokens: { uncached_input: 800000, cached_input: 4500000, output: 350000, total: 5650000 }, cost_usd: 11.2, sessions: 12 },
-    { date: '2026-08-12', tokens: { uncached_input: 950000, cached_input: 5200000, output: 420000, total: 6570000 }, cost_usd: 13.5, sessions: 15 },
-    { date: '2026-08-13', tokens: { uncached_input: 1100000, cached_input: 6800000, output: 510000, total: 8410000 }, cost_usd: 16.8, sessions: 18 },
-    { date: '2026-08-14', tokens: { uncached_input: 1300000, cached_input: 8200000, output: 640000, total: 10140000 }, cost_usd: 20.4, sessions: 22 },
-    { date: '2026-08-15', tokens: { uncached_input: 720000, cached_input: 4100000, output: 310000, total: 5130000 }, cost_usd: 9.8, sessions: 10 },
-    { date: '2026-08-16', tokens: { uncached_input: 1050000, cached_input: 7100000, output: 580000, total: 8730000 }, cost_usd: 17.5, sessions: 19 },
-    { date: '2026-08-17', tokens: { uncached_input: 1240000, cached_input: 8120000, output: 680000, total: 10040000 }, cost_usd: 20.1, sessions: 24 },
-  ];
-
-  const activities = allActivities.filter((a) => dateInRange(a.date, period, safeToday));
+  const activities = dailyActivities.filter((a) => dateInRange(a.date, period, safeToday));
 
   // Calculate maximum for 0-baseline chart
   const maxVal = Math.max(
@@ -80,8 +70,11 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
   const paddingX = 40;
   const paddingY = 24;
 
-  const pricedModels = models.filter((m) => m.pricing_status === 'exact').length;
-  const pricingCoverage = models.length > 0 ? Math.round((pricedModels / models.length) * 100) : 100;
+  const modelTokens = models.reduce((sum, model) => sum + model.tokens.total, 0);
+  const pricedTokens = models
+    .filter((model) => model.pricing_status === 'exact')
+    .reduce((sum, model) => sum + model.tokens.total, 0);
+  const pricingCoverage = modelTokens > 0 ? Math.round((pricedTokens / modelTokens) * 100) : 0;
 
   const points = activities.map((a, i) => {
     const x = paddingX + (i / Math.max(activities.length - 1, 1)) * (svgWidth - paddingX * 2);
@@ -190,6 +183,9 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                 </g>
               ))}
             </svg>
+            {activities.length === 0 && (
+              <span className="absolute text-xs text-[var(--text-muted)]">暂无可用活动数据</span>
+            )}
           </div>
 
           <div className="flex items-center justify-between pt-2 border-t border-[var(--border-default)] text-[11px] text-[var(--text-secondary)]">
@@ -229,7 +225,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                     {formatTokens(m.tokens.total)}
                   </div>
                   <div className="text-[10px] font-mono text-amber-400">
-                    ${m.cost_usd.toFixed(2)}
+                    {m.pricing_status === 'exact' ? `$${m.cost_usd.toFixed(2)}` : '未计价'}
                   </div>
                 </div>
               </div>

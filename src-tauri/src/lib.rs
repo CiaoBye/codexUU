@@ -7,7 +7,7 @@ pub mod providers;
 pub mod storage;
 pub mod windows;
 
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,17 +29,40 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main"
+                    && storage::settings::SettingsStorage::load().close_to_tray
+                {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let handle = app.handle();
             let _ = windows::tray::setup_tray(handle);
 
-            // Load settings and apply widget visibility
+            // Load settings and apply all runtime-only settings.
             let settings = storage::settings::SettingsStorage::load();
-            if settings.widget_enabled {
-                if let Some(widget_window) = app.get_webview_window("widget") {
+            if let Some(main_window) = app.get_webview_window("main") {
+                let _ = main_window.set_always_on_top(settings.always_on_top);
+            }
+            if let Some(widget_window) = app.get_webview_window("widget") {
+                if settings.widget_enabled {
                     let _ = widget_window.show();
                     let _ = widget_window.set_always_on_top(true);
+                } else {
+                    let _ = widget_window.hide();
                 }
+            }
+            if let Err(error) =
+                commands::register_global_shortcut(handle, &settings.global_shortcut)
+            {
+                tracing::warn!(%error, "global shortcut is unavailable");
+            }
+            if let Err(error) = commands::apply_start_at_login(settings.start_at_login) {
+                tracing::warn!(%error, "start-at-login setting is unavailable");
             }
 
             Ok(())

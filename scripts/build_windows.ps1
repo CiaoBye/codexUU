@@ -15,14 +15,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "Frontend build failed."
 }
 
-# 2. Build Tauri release binary
-Set-Location (Join-Path $workspace "src-tauri")
-cargo build --release
+# 2. Build and bundle the complete Tauri application. The CLI is pinned in
+# package.json and installed through pnpm, so a missing global/npx CLI cannot
+# produce a misleading partial Rust-only build.
+Set-Location $workspace
+pnpm tauri build
 if ($LASTEXITCODE -ne 0) {
-    throw "Cargo release build failed."
+    throw "Tauri release build failed."
 }
 
-Set-Location $workspace
 $outputExe = Join-Path $workspace "src-tauri\target\release\codexuu.exe"
 
 if (-not (Test-Path $outputExe)) {

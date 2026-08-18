@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{channel, Receiver};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::Tz;
@@ -12,6 +16,10 @@ use crate::models::{
     DailyActivity, ModelUsage, ProjectRankingItem, ProviderData, QuotaSnapshot, SkillAgg,
     SkillUsageItem, TaskItem, TokenBreakdown, TokenPeriods,
 };
+use crate::providers::{group_tasks_by_project, is_real_project_path};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 pub struct CodexProvider;
 
@@ -55,23 +63,289 @@ impl CodexProvider {
         }
     }
 
+    fn session_thread_id(path: &Path) -> String {
+        let fallback = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let Ok(file) = File::open(path) else {
+            return fallback;
+        };
+        let mut id = fallback.clone();
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let candidate = value
+                .get("session_meta")
+                .or_else(|| value.get("session"))
+                .and_then(|meta| meta.get("thread_id").or_else(|| meta.get("id")))
+                .or_else(|| value.get("thread_id"))
+                .and_then(Value::as_str);
+            if let Some(candidate) = candidate.filter(|candidate| !candidate.is_empty()) {
+                id = candidate.to_string();
+            }
+        }
+        id
+    }
+
+    fn select_unique_session_files(files: Vec<(PathBuf, bool)>) -> Vec<(PathBuf, bool)> {
+        let mut selected: HashMap<String, (PathBuf, bool, SystemTime)> = HashMap::new();
+        for (path, archived) in files {
+            let id = Self::session_thread_id(&path);
+            let modified = fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let replace = match selected.get(&id) {
+                None => true,
+                Some((_, existing_archived, existing_modified)) => {
+                    (*existing_archived && !archived)
+                        || (*existing_archived == archived && modified > *existing_modified)
+                }
+            };
+            if replace {
+                selected.insert(id, (path, archived, modified));
+            }
+        }
+        selected
+            .into_values()
+            .map(|(path, archived, _)| (path, archived))
+            .collect()
+    }
+
     fn parse_ts(ts_str: &str, tz: &Tz) -> Option<DateTime<Tz>> {
         DateTime::parse_from_rfc3339(ts_str)
             .ok()
             .map(|dt| dt.with_timezone(tz))
     }
 
-    /// Read real quota via `codex app-server --stdio` or latest session rollout rate_limits
-    pub fn fetch_quota(tz: &Tz) -> QuotaSnapshot {
+    fn unavailable_quota(tz: &Tz, source: &str) -> QuotaSnapshot {
+        QuotaSnapshot {
+            status: "unavailable".to_string(),
+            source: source.to_string(),
+            last_updated: Utc::now()
+                .with_timezone(tz)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn ratio(value: &Value) -> Option<f64> {
+        let number = value.as_f64()?;
+        let ratio = if number > 1.0 { number / 100.0 } else { number };
+        (ratio.is_finite() && (0.0..=1.0).contains(&ratio)).then_some(ratio)
+    }
+
+    fn reset_at(value: &Value, tz: &Tz) -> Option<String> {
+        if let Some(text) = value.as_str().filter(|text| !text.trim().is_empty()) {
+            return Some(text.to_string());
+        }
+        let seconds = value.as_i64()?;
+        DateTime::<Utc>::from_timestamp(seconds, 0)
+            .map(|dt| dt.with_timezone(tz).format("%m/%d %H:%M").to_string())
+    }
+
+    fn parse_window(window: &Value, tz: &Tz) -> Option<(Option<f64>, Option<String>)> {
+        let used = [
+            "used_percent",
+            "usedPercent",
+            "used_ratio",
+            "usedRatio",
+            "utilization",
+        ]
+        .iter()
+        .find_map(|key| window.get(*key).and_then(Self::ratio));
+        let reset = ["resets_at", "resetsAt", "reset_at", "resetAt"]
+            .iter()
+            .find_map(|key| window.get(*key).and_then(|value| Self::reset_at(value, tz)));
+        (used.is_some() || reset.is_some()).then_some((used, reset))
+    }
+
+    fn parse_rate_limits(value: &Value, tz: &Tz, source: &str) -> Option<QuotaSnapshot> {
+        let rate_limits = value
+            .get("rate_limits")
+            .or_else(|| value.get("rateLimits"))
+            .or_else(|| {
+                value
+                    .get("payload")
+                    .and_then(|payload| payload.get("rate_limits"))
+            })
+            .or_else(|| {
+                value
+                    .get("payload")
+                    .and_then(|payload| payload.get("rateLimits"))
+            })
+            .or_else(|| {
+                value
+                    .get("result")
+                    .and_then(|result| result.get("rate_limits"))
+            })
+            .or_else(|| {
+                value
+                    .get("result")
+                    .and_then(|result| result.get("rateLimits"))
+            })
+            .or_else(|| {
+                value
+                    .get("rateLimitsByLimitId")
+                    .and_then(|v| v.get("codex"))
+            })
+            .or_else(|| {
+                value
+                    .get("result")
+                    .and_then(|result| result.get("rateLimitsByLimitId"))
+                    .and_then(|v| v.get("codex"))
+            })?;
+
+        let seven_day = rate_limits
+            .get("seven_day")
+            .or_else(|| rate_limits.get("sevenDay"))
+            .or_else(|| rate_limits.get("primary"));
+        let five_hour = rate_limits
+            .get("five_hour")
+            .or_else(|| rate_limits.get("fiveHour"))
+            .or_else(|| rate_limits.get("secondary"));
+
+        let seven = seven_day.and_then(|window| Self::parse_window(window, tz));
+        let five = five_hour.and_then(|window| Self::parse_window(window, tz));
+        if seven.is_none() && five.is_none() {
+            return None;
+        }
+
+        let mut quota = QuotaSnapshot {
+            status: "available".to_string(),
+            source: source.to_string(),
+            last_updated: Utc::now()
+                .with_timezone(tz)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+            ..Default::default()
+        };
+        if let Some((used, reset)) = seven {
+            quota.has_seven_day = true;
+            quota.seven_day_used_ratio = used;
+            quota.seven_day_remaining_ratio = used.map(|ratio| (1.0 - ratio).max(0.0));
+            quota.seven_day_reset_at = reset;
+        }
+        if let Some((used, reset)) = five {
+            quota.has_five_hour = true;
+            quota.five_hour_used_ratio = used;
+            quota.five_hour_remaining_ratio = used.map(|ratio| (1.0 - ratio).max(0.0));
+            quota.five_hour_reset_at = reset;
+        }
+        Some(quota)
+    }
+
+    fn send_json_line<W: Write>(writer: &mut W, value: &Value) -> bool {
+        serde_json::to_writer(&mut *writer, value).is_ok()
+            && writer.write_all(b"\n").is_ok()
+            && writer.flush().is_ok()
+    }
+
+    fn wait_for_response(receiver: &Receiver<Value>, id: u64) -> Option<Value> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+            let value = receiver.recv_timeout(remaining).ok()?;
+            if value.get("id").and_then(Value::as_u64) == Some(id) {
+                return Some(value);
+            }
+        }
+    }
+
+    fn query_app_server(tz: &Tz) -> Option<QuotaSnapshot> {
         let home = Self::get_codex_home();
-        let sessions_dir = home.join("sessions");
+        let mut candidates = Vec::new();
+        let bundled = home
+            .join("plugins")
+            .join(".plugin-appserver")
+            .join("codex.exe");
+        if bundled.is_file() {
+            candidates.push(bundled);
+        }
+        candidates.push(PathBuf::from("codex"));
 
-        let mut latest_rate_limit: Option<(f64, f64, String, String)> = None;
+        for executable in candidates {
+            let mut command = Command::new(executable);
+            command
+                .args(["app-server", "--stdio"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            command.creation_flags(0x08000000);
 
+            let Ok(mut child) = command.spawn() else {
+                continue;
+            };
+            let Some(mut stdin) = child.stdin.take() else {
+                let _ = child.kill();
+                continue;
+            };
+            let Some(stdout) = child.stdout.take() else {
+                let _ = child.kill();
+                continue;
+            };
+            let (sender, receiver) = channel::<Value>();
+            thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                        if sender.send(value).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            let initialize = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "codexuu", "version": env!("CARGO_PKG_VERSION")}}
+            });
+            if !Self::send_json_line(&mut stdin, &initialize)
+                || Self::wait_for_response(&receiver, 1).is_none()
+            {
+                let _ = child.kill();
+                continue;
+            }
+            let _ = Self::send_json_line(
+                &mut stdin,
+                &serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+            );
+            let request = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "account/rateLimits/read",
+                "params": {}
+            });
+            let response = if Self::send_json_line(&mut stdin, &request) {
+                Self::wait_for_response(&receiver, 2)
+            } else {
+                None
+            };
+            let _ = child.kill();
+            if let Some(response) = response {
+                if let Some(quota) = Self::parse_rate_limits(&response, tz, "Codex app-server") {
+                    return Some(quota);
+                }
+            }
+        }
+        None
+    }
+
+    /// Read real quota from app-server first, then an explicit local session
+    /// snapshot. Missing fields remain unavailable; no fallback numbers are invented.
+    pub fn fetch_quota(tz: &Tz) -> QuotaSnapshot {
+        if let Some(quota) = Self::query_app_server(tz) {
+            return quota;
+        }
+
+        let sessions_dir = Self::get_codex_home().join("sessions");
         let mut all_rollouts = Vec::new();
         Self::collect_jsonl_recursive(&sessions_dir, false, &mut all_rollouts);
-
-        // Sort files by modification time (newest first)
         all_rollouts.sort_by(|a, b| {
             let meta_a = fs::metadata(&a.0).and_then(|m| m.modified()).ok();
             let meta_b = fs::metadata(&b.0).and_then(|m| m.modified()).ok();
@@ -79,103 +353,152 @@ impl CodexProvider {
         });
 
         for (file_path, _) in all_rollouts.iter().take(32) {
-            if let Ok(file) = File::open(file_path) {
-                let reader = BufReader::new(file);
-                for line_res in reader.lines() {
-                    let line = match line_res {
-                        Ok(l) => l,
-                        Err(_) => continue,
-                    };
-                    if line.is_empty() {
-                        continue;
+            let Ok(file) = File::open(file_path) else {
+                continue;
+            };
+            let mut explicit_empty = false;
+            for line in BufReader::new(file).lines().map_while(Result::ok) {
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let rate_limits = value
+                    .get("payload")
+                    .and_then(|payload| {
+                        payload
+                            .get("rate_limits")
+                            .or_else(|| payload.get("rateLimits"))
+                    })
+                    .or_else(|| value.get("rate_limits").or_else(|| value.get("rateLimits")));
+                if let Some(rate_limits) = rate_limits {
+                    if rate_limits.is_null() {
+                        explicit_empty = true;
+                        break;
                     }
-                    if let Ok(val) = serde_json::from_str::<Value>(&line) {
-                        let rate_limits_opt = val
-                            .get("payload")
-                            .and_then(|p| p.get("rate_limits"))
-                            .or_else(|| val.get("rate_limits"));
-
-                        if let Some(rl) = rate_limits_opt {
-                            if let Some(primary) = rl.get("primary") {
-                                let used_pct = primary
-                                    .get("used_percent")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(0.47);
-                                let reset_at = primary
-                                    .get("resets_at")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("08/21 14:30")
-                                    .to_string();
-
-                                let (five_h_used, five_h_reset) =
-                                    if let Some(sec) = rl.get("secondary") {
-                                        let sec_used = sec
-                                            .get("used_percent")
-                                            .and_then(|v| v.as_f64())
-                                            .unwrap_or(0.28);
-                                        let sec_reset = sec
-                                            .get("resets_at")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("自动")
-                                            .to_string();
-                                        (sec_used, sec_reset)
-                                    } else {
-                                        (0.0, String::new())
-                                    };
-
-                                latest_rate_limit =
-                                    Some((used_pct, five_h_used, reset_at, five_h_reset));
-                                break;
-                            }
-                        }
+                    if let Some(quota) =
+                        Self::parse_rate_limits(&value, tz, "Codex session snapshot (fallback)")
+                    {
+                        return quota;
                     }
                 }
             }
-            if latest_rate_limit.is_some() {
+            if explicit_empty {
                 break;
             }
         }
+        Self::unavailable_quota(tz, "Codex app-server / session snapshot")
+    }
 
-        if let Some((ratio7d, ratio5h, reset7d, reset5h)) = latest_rate_limit {
-            let has_5h = ratio5h > 0.0 || !reset5h.is_empty();
-            return QuotaSnapshot {
-                status: "available".to_string(),
-                has_five_hour: has_5h,
-                has_seven_day: true,
-                five_hour_used_ratio: if has_5h { Some(ratio5h) } else { None },
-                five_hour_remaining_ratio: if has_5h {
-                    Some((1.0 - ratio5h).max(0.0))
-                } else {
-                    None
-                },
-                five_hour_reset_at: if has_5h { Some(reset5h) } else { None },
-                seven_day_used_ratio: Some(ratio7d),
-                seven_day_remaining_ratio: Some((1.0 - ratio7d).max(0.0)),
-                seven_day_reset_at: Some(reset7d),
-                source: "Codex (Local Active)".to_string(),
-                last_updated: Utc::now()
-                    .with_timezone(tz)
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string(),
-            };
+    fn collect_automation_values(path: &Path, values: &mut Vec<Value>) {
+        let Ok(content) = fs::read_to_string(path) else {
+            return;
+        };
+        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            values.extend(
+                content
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok()),
+            );
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&content) else {
+            return;
+        };
+        if let Some(items) = value.get("tasks").and_then(Value::as_array) {
+            values.extend(items.iter().cloned());
+        } else if let Some(items) = value.get("automations").and_then(Value::as_array) {
+            values.extend(items.iter().cloned());
+        } else if let Some(items) = value.as_array() {
+            values.extend(items.iter().cloned());
+        } else {
+            values.push(value);
+        }
+    }
+
+    fn scheduled_tasks(tz: &Tz) -> Vec<TaskItem> {
+        let automations_dir = Self::get_codex_home().join("automations");
+        let Ok(entries) = fs::read_dir(automations_dir) else {
+            return Vec::new();
+        };
+        let mut values = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("json") | Some("jsonl")
+                )
+            {
+                Self::collect_automation_values(&path, &mut values);
+            }
         }
 
-        QuotaSnapshot {
-            status: "unavailable".to_string(),
-            has_five_hour: false,
-            has_seven_day: false,
-            five_hour_used_ratio: None,
-            five_hour_remaining_ratio: None,
-            five_hour_reset_at: None,
-            seven_day_used_ratio: None,
-            seven_day_remaining_ratio: None,
-            seven_day_reset_at: None,
-            source: "Codex (Local Active)".to_string(),
-            last_updated: Utc::now()
-                .with_timezone(tz)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string(),
-        }
+        values
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                let enabled = value
+                    .get("enabled")
+                    .or_else(|| value.get("is_enabled"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                if !enabled {
+                    return None;
+                }
+                let id = value
+                    .get("id")
+                    .or_else(|| value.get("name"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("scheduled-{index}"));
+                let title = value
+                    .get("title")
+                    .or_else(|| value.get("summary"))
+                    .or_else(|| value.get("prompt"))
+                    .or_else(|| value.get("task"))
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.trim().is_empty())
+                    .map(|title| title.trim().chars().take(80).collect::<String>())
+                    .unwrap_or_else(|| format!("定时任务 {id}"));
+                let project_path = value
+                    .get("cwd")
+                    .or_else(|| value.get("project_path"))
+                    .or_else(|| value.get("working_directory"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let updated_at = value
+                    .get("next_run_at")
+                    .or_else(|| value.get("nextRunAt"))
+                    .or_else(|| value.get("schedule"))
+                    .and_then(Value::as_str)
+                    .and_then(|value| Self::parse_ts(value, tz))
+                    .map(|value| value.format("%Y-%m-%d %H:%M").to_string())
+                    .or_else(|| {
+                        value
+                            .get("next_run_at")
+                            .or_else(|| value.get("nextRunAt"))
+                            .and_then(Value::as_str)
+                            .map(|value| value.to_string())
+                    })
+                    .unwrap_or_else(|| "—".to_string());
+                let project_name = Path::new(&project_path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| "定时任务".to_string());
+                Some(TaskItem {
+                    id: format!("automation-{id}"),
+                    project_name,
+                    project_path,
+                    title,
+                    status: "scheduled".to_string(),
+                    updated_at,
+                    thread_count: 1,
+                    channel: "Codex".to_string(),
+                })
+            })
+            .collect()
     }
 
     pub fn parse_all_sessions(days_limit: usize, tz: &Tz) -> ProviderData {
@@ -186,6 +509,7 @@ impl CodexProvider {
         let mut all_files = Vec::new();
         Self::collect_jsonl_recursive(&sessions_dir, false, &mut all_files);
         Self::collect_jsonl_recursive(&archived_dir, true, &mut all_files);
+        let all_files = Self::select_unique_session_files(all_files);
 
         let now = Utc::now().with_timezone(tz);
         let today_str = now.format("%Y-%m-%d").to_string();
@@ -198,8 +522,6 @@ impl CodexProvider {
         let mut project_map: HashMap<String, ProjectAcc> = HashMap::new();
         let mut tool_map: HashMap<String, ToolAcc> = HashMap::new();
         let mut tasks_map: HashMap<String, TaskItem> = HashMap::new();
-
-        let mut seen_threads = HashSet::new();
 
         for (file_path, is_archived) in all_files {
             if let Ok(file) = File::open(&file_path) {
@@ -394,24 +716,44 @@ impl CodexProvider {
                             }
                         }
 
-                        // 4. Tool calls
+                        // 4. Tool calls. Only explicit tool event records count;
+                        // metadata fields with a coincidental tool_name do not.
+                        let payload_type = payload
+                            .and_then(|p| p.get("type"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let explicit_tool_event = [event_type, payload_type].iter().any(|kind| {
+                            matches!(
+                                kind.to_ascii_lowercase().as_str(),
+                                "function_call"
+                                    | "custom_tool_call"
+                                    | "tool_call"
+                                    | "tool_calls"
+                                    | "tool-use"
+                                    | "tool_use"
+                            )
+                        });
                         let mut detected_tool = None;
-                        if let Some(p) = payload {
-                            if let Some(tool) = p
-                                .get("tool_name")
-                                .or_else(|| p.get("function_name"))
-                                .and_then(|s| s.as_str())
-                            {
-                                detected_tool = Some(tool.to_string());
+                        if explicit_tool_event {
+                            if let Some(p) = payload {
+                                if let Some(tool) = p
+                                    .get("tool_name")
+                                    .or_else(|| p.get("function_name"))
+                                    .or_else(|| p.get("name"))
+                                    .and_then(Value::as_str)
+                                {
+                                    detected_tool = Some(tool.to_string());
+                                }
                             }
-                        }
-                        if detected_tool.is_none() {
-                            if let Some(tool) = val
-                                .get("tool_name")
-                                .or_else(|| val.get("function_name"))
-                                .and_then(|s| s.as_str())
-                            {
-                                detected_tool = Some(tool.to_string());
+                            if detected_tool.is_none() {
+                                if let Some(tool) = val
+                                    .get("tool_name")
+                                    .or_else(|| val.get("function_name"))
+                                    .or_else(|| val.get("name"))
+                                    .and_then(Value::as_str)
+                                {
+                                    detected_tool = Some(tool.to_string());
+                                }
                             }
                         }
 
@@ -472,11 +814,8 @@ impl CodexProvider {
                     }
                 }
 
-                if !seen_threads.contains(&thread_id) {
-                    seen_threads.insert(thread_id.clone());
-                    if let Some((_, sessions_cnt, _)) = model_map.get_mut(&session_primary_model) {
-                        *sessions_cnt += 1;
-                    }
+                if let Some((_, sessions_cnt, _)) = model_map.get_mut(&session_primary_model) {
+                    *sessions_cnt += 1;
                 }
 
                 // Count a session against the day it was last active in.
@@ -560,7 +899,7 @@ impl CodexProvider {
                     channel: "Codex".to_string(),
                     status: status.to_string(),
                     title,
-                    updated_at: session_last_active.format("%H:%M").to_string(),
+                    updated_at: session_last_active.format("%Y-%m-%d %H:%M").to_string(),
                     thread_count: 1,
                 };
 
@@ -601,7 +940,7 @@ impl CodexProvider {
         // Project Rankings: only real, still-existing directories.
         let mut projects: Vec<ProjectRankingItem> = project_map
             .into_iter()
-            .filter(|(path, _)| !path.is_empty() && Path::new(path).is_dir())
+            .filter(|(path, _)| is_real_project_path(path))
             .map(|(_, acc)| ProjectRankingItem {
                 rank: 0,
                 name: Path::new(&acc.path)
@@ -612,7 +951,7 @@ impl CodexProvider {
                 tokens: acc.tokens,
                 cost_usd: acc.cost,
                 sessions: acc.sessions,
-                last_active_at: acc.last_active.format("%m/%d %H:%M").to_string(),
+                last_active_at: acc.last_active.format("%Y-%m-%d %H:%M").to_string(),
                 primary_model: acc.primary_model,
             })
             .collect();
@@ -649,8 +988,9 @@ impl CodexProvider {
         skills_and_tools.sort_by_key(|s| std::cmp::Reverse(s.count));
 
         let mut tasks: Vec<TaskItem> = tasks_map.into_values().collect();
+        tasks.extend(Self::scheduled_tasks(tz));
         let session_count = tasks.len();
-        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        tasks = group_tasks_by_project(tasks);
 
         ProviderData {
             tokens: total_periods,
@@ -712,5 +1052,36 @@ impl CodexProvider {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodexProvider;
+    use chrono_tz::Asia::Shanghai;
+    use serde_json::json;
+
+    #[test]
+    fn quota_parser_fails_closed_when_window_fields_are_missing() {
+        assert!(CodexProvider::parse_window(&json!({}), &Shanghai).is_none());
+        assert!(CodexProvider::parse_rate_limits(
+            &json!({"rate_limits": {"primary": {}}}),
+            &Shanghai,
+            "test"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn quota_parser_normalizes_percent_without_inventing_reset() {
+        let quota = CodexProvider::parse_rate_limits(
+            &json!({"rate_limits": {"primary": {"used_percent": 47}}}),
+            &Shanghai,
+            "test",
+        )
+        .expect("valid percentage should parse");
+        assert_eq!(quota.seven_day_used_ratio, Some(0.47));
+        assert_eq!(quota.seven_day_reset_at, None);
+        assert_eq!(quota.seven_day_remaining_ratio, Some(0.53));
     }
 }

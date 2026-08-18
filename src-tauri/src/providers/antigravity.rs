@@ -13,6 +13,7 @@ use crate::models::{
     DailyActivity, ModelUsage, ProjectRankingItem, ProviderData, SkillAgg, SkillUsageItem,
     TaskItem, TokenBreakdown, TokenPeriods,
 };
+use crate::providers::{group_tasks_by_project, is_real_project_path};
 
 pub struct AntigravityProvider;
 
@@ -129,8 +130,7 @@ impl AntigravityProvider {
                 };
                 let reader = BufReader::new(file);
 
-                let mut primary_model =
-                    sqlite_model.unwrap_or_else(|| "gemini-3.7-flash".to_string());
+                let mut primary_model = sqlite_model.unwrap_or_else(|| "unknown".to_string());
                 let mut project_path: Option<String> = None;
                 let mut project_title = String::new();
                 let mut status: Option<String> = None;
@@ -321,27 +321,52 @@ impl AntigravityProvider {
                         }
                     }
 
-                    // Tools in transcript
-                    if let Some(tool_calls) = val.get("tool_calls").and_then(|v| v.as_array()) {
-                        for tc in tool_calls {
-                            if let Some(name) = tc.get("name").and_then(|s| s.as_str()) {
-                                let date_k = event_dt.format("%Y-%m-%d").to_string();
-                                let proj_k = project_path
-                                    .clone()
-                                    .unwrap_or_else(|| "default".to_string());
-                                let entry =
-                                    tool_map.entry(name.to_string()).or_insert_with(|| ToolAcc {
-                                        kind: "tool".to_string(),
-                                        count: 0,
-                                        days: HashSet::new(),
-                                        projects: HashSet::new(),
-                                        last_used: event_dt,
-                                    });
-                                entry.count += 1;
-                                entry.days.insert(date_k);
-                                entry.projects.insert(proj_k);
-                                if event_dt > entry.last_used {
-                                    entry.last_used = event_dt;
+                    // Tools are counted only on explicit tool-call event types. A
+                    // random `tool_calls` field in metadata is not a tool use.
+                    let event_type = val
+                        .get("type")
+                        .or_else(|| val.get("event_type"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_ascii_lowercase());
+                    let explicit_tool_event = matches!(
+                        event_type.as_deref(),
+                        Some("function_call")
+                            | Some("custom_tool_call")
+                            | Some("tool_call")
+                            | Some("tool_calls")
+                            | Some("tool-use")
+                            | Some("tool_use")
+                    );
+                    if explicit_tool_event {
+                        if let Some(tool_calls) = val.get("tool_calls").and_then(|v| v.as_array()) {
+                            for tc in tool_calls {
+                                if let Some(name) = tc
+                                    .get("name")
+                                    .or_else(|| {
+                                        tc.get("function").and_then(|function| function.get("name"))
+                                    })
+                                    .and_then(|s| s.as_str())
+                                {
+                                    let date_k = event_dt.format("%Y-%m-%d").to_string();
+                                    let proj_k = project_path
+                                        .clone()
+                                        .unwrap_or_else(|| "default".to_string());
+                                    let entry =
+                                        tool_map.entry(name.to_string()).or_insert_with(|| {
+                                            ToolAcc {
+                                                kind: "tool".to_string(),
+                                                count: 0,
+                                                days: HashSet::new(),
+                                                projects: HashSet::new(),
+                                                last_used: event_dt,
+                                            }
+                                        });
+                                    entry.count += 1;
+                                    entry.days.insert(date_k);
+                                    entry.projects.insert(proj_k);
+                                    if event_dt > entry.last_used {
+                                        entry.last_used = event_dt;
+                                    }
                                 }
                             }
                         }
@@ -449,16 +474,23 @@ impl AntigravityProvider {
                     }
                 }
 
-                let status = status.unwrap_or_else(|| {
-                    let elapsed_hours = (now - last_activity).num_hours();
-                    if elapsed_hours <= 2 {
-                        "running".to_string()
-                    } else if last_activity.format("%Y-%m-%d").to_string() == today_str {
-                        "pending".to_string()
-                    } else {
+                let status = match status.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                    Some("running") | Some("active") | Some("in_progress") => "running".to_string(),
+                    Some("pending") | Some("queued") | Some("waiting") => "pending".to_string(),
+                    Some("completed") | Some("complete") | Some("done") | Some("success") => {
                         "completed".to_string()
                     }
-                });
+                    _ => {
+                        let elapsed_hours = (now - last_activity).num_hours();
+                        if elapsed_hours <= 2 {
+                            "running".to_string()
+                        } else if last_activity.format("%Y-%m-%d").to_string() == today_str {
+                            "pending".to_string()
+                        } else {
+                            "completed".to_string()
+                        }
+                    }
+                };
 
                 let title = if !project_title.is_empty() {
                     project_title
@@ -476,7 +508,7 @@ impl AntigravityProvider {
                     project_path: project_path.unwrap_or_default(),
                     title,
                     status,
-                    updated_at: last_activity.format("%m/%d %H:%M").to_string(),
+                    updated_at: last_activity.format("%Y-%m-%d %H:%M").to_string(),
                     thread_count: 1,
                     channel: "antigravity".to_string(),
                 });
@@ -506,7 +538,7 @@ impl AntigravityProvider {
         // Project ranking: only real, still-existing directories.
         let mut projects: Vec<ProjectRankingItem> = project_map
             .into_iter()
-            .filter(|(path, _)| !path.is_empty() && Path::new(path).is_dir())
+            .filter(|(path, _)| is_real_project_path(path))
             .map(|(_, acc)| ProjectRankingItem {
                 rank: 0,
                 name: Path::new(&acc.path)
@@ -517,7 +549,7 @@ impl AntigravityProvider {
                 tokens: acc.tokens,
                 cost_usd: acc.cost,
                 sessions: acc.sessions,
-                last_active_at: acc.last_active.format("%m/%d %H:%M").to_string(),
+                last_active_at: acc.last_active.format("%Y-%m-%d %H:%M").to_string(),
                 primary_model: acc.primary_model,
             })
             .collect();
@@ -553,7 +585,7 @@ impl AntigravityProvider {
             .collect();
         skills_and_tools.sort_by_key(|s| std::cmp::Reverse(s.count));
 
-        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        tasks = group_tasks_by_project(tasks);
 
         ProviderData {
             tokens: total_periods,

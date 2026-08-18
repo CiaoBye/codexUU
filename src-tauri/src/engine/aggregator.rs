@@ -9,6 +9,7 @@ use crate::models::{
 };
 use crate::providers::antigravity::AntigravityProvider;
 use crate::providers::codex::CodexProvider;
+use crate::providers::group_tasks_by_project;
 
 pub struct Aggregator;
 
@@ -34,8 +35,10 @@ impl Aggregator {
     pub fn build_snapshot(channel: &str, timezone: Option<String>) -> DashboardSnapshot {
         let tz = Self::resolve_tz(timezone.as_deref());
         let codex_quota = CodexProvider::fetch_quota(&tz);
-        let c_data = CodexProvider::parse_all_sessions(30, &tz);
-        let a_data = AntigravityProvider::parse_all(30, &tz);
+        // Keep the complete history in the snapshot. The UI applies the selected
+        // 7-day/month/all range without silently truncating cumulative totals.
+        let c_data = CodexProvider::parse_all_sessions(0, &tz);
+        let a_data = AntigravityProvider::parse_all(0, &tz);
 
         let now_str = Utc::now()
             .with_timezone(&tz)
@@ -46,8 +49,12 @@ impl Aggregator {
             SourceHealthStatus {
                 id: "codex_app_server".to_string(),
                 name: "Codex Runtime / 额度".to_string(),
-                status: if codex_quota.status == "available" {
+                status: if codex_quota.status == "available"
+                    && codex_quota.source.contains("app-server")
+                {
                     "healthy".to_string()
+                } else if codex_quota.status == "available" {
+                    "degraded".to_string()
                 } else if codex_quota.status == "unavailable" {
                     "unavailable".to_string()
                 } else {
@@ -58,7 +65,8 @@ impl Aggregator {
                 } else {
                     "未读取到 Codex 实时额度，请确认已登录并运行过 Codex".to_string()
                 },
-                last_success_at: Some(codex_quota.last_updated.clone()),
+                last_success_at: (codex_quota.status == "available")
+                    .then_some(codex_quota.last_updated.clone()),
             },
             SourceHealthStatus {
                 id: "codex_sessions".to_string(),
@@ -73,7 +81,7 @@ impl Aggregator {
                 } else {
                     "未找到 Codex 本机会话".to_string()
                 },
-                last_success_at: Some(now_str.clone()),
+                last_success_at: (c_data.session_count > 0).then_some(now_str.clone()),
             },
             SourceHealthStatus {
                 id: "antigravity_db".to_string(),
@@ -88,7 +96,7 @@ impl Aggregator {
                 } else {
                     "未找到可解析的 Antigravity 会话".to_string()
                 },
-                last_success_at: Some(now_str.clone()),
+                last_success_at: (a_data.session_count > 0).then_some(now_str.clone()),
             },
         ];
 
@@ -209,7 +217,7 @@ impl Aggregator {
         // Merge tasks
         let mut merged_tasks = codex.tasks;
         merged_tasks.extend(antigravity.tasks);
-        merged_tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        merged_tasks = group_tasks_by_project(merged_tasks);
 
         // Merge projects by real path
         let mut proj_map: HashMap<String, ProjectRankingItem> = HashMap::new();

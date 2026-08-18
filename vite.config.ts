@@ -4,8 +4,10 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 
-const version = fs.readFileSync(path.resolve(__dirname, 'VERSION'), 'utf-8').trim();
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+const version = fs.readFileSync(path.resolve(projectRoot, 'VERSION'), 'utf-8').trim();
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -15,7 +17,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(projectRoot, './src'),
     },
   },
   test: {

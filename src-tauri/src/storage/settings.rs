@@ -40,6 +40,47 @@ impl Default for AppSettings {
     }
 }
 
+impl AppSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.theme.as_str(), "dark" | "light" | "system") {
+            return Err("主题设置无效".to_string());
+        }
+        if !matches!(self.language.as_str(), "zh-CN" | "en") {
+            return Err("界面语言设置无效".to_string());
+        }
+        if !matches!(self.quota_mode.as_str(), "used" | "remaining") {
+            return Err("额度显示口径无效".to_string());
+        }
+        if self.timezone.parse::<chrono_tz::Tz>().is_err() {
+            return Err(format!("统计时区无效：{}", self.timezone));
+        }
+        if self.global_shortcut.len() > 64
+            || self
+                .global_shortcut
+                .chars()
+                .any(|character| character.is_control())
+        {
+            return Err("全局快捷键格式过长或包含非法字符".to_string());
+        }
+        if !matches!(
+            self.widget_style.as_str(),
+            "ring" | "capsule" | "tracks" | "disc" | "gauge"
+        ) {
+            return Err("悬浮窗样式无效".to_string());
+        }
+        if !self.widget_scale.is_finite() || !(0.2..=3.0).contains(&self.widget_scale) {
+            return Err("悬浮窗缩放比例必须在 0.2 到 3.0 之间".to_string());
+        }
+        if !matches!(
+            self.default_channel.as_str(),
+            "codex" | "antigravity" | "all"
+        ) {
+            return Err("默认渠道设置无效".to_string());
+        }
+        Ok(())
+    }
+}
+
 pub struct SettingsStorage;
 
 impl SettingsStorage {
@@ -56,7 +97,9 @@ impl SettingsStorage {
         if path.exists() {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(settings) = serde_json::from_str::<AppSettings>(&content) {
-                    return settings;
+                    if settings.validate().is_ok() {
+                        return settings;
+                    }
                 }
             }
         }
@@ -90,10 +133,39 @@ impl SettingsStorage {
     }
 
     pub fn save(settings: &AppSettings) -> Result<(), String> {
+        settings.validate()?;
         let path = Self::get_settings_path();
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-        fs::write(path, content).map_err(|e| format!("Failed to write settings: {}", e))?;
+        let temp = path.with_extension("json.tmp");
+        fs::write(&temp, content).map_err(|e| format!("Failed to write settings: {}", e))?;
+        crate::storage::file::replace(&temp, &path)
+            .map_err(|e| format!("Failed to commit settings: {e}"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSettings;
+
+    #[test]
+    fn default_settings_are_valid() {
+        assert!(AppSettings::default().validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_runtime_values_are_rejected() {
+        let settings = AppSettings {
+            timezone: "not/a-timezone".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(settings.validate().is_err());
+
+        let settings = AppSettings {
+            widget_scale: f64::NAN,
+            ..AppSettings::default()
+        };
+        assert!(settings.validate().is_err());
     }
 }

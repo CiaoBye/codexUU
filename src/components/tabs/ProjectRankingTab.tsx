@@ -14,6 +14,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
   channel,
 }) => {
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   const totalTokens = projects.reduce((sum, p) => sum + p.tokens.total, 0) || 1;
   const maxProjectTokens = Math.max(...projects.map((p) => p.tokens.total), 1);
@@ -29,6 +30,8 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
   );
 
   const handleExport = async (format: 'json' | 'csv' | 'markdown') => {
+    if (isExporting) return;
+    setIsExporting(true);
     try {
       const res = await exportData(format, channel);
       const mime = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/markdown';
@@ -42,19 +45,21 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
       setExportNotice(`已导出 ${format.toUpperCase()} 文件！`);
     } catch (err) {
       setExportNotice(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsExporting(false);
     }
     setTimeout(() => setExportNotice(null), 3000);
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 h-[420px] select-none">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 dashboard-data-panel">
       {/* Left 2 Cols: Project Ranking Table */}
-      <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-2xl p-4 flex flex-col justify-between shadow-sm overflow-hidden">
+      <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm overflow-hidden">
         {/* Header with export */}
         <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
           <div className="flex items-center gap-2">
             <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <Award className="w-4 h-4 text-amber-400" />
+              <Award aria-hidden="true" className="w-4 h-4 text-amber-400" />
               <span>项目用量排行</span>
             </h4>
             <span className="text-[11px] text-[var(--text-muted)]">真实有效目录 · 累计</span>
@@ -62,24 +67,36 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
 
           <div className="flex items-center gap-1">
             <button
+              type="button"
+              aria-label="导出项目排行 JSON"
+              aria-busy={isExporting}
+              disabled={isExporting}
               onClick={() => handleExport('json')}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
             >
-              <Download className="w-3 h-3" />
+              <Download aria-hidden="true" className="w-3 h-3" />
               JSON
             </button>
             <button
+              type="button"
+              aria-label="导出项目排行 CSV"
+              aria-busy={isExporting}
+              disabled={isExporting}
               onClick={() => handleExport('csv')}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
             >
-              <Download className="w-3 h-3" />
+              <Download aria-hidden="true" className="w-3 h-3" />
               CSV
             </button>
             <button
+              type="button"
+              aria-label="导出项目排行 Markdown"
+              aria-busy={isExporting}
+              disabled={isExporting}
               onClick={() => handleExport('markdown')}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
             >
-              <Download className="w-3 h-3" />
+              <Download aria-hidden="true" className="w-3 h-3" />
               MD
             </button>
           </div>
@@ -87,6 +104,11 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
 
         {/* Project List Scrollable */}
         <div className="flex-1 overflow-y-auto space-y-2 py-2 pr-1">
+          {projects.length === 0 && (
+            <div className="flex h-full items-center justify-center text-xs text-[var(--text-muted)]">
+              当前口径暂无有效项目目录
+            </div>
+          )}
           {projects.map((p) => {
             const pct = Math.max(4, Math.round((p.tokens.total / maxProjectTokens) * 100));
             return (
@@ -114,7 +136,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
 
                   <div className="flex items-center gap-3 font-mono">
                     <span className="text-teal-400 font-bold">{formatTokens(p.tokens.total)}</span>
-                    <span className="text-amber-400 text-[11px]">${p.cost_usd.toFixed(2)}</span>
+                    <span className="text-[var(--token-output)] text-[11px]">${p.cost_usd.toFixed(2)}</span>
                   </div>
                 </div>
 
@@ -141,16 +163,16 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
 
         {/* Footer Notice */}
         <div className="pt-2 border-t border-[var(--border-default)] text-[10px] text-[var(--text-muted)] flex justify-between">
-          <span>{exportNotice || '已过滤临时及已删除目录 · 本机真实有效记录'}</span>
+          <span role="status" aria-live="polite">{exportNotice || '已过滤临时及已删除目录 · 本机真实有效记录'}</span>
           <span>按 Token 降序排列</span>
         </div>
       </div>
 
       {/* Right 1 Col: Activity Overview Summary */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+      <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm">
         <div className="pb-2 border-b border-[var(--border-default)]">
           <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-            <PieChart className="w-4 h-4 text-teal-400" />
+            <PieChart aria-hidden="true" className="w-4 h-4 text-teal-400" />
             <span>活动概览指标</span>
           </h4>
           <span className="text-[10px] text-[var(--text-muted)]">当前口径统计汇总</span>
@@ -183,7 +205,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
           {/* Card 3: Most Recently Active */}
           <div className="p-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)]">
             <div className="flex items-center gap-1 text-[11px] text-[var(--text-secondary)]">
-              <Clock className="w-3.5 h-3.5 text-blue-400" />
+              <Clock aria-hidden="true" className="w-3.5 h-3.5 text-blue-400" />
               <span>最近活跃项目</span>
             </div>
             <div className="font-semibold text-xs text-[var(--text-primary)] mt-1 truncate">

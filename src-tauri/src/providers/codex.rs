@@ -16,7 +16,7 @@ use crate::models::{
     DailyActivity, ModelUsage, ProjectRankingItem, ProviderData, QuotaSnapshot, SkillAgg,
     SkillUsageItem, TaskItem, TokenBreakdown, TokenPeriods,
 };
-use crate::providers::{group_tasks_by_project, is_real_project_path};
+use crate::providers::{group_tasks_by_project, is_explicit_skill_event, is_real_project_path};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -43,6 +43,19 @@ struct ToolAcc {
 }
 
 impl CodexProvider {
+    pub fn source_roots() -> Vec<PathBuf> {
+        let home = Self::get_codex_home();
+        vec![home.join("sessions"), home.join("archived_sessions")]
+    }
+
+    fn normalize_model(value: Option<&str>) -> String {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
     pub fn get_codex_home() -> PathBuf {
         dirs::home_dir()
             .map(|h| h.join(".codex"))
@@ -495,7 +508,7 @@ impl CodexProvider {
                     status: "scheduled".to_string(),
                     updated_at,
                     thread_count: 1,
-                    channel: "Codex".to_string(),
+                    channel: "codex".to_string(),
                 })
             })
             .collect()
@@ -510,6 +523,7 @@ impl CodexProvider {
         Self::collect_jsonl_recursive(&sessions_dir, false, &mut all_files);
         Self::collect_jsonl_recursive(&archived_dir, true, &mut all_files);
         let all_files = Self::select_unique_session_files(all_files);
+        let scanned_files = all_files.len();
 
         let now = Utc::now().with_timezone(tz);
         let today_str = now.format("%Y-%m-%d").to_string();
@@ -522,398 +536,429 @@ impl CodexProvider {
         let mut project_map: HashMap<String, ProjectAcc> = HashMap::new();
         let mut tool_map: HashMap<String, ToolAcc> = HashMap::new();
         let mut tasks_map: HashMap<String, TaskItem> = HashMap::new();
+        let mut parsed_files = 0usize;
+        let mut read_errors = 0usize;
+        let mut parse_errors = 0usize;
 
         for (file_path, is_archived) in all_files {
-            if let Ok(file) = File::open(&file_path) {
-                let reader = BufReader::new(file);
-                let mut session_project_path = String::new();
-                let mut session_title = String::new();
-                let mut session_primary_model = "gpt-4o".to_string();
-                let mut session_tokens = TokenBreakdown::default();
-                let mut file_project_tokens = TokenBreakdown::default();
-                let mut session_last_active = now;
-                let mut thread_id = file_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
+            let file = match File::open(&file_path) {
+                Ok(file) => file,
+                Err(_) => {
+                    read_errors += 1;
+                    continue;
+                }
+            };
+            parsed_files += 1;
+            let reader = BufReader::new(file);
+            let mut session_project_path = String::new();
+            let mut session_title = String::new();
+            let mut session_primary_model = Self::normalize_model(None);
+            let mut session_tokens = TokenBreakdown::default();
+            let mut file_project_tokens = TokenBreakdown::default();
+            let mut session_last_active = now;
+            let mut thread_id = file_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
 
-                let mut highest_uncached = 0u64;
-                let mut highest_cached = 0u64;
-                let mut highest_output = 0u64;
+            let mut highest_uncached = 0u64;
+            let mut highest_cached = 0u64;
+            let mut highest_output = 0u64;
 
-                for line_res in reader.lines() {
-                    let line = match line_res {
-                        Ok(l) => l,
-                        Err(_) => continue,
-                    };
+            for line_res in reader.lines() {
+                let line = match line_res {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
 
-                    if line.is_empty() {
+                if line.is_empty() {
+                    continue;
+                }
+
+                let val = match serde_json::from_str::<Value>(&line) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        parse_errors += 1;
                         continue;
                     }
+                };
+                let event_type = val.get("type").and_then(|s| s.as_str()).unwrap_or("");
+                let payload = val.get("payload");
 
-                    if let Ok(val) = serde_json::from_str::<Value>(&line) {
-                        let event_type = val.get("type").and_then(|s| s.as_str()).unwrap_or("");
-                        let payload = val.get("payload");
-
-                        // 1. Context & Metadata (turn_context or session_meta)
-                        if event_type == "turn_context" {
-                            if let Some(p) = payload {
-                                if let Some(cwd) = p.get("cwd").and_then(|s| s.as_str()) {
-                                    session_project_path = cwd.to_string();
-                                }
-                                if let Some(m) = p.get("model").and_then(|s| s.as_str()) {
-                                    session_primary_model = m.to_string();
-                                }
-                            }
+                // 1. Context & Metadata (turn_context or session_meta)
+                if event_type == "turn_context" {
+                    if let Some(p) = payload {
+                        if let Some(cwd) = p.get("cwd").and_then(|s| s.as_str()) {
+                            session_project_path = cwd.to_string();
                         }
-
-                        if let Some(meta) = val.get("session_meta").or_else(|| val.get("session")) {
-                            if let Some(p) = meta
-                                .get("cwd")
-                                .or_else(|| meta.get("project_path"))
-                                .and_then(|s| s.as_str())
-                            {
-                                session_project_path = p.to_string();
-                            }
-                            if let Some(t) = meta
-                                .get("title")
-                                .or_else(|| meta.get("summary"))
-                                .and_then(|s| s.as_str())
-                            {
-                                session_title = t.to_string();
-                            }
-                            if let Some(id) = meta
-                                .get("thread_id")
-                                .or_else(|| meta.get("id"))
-                                .and_then(|s| s.as_str())
-                            {
-                                thread_id = id.to_string();
-                            }
-                        }
-
-                        if let Some(model) = val
-                            .get("model")
-                            .or_else(|| val.get("model_name"))
-                            .and_then(|s| s.as_str())
-                        {
-                            session_primary_model = model.to_string();
-                        }
-
-                        // 2. Timestamp
-                        let mut event_dt = now;
-                        if let Some(ts_str) = val
-                            .get("timestamp")
-                            .or_else(|| val.get("created_at"))
-                            .and_then(|s| s.as_str())
-                        {
-                            if let Some(parsed) = Self::parse_ts(ts_str, tz) {
-                                event_dt = parsed;
-                                session_last_active = parsed;
-                            }
-                        }
-
-                        // 3. Token counts extraction
-                        let mut token_usage_opt = None;
-
-                        if let Some(p) = payload {
-                            if p.get("type").and_then(|s| s.as_str()) == Some("token_count") {
-                                if let Some(info) = p.get("info") {
-                                    token_usage_opt = info
-                                        .get("total_token_usage")
-                                        .or_else(|| info.get("last_token_usage"));
-                                }
-                            }
-                        }
-                        if token_usage_opt.is_none() {
-                            token_usage_opt =
-                                val.get("token_count").or_else(|| val.get("token_usage"));
-                        }
-
-                        if let Some(tc) = token_usage_opt {
-                            let total_input =
-                                tc.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let cached = tc
-                                .get("cached_input_tokens")
-                                .or_else(|| tc.get("cached_tokens"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let uncached = total_input.saturating_sub(cached);
-                            let output_main = tc
-                                .get("output_tokens")
-                                .or_else(|| tc.get("output"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let reasoning = tc
-                                .get("reasoning_output_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let output = output_main + reasoning;
-
-                            // Each token field can advance independently; never lose a field's growth
-                            // when another field is reset or absent in a later event.
-                            let delta_uncached = uncached.saturating_sub(highest_uncached);
-                            let delta_cached = cached.saturating_sub(highest_cached);
-                            let delta_output = output.saturating_sub(highest_output);
-
-                            highest_uncached = highest_uncached.max(uncached);
-                            highest_cached = highest_cached.max(cached);
-                            highest_output = highest_output.max(output);
-
-                            if delta_uncached + delta_cached + delta_output > 0 {
-                                let delta =
-                                    TokenBreakdown::new(delta_uncached, delta_cached, delta_output);
-                                session_tokens.add(&delta);
-
-                                // Attribution to model
-                                let (model_entry, _sessions_cnt, turns_cnt) = model_map
-                                    .entry(session_primary_model.clone())
-                                    .or_insert((TokenBreakdown::default(), 0, 0));
-                                model_entry.add(&delta);
-                                *turns_cnt += 1;
-
-                                // Daily aggregation
-                                let date_key = event_dt.format("%Y-%m-%d").to_string();
-                                let (daily_tb, daily_cost, _daily_sess) = daily_map
-                                    .entry(date_key.clone())
-                                    .or_insert((TokenBreakdown::default(), 0.0, 0));
-                                daily_tb.add(&delta);
-                                let (cost, _) =
-                                    PricingEngine::calculate_cost(&session_primary_model, &delta);
-                                *daily_cost += cost;
-
-                                // Period checks
-                                if date_key == today_str {
-                                    total_periods.today.add(&delta);
-                                }
-                                if event_dt.iso_week() == current_week {
-                                    total_periods.week.add(&delta);
-                                }
-                                if event_dt.format("%Y-%m").to_string() == current_month {
-                                    total_periods.month.add(&delta);
-                                }
-                                total_periods.all_time.add(&delta);
-
-                                // Project aggregation at event level so cost is priced per actual model.
-                                if !session_project_path.is_empty() {
-                                    let entry = project_map
-                                        .entry(session_project_path.clone())
-                                        .or_insert_with(|| ProjectAcc {
-                                            path: session_project_path.clone(),
-                                            tokens: TokenBreakdown::default(),
-                                            cost: 0.0,
-                                            sessions: 0,
-                                            last_active: event_dt,
-                                            primary_model: session_primary_model.clone(),
-                                        });
-                                    entry.tokens.add(&delta);
-                                    entry.cost += cost;
-                                    file_project_tokens.add(&delta);
-                                    if event_dt > entry.last_active {
-                                        entry.last_active = event_dt;
-                                    }
-                                }
-                            }
-                        }
-
-                        // 4. Tool calls. Only explicit tool event records count;
-                        // metadata fields with a coincidental tool_name do not.
-                        let payload_type = payload
-                            .and_then(|p| p.get("type"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
-                        let explicit_tool_event = [event_type, payload_type].iter().any(|kind| {
-                            matches!(
-                                kind.to_ascii_lowercase().as_str(),
-                                "function_call"
-                                    | "custom_tool_call"
-                                    | "tool_call"
-                                    | "tool_calls"
-                                    | "tool-use"
-                                    | "tool_use"
-                            )
-                        });
-                        let mut detected_tool = None;
-                        if explicit_tool_event {
-                            if let Some(p) = payload {
-                                if let Some(tool) = p
-                                    .get("tool_name")
-                                    .or_else(|| p.get("function_name"))
-                                    .or_else(|| p.get("name"))
-                                    .and_then(Value::as_str)
-                                {
-                                    detected_tool = Some(tool.to_string());
-                                }
-                            }
-                            if detected_tool.is_none() {
-                                if let Some(tool) = val
-                                    .get("tool_name")
-                                    .or_else(|| val.get("function_name"))
-                                    .or_else(|| val.get("name"))
-                                    .and_then(Value::as_str)
-                                {
-                                    detected_tool = Some(tool.to_string());
-                                }
-                            }
-                        }
-
-                        if let Some(tool_name) = detected_tool {
-                            let date_k = event_dt.format("%Y-%m-%d").to_string();
-                            let proj_k = if session_project_path.is_empty() {
-                                "default".to_string()
-                            } else {
-                                session_project_path.clone()
-                            };
-                            let entry =
-                                tool_map
-                                    .entry(tool_name.clone())
-                                    .or_insert_with(|| ToolAcc {
-                                        kind: "tool".to_string(),
-                                        count: 0,
-                                        days: HashSet::new(),
-                                        projects: HashSet::new(),
-                                        last_used: event_dt,
-                                    });
-                            entry.count += 1;
-                            entry.days.insert(date_k);
-                            entry.projects.insert(proj_k);
-                            if event_dt > entry.last_used {
-                                entry.last_used = event_dt;
-                            }
-                        }
-
-                        // 5. Skill loads
-                        if let Some(skill_name) = val
-                            .get("skill_name")
-                            .or_else(|| val.get("loaded_skill"))
-                            .and_then(|s| s.as_str())
-                        {
-                            let date_k = event_dt.format("%Y-%m-%d").to_string();
-                            let proj_k = if session_project_path.is_empty() {
-                                "default".to_string()
-                            } else {
-                                session_project_path.clone()
-                            };
-                            let entry =
-                                tool_map
-                                    .entry(skill_name.to_string())
-                                    .or_insert_with(|| ToolAcc {
-                                        kind: "skill".to_string(),
-                                        count: 0,
-                                        days: HashSet::new(),
-                                        projects: HashSet::new(),
-                                        last_used: event_dt,
-                                    });
-                            entry.count += 1;
-                            entry.days.insert(date_k);
-                            entry.projects.insert(proj_k);
-                            if event_dt > entry.last_used {
-                                entry.last_used = event_dt;
-                            }
+                        if let Some(m) = p.get("model").and_then(|s| s.as_str()) {
+                            session_primary_model = m.to_string();
                         }
                     }
                 }
 
-                if let Some((_, sessions_cnt, _)) = model_map.get_mut(&session_primary_model) {
-                    *sessions_cnt += 1;
+                if let Some(meta) = val.get("session_meta").or_else(|| val.get("session")) {
+                    if let Some(p) = meta
+                        .get("cwd")
+                        .or_else(|| meta.get("project_path"))
+                        .and_then(|s| s.as_str())
+                    {
+                        session_project_path = p.to_string();
+                    }
+                    if let Some(t) = meta
+                        .get("title")
+                        .or_else(|| meta.get("summary"))
+                        .and_then(|s| s.as_str())
+                    {
+                        session_title = t.to_string();
+                    }
+                    if let Some(id) = meta
+                        .get("thread_id")
+                        .or_else(|| meta.get("id"))
+                        .and_then(|s| s.as_str())
+                    {
+                        thread_id = id.to_string();
+                    }
                 }
 
-                // Count a session against the day it was last active in.
-                let session_date = session_last_active.format("%Y-%m-%d").to_string();
-                let daily_entry = daily_map.entry(session_date.clone()).or_insert((
-                    TokenBreakdown::default(),
-                    0.0,
-                    0,
-                ));
-                daily_entry.2 += 1;
+                if let Some(model) = val
+                    .get("model")
+                    .or_else(|| val.get("model_name"))
+                    .and_then(|s| s.as_str())
+                {
+                    session_primary_model = model.to_string();
+                }
 
-                // Project session count (tokens/cost are already added at event level).
-                if !session_project_path.is_empty() {
-                    let entry = project_map
-                        .entry(session_project_path.clone())
-                        .or_insert_with(|| ProjectAcc {
-                            path: session_project_path.clone(),
-                            tokens: TokenBreakdown::default(),
-                            cost: 0.0,
-                            sessions: 0,
-                            last_active: session_last_active,
-                            primary_model: session_primary_model.clone(),
-                        });
+                // 2. Timestamp
+                let mut event_dt = now;
+                if let Some(ts_str) = val
+                    .get("timestamp")
+                    .or_else(|| val.get("created_at"))
+                    .and_then(|s| s.as_str())
+                {
+                    if let Some(parsed) = Self::parse_ts(ts_str, tz) {
+                        event_dt = parsed;
+                        session_last_active = parsed;
+                    }
+                }
 
-                    // Add any tokens that appeared before the project path was known.
-                    let remaining = TokenBreakdown::new(
-                        session_tokens
-                            .uncached_input
-                            .saturating_sub(file_project_tokens.uncached_input),
-                        session_tokens
-                            .cached_input
-                            .saturating_sub(file_project_tokens.cached_input),
-                        session_tokens
-                            .output
-                            .saturating_sub(file_project_tokens.output),
-                    );
-                    if remaining.total > 0 {
-                        entry.tokens.add(&remaining);
+                // 3. Token counts extraction
+                let mut token_usage_opt = None;
+                let mut is_cumulative = false;
+
+                if let Some(p) = payload {
+                    if p.get("type").and_then(|s| s.as_str()) == Some("token_count") {
+                        if let Some(info) = p.get("info") {
+                            if let Some(tc) = info.get("total_token_usage") {
+                                token_usage_opt = Some(tc);
+                                is_cumulative = true;
+                            } else if let Some(tc) = info.get("last_token_usage") {
+                                token_usage_opt = Some(tc);
+                            }
+                        }
+                    }
+                }
+                if token_usage_opt.is_none() {
+                    if let Some(tc) = val.get("total_token_usage") {
+                        token_usage_opt = Some(tc);
+                        is_cumulative = true;
+                    } else {
+                        token_usage_opt = val.get("token_count").or_else(|| val.get("token_usage"));
+                    }
+                }
+
+                if let Some(tc) = token_usage_opt {
+                    let total_input = tc.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cached = tc
+                        .get("cached_input_tokens")
+                        .or_else(|| tc.get("cached_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let uncached = total_input.saturating_sub(cached);
+                    let output_main = tc
+                        .get("output_tokens")
+                        .or_else(|| tc.get("output"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let reasoning = tc
+                        .get("reasoning_output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = output_main + reasoning;
+
+                    let (delta_uncached, delta_cached, delta_output) = if is_cumulative {
+                        let du = uncached.saturating_sub(highest_uncached);
+                        let dc = cached.saturating_sub(highest_cached);
+                        let do_ = output.saturating_sub(highest_output);
+                        highest_uncached = highest_uncached.max(uncached);
+                        highest_cached = highest_cached.max(cached);
+                        highest_output = highest_output.max(output);
+                        (du, dc, do_)
+                    } else {
+                        (uncached, cached, output)
+                    };
+
+                    if delta_uncached + delta_cached + delta_output > 0 {
+                        let delta = TokenBreakdown::new(delta_uncached, delta_cached, delta_output);
+                        session_tokens.add(&delta);
+
+                        // Attribution to model
+                        let (model_entry, _sessions_cnt, turns_cnt) = model_map
+                            .entry(session_primary_model.clone())
+                            .or_insert((TokenBreakdown::default(), 0, 0));
+                        model_entry.add(&delta);
+                        *turns_cnt += 1;
+
+                        // Daily aggregation
+                        let date_key = event_dt.format("%Y-%m-%d").to_string();
+                        let (daily_tb, daily_cost, _daily_sess) = daily_map
+                            .entry(date_key.clone())
+                            .or_insert((TokenBreakdown::default(), 0.0, 0));
+                        daily_tb.add(&delta);
                         let (cost, _) =
-                            PricingEngine::calculate_cost(&session_primary_model, &remaining);
-                        entry.cost += cost;
-                    }
+                            PricingEngine::calculate_cost(&session_primary_model, &delta);
+                        *daily_cost += cost;
 
-                    entry.sessions += 1;
-                    if session_last_active > entry.last_active {
-                        entry.last_active = session_last_active;
+                        // Period checks
+                        if date_key == today_str {
+                            total_periods.today.add(&delta);
+                        }
+                        if event_dt.iso_week() == current_week {
+                            total_periods.week.add(&delta);
+                        }
+                        if event_dt.format("%Y-%m").to_string() == current_month {
+                            total_periods.month.add(&delta);
+                        }
+                        total_periods.all_time.add(&delta);
+
+                        // Project aggregation at event level so cost is priced per actual model.
+                        if !session_project_path.is_empty() {
+                            let entry = project_map
+                                .entry(session_project_path.clone())
+                                .or_insert_with(|| ProjectAcc {
+                                    path: session_project_path.clone(),
+                                    tokens: TokenBreakdown::default(),
+                                    cost: 0.0,
+                                    sessions: 0,
+                                    last_active: event_dt,
+                                    primary_model: session_primary_model.clone(),
+                                });
+                            entry.tokens.add(&delta);
+                            entry.cost += cost;
+                            file_project_tokens.add(&delta);
+                            if event_dt > entry.last_active {
+                                entry.last_active = event_dt;
+                            }
+                        }
                     }
                 }
 
-                // Tasks Derivation (deduplicated by thread id)
-                let status = if is_archived {
+                // 4. Tool calls. Only explicit tool event records count;
+                // metadata fields with a coincidental tool_name do not.
+                let payload_type = payload
+                    .and_then(|p| p.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let explicit_tool_event = [event_type, payload_type].iter().any(|kind| {
+                    matches!(
+                        kind.to_ascii_lowercase().as_str(),
+                        "function_call"
+                            | "custom_tool_call"
+                            | "tool_call"
+                            | "tool_calls"
+                            | "tool-use"
+                            | "tool_use"
+                    )
+                });
+                let mut detected_tool = None;
+                if explicit_tool_event {
+                    if let Some(p) = payload {
+                        if let Some(tool) = p
+                            .get("tool_name")
+                            .or_else(|| p.get("function_name"))
+                            .or_else(|| p.get("name"))
+                            .and_then(Value::as_str)
+                        {
+                            detected_tool = Some(tool.to_string());
+                        }
+                    }
+                    if detected_tool.is_none() {
+                        if let Some(tool) = val
+                            .get("tool_name")
+                            .or_else(|| val.get("function_name"))
+                            .or_else(|| val.get("name"))
+                            .and_then(Value::as_str)
+                        {
+                            detected_tool = Some(tool.to_string());
+                        }
+                    }
+                }
+
+                if let Some(tool_name) = detected_tool {
+                    let date_k = event_dt.format("%Y-%m-%d").to_string();
+                    let proj_k = if session_project_path.is_empty() {
+                        "default".to_string()
+                    } else {
+                        session_project_path.clone()
+                    };
+                    let entry = tool_map
+                        .entry(tool_name.clone())
+                        .or_insert_with(|| ToolAcc {
+                            kind: "tool".to_string(),
+                            count: 0,
+                            days: HashSet::new(),
+                            projects: HashSet::new(),
+                            last_used: event_dt,
+                        });
+                    entry.count += 1;
+                    entry.days.insert(date_k);
+                    entry.projects.insert(proj_k);
+                    if event_dt > entry.last_used {
+                        entry.last_used = event_dt;
+                    }
+                }
+
+                // 5. Skill loads. Only explicit skill-load event types count.
+                let explicit_skill_event = is_explicit_skill_event(&[event_type, payload_type]);
+                if explicit_skill_event {
+                    let skill_name = val
+                        .get("skill_name")
+                        .or_else(|| val.get("loaded_skill"))
+                        .and_then(|s| s.as_str())
+                        .or_else(|| {
+                            payload.and_then(|p| {
+                                p.get("skill_name")
+                                    .or_else(|| p.get("loaded_skill"))
+                                    .and_then(|s| s.as_str())
+                            })
+                        });
+                    if let Some(skill_name) = skill_name {
+                        let date_k = event_dt.format("%Y-%m-%d").to_string();
+                        let proj_k = if session_project_path.is_empty() {
+                            "default".to_string()
+                        } else {
+                            session_project_path.clone()
+                        };
+                        let entry =
+                            tool_map
+                                .entry(skill_name.to_string())
+                                .or_insert_with(|| ToolAcc {
+                                    kind: "skill".to_string(),
+                                    count: 0,
+                                    days: HashSet::new(),
+                                    projects: HashSet::new(),
+                                    last_used: event_dt,
+                                });
+                        entry.count += 1;
+                        entry.days.insert(date_k);
+                        entry.projects.insert(proj_k);
+                        if event_dt > entry.last_used {
+                            entry.last_used = event_dt;
+                        }
+                    }
+                }
+            }
+
+            if let Some((_, sessions_cnt, _)) = model_map.get_mut(&session_primary_model) {
+                *sessions_cnt += 1;
+            }
+
+            // Count a session against the day it was last active in.
+            let session_date = session_last_active.format("%Y-%m-%d").to_string();
+            let daily_entry = daily_map.entry(session_date.clone()).or_insert((
+                TokenBreakdown::default(),
+                0.0,
+                0,
+            ));
+            daily_entry.2 += 1;
+
+            // Project session count (tokens/cost are already added at event level).
+            if !session_project_path.is_empty() {
+                let entry = project_map
+                    .entry(session_project_path.clone())
+                    .or_insert_with(|| ProjectAcc {
+                        path: session_project_path.clone(),
+                        tokens: TokenBreakdown::default(),
+                        cost: 0.0,
+                        sessions: 0,
+                        last_active: session_last_active,
+                        primary_model: session_primary_model.clone(),
+                    });
+
+                // Add any tokens that appeared before the project path was known.
+                let remaining = TokenBreakdown::new(
+                    session_tokens
+                        .uncached_input
+                        .saturating_sub(file_project_tokens.uncached_input),
+                    session_tokens
+                        .cached_input
+                        .saturating_sub(file_project_tokens.cached_input),
+                    session_tokens
+                        .output
+                        .saturating_sub(file_project_tokens.output),
+                );
+                if remaining.total > 0 {
+                    entry.tokens.add(&remaining);
+                    let (cost, _) =
+                        PricingEngine::calculate_cost(&session_primary_model, &remaining);
+                    entry.cost += cost;
+                }
+
+                entry.sessions += 1;
+                if session_last_active > entry.last_active {
+                    entry.last_active = session_last_active;
+                }
+            }
+
+            // Tasks Derivation (deduplicated by thread id)
+            let status = if is_archived {
+                "completed"
+            } else {
+                let elapsed_hours = (now - session_last_active).num_hours();
+                if elapsed_hours <= 2 {
+                    "running"
+                } else if session_last_active.format("%Y-%m-%d").to_string() == today_str {
+                    "pending"
+                } else {
                     "completed"
-                } else {
-                    let elapsed_hours = (now - session_last_active).num_hours();
-                    if elapsed_hours <= 2 {
-                        "running"
-                    } else if session_last_active.format("%Y-%m-%d").to_string() == today_str {
-                        "pending"
-                    } else {
-                        "completed"
-                    }
-                };
-
-                let title = if !session_title.is_empty() {
-                    session_title
-                } else {
-                    format!("Session {}", thread_id.chars().take(8).collect::<String>())
-                };
-
-                let task = TaskItem {
-                    id: thread_id.clone(),
-                    project_name: if !session_project_path.is_empty() {
-                        Path::new(&session_project_path)
-                            .file_name()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "未知项目".to_string())
-                    } else {
-                        "未知项目".to_string()
-                    },
-                    project_path: session_project_path.clone(),
-                    channel: "Codex".to_string(),
-                    status: status.to_string(),
-                    title,
-                    updated_at: session_last_active.format("%Y-%m-%d %H:%M").to_string(),
-                    thread_count: 1,
-                };
-
-                if let Some(existing) = tasks_map.get_mut(&thread_id) {
-                    existing.thread_count += 1;
-                    existing.status = task.status;
-                    existing.updated_at = task.updated_at;
-                    if !task.project_name.is_empty() && task.project_name != "未知项目" {
-                        existing.project_name = task.project_name;
-                        existing.project_path = task.project_path;
-                    }
-                } else {
-                    tasks_map.insert(thread_id, task);
                 }
+            };
+
+            let title = if !session_title.is_empty() {
+                session_title
+            } else {
+                format!("Session {}", thread_id.chars().take(8).collect::<String>())
+            };
+
+            let task = TaskItem {
+                id: thread_id.clone(),
+                project_name: if !session_project_path.is_empty() {
+                    Path::new(&session_project_path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "未知项目".to_string())
+                } else {
+                    "未知项目".to_string()
+                },
+                project_path: session_project_path.clone(),
+                channel: "codex".to_string(),
+                status: status.to_string(),
+                title,
+                updated_at: session_last_active.format("%Y-%m-%d %H:%M").to_string(),
+                thread_count: 1,
+            };
+
+            if let Some(existing) = tasks_map.get_mut(&thread_id) {
+                existing.thread_count += 1;
+                existing.status = task.status;
+                existing.updated_at = task.updated_at;
+                if !task.project_name.is_empty() && task.project_name != "未知项目" {
+                    existing.project_name = task.project_name;
+                    existing.project_path = task.project_path;
+                }
+            } else {
+                tasks_map.insert(thread_id, task);
             }
         }
 
@@ -988,9 +1033,73 @@ impl CodexProvider {
         skills_and_tools.sort_by_key(|s| std::cmp::Reverse(s.count));
 
         let mut tasks: Vec<TaskItem> = tasks_map.into_values().collect();
+        let parsed_session_count = tasks.len();
         tasks.extend(Self::scheduled_tasks(tz));
         let session_count = tasks.len();
         tasks = group_tasks_by_project(tasks);
+
+        let attempted_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let source_exists = sessions_dir.is_dir() || archived_dir.is_dir();
+        let status = if !source_exists {
+            "unavailable"
+        } else if scanned_files == 0 || parsed_files == 0 || read_errors > 0 || parse_errors > 0 {
+            "degraded"
+        } else {
+            "healthy"
+        };
+        let message = if !source_exists {
+            "未找到 Codex sessions 或 archived_sessions 数据目录".to_string()
+        } else if scanned_files == 0 {
+            "已找到 Codex 数据目录，但没有可读取的 rollout 文件".to_string()
+        } else {
+            format!(
+                "扫描 {} 个唯一 rollout，解析 {} 个会话{}{}",
+                scanned_files,
+                parsed_session_count,
+                if read_errors > 0 {
+                    format!("，{} 个文件读取失败", read_errors)
+                } else {
+                    String::new()
+                },
+                if parse_errors > 0 {
+                    format!("，{} 行 JSON 无法解析", parse_errors)
+                } else {
+                    String::new()
+                }
+            )
+        };
+        let source_health = crate::models::SourceHealthStatus {
+            id: "codex_sessions".to_string(),
+            name: "Codex 本机会话日志".to_string(),
+            status: status.to_string(),
+            message,
+            last_success_at: (parsed_files > 0).then_some(attempted_at.clone()),
+            last_attempt_at: Some(attempted_at),
+            error_code: if read_errors > 0 {
+                Some("file_read_failed".to_string())
+            } else if parse_errors > 0 {
+                Some("json_parse_failed".to_string())
+            } else if !source_exists {
+                Some("source_not_found".to_string())
+            } else {
+                None
+            },
+            source_schema: Some("Codex rollout JSONL".to_string()),
+            locations: Self::source_roots()
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            capabilities: vec![
+                "token_components".to_string(),
+                "model_attribution".to_string(),
+                "project_attribution".to_string(),
+                "tool_events".to_string(),
+                "skill_events".to_string(),
+                "task_status".to_string(),
+            ],
+            scanned_files,
+            parsed_sessions: parsed_session_count,
+        };
 
         ProviderData {
             tokens: total_periods,
@@ -1001,6 +1110,7 @@ impl CodexProvider {
             skills_and_tools,
             skill_details,
             session_count,
+            source_health,
         }
     }
 
@@ -1083,5 +1193,12 @@ mod tests {
         assert_eq!(quota.seven_day_used_ratio, Some(0.47));
         assert_eq!(quota.seven_day_reset_at, None);
         assert_eq!(quota.seven_day_remaining_ratio, Some(0.53));
+    }
+
+    #[test]
+    fn missing_model_is_unknown_and_never_a_billable_default() {
+        assert_eq!(CodexProvider::normalize_model(None), "unknown");
+        assert_eq!(CodexProvider::normalize_model(Some("  ")), "unknown");
+        assert_eq!(CodexProvider::normalize_model(Some("gpt-5.6")), "gpt-5.6");
     }
 }

@@ -1,7 +1,7 @@
 use crate::engine::aggregator::Aggregator;
 use crate::models::DashboardSnapshot;
 use crate::storage::settings::{AppSettings, SettingsStorage};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, LogicalSize, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
 
 pub fn register_global_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
@@ -37,7 +37,7 @@ pub fn unregister_global_shortcut(app: &AppHandle, shortcut: &str) {
 
 #[cfg(windows)]
 pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     let result = if enabled {
         let executable =
@@ -54,10 +54,12 @@ pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
                 &format!("\"{}\"", executable.display()),
                 "/f",
             ])
+            .stderr(Stdio::null())
             .status()
     } else {
         Command::new("reg.exe")
             .args(["DELETE", key, "/v", "CodexUU", "/f"])
+            .stderr(Stdio::null())
             .status()
     };
     match result {
@@ -88,6 +90,7 @@ pub fn get_settings() -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSettings, String> {
+    settings.validate()?;
     let previous = SettingsStorage::load();
     if previous.global_shortcut != settings.global_shortcut {
         unregister_global_shortcut(&app, &previous.global_shortcut);
@@ -103,7 +106,16 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
         }
         return Err(error);
     }
-    SettingsStorage::save(&settings)?;
+    if let Err(error) = SettingsStorage::save(&settings) {
+        if previous.start_at_login != settings.start_at_login {
+            let _ = apply_start_at_login(previous.start_at_login);
+        }
+        if previous.global_shortcut != settings.global_shortcut {
+            unregister_global_shortcut(&app, &settings.global_shortcut);
+            let _ = register_global_shortcut(&app, &previous.global_shortcut);
+        }
+        return Err(error);
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(settings.always_on_top);
     }
@@ -113,7 +125,11 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
 #[tauri::command]
 pub fn refresh_data(scope: String) -> Result<DashboardSnapshot, String> {
     let tz = SettingsStorage::load().timezone;
-    Ok(Aggregator::build_snapshot(&scope, Some(tz)))
+    Ok(Aggregator::build_snapshot_with_refresh(
+        &scope,
+        Some(tz),
+        true,
+    ))
 }
 
 #[tauri::command]
@@ -174,6 +190,7 @@ pub fn toggle_desktop_widget(app: AppHandle, visible: bool) -> Result<(), String
     SettingsStorage::save(&settings)?;
 
     if let Some(window) = app.get_webview_window("widget") {
+        apply_widget_geometry(&window, &settings.widget_style, settings.widget_scale)?;
         if visible {
             let _ = window.show();
             let _ = window.unminimize();
@@ -185,7 +202,7 @@ pub fn toggle_desktop_widget(app: AppHandle, visible: bool) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn set_widget_style(_app: AppHandle, style: String, scale: f64) -> Result<(), String> {
+pub fn set_widget_style(app: AppHandle, style: String, scale: f64) -> Result<(), String> {
     if !matches!(
         style.as_str(),
         "ring" | "capsule" | "tracks" | "disc" | "gauge"
@@ -198,7 +215,38 @@ pub fn set_widget_style(_app: AppHandle, style: String, scale: f64) -> Result<()
     let mut s = SettingsStorage::load();
     s.widget_style = style;
     s.widget_scale = scale;
-    SettingsStorage::save(&s)
+    SettingsStorage::save(&s)?;
+    if let Some(window) = app.get_webview_window("widget") {
+        apply_widget_geometry(&window, &s.widget_style, s.widget_scale)?;
+    }
+    Ok(())
+}
+
+/// Returns the native window size needed by each widget visual style.
+/// The webview applies the same scale to its content, so the native hitbox
+/// must scale with it as well; otherwise large widgets are clipped and small
+/// widgets keep an unnecessarily large transparent click area.
+pub fn widget_size(style: &str, scale: f64) -> LogicalSize<f64> {
+    let (width, height) = match style {
+        "capsule" | "gauge" => (276.0, 92.0),
+        "tracks" => (286.0, 112.0),
+        "disc" => (144.0, 144.0),
+        _ => (128.0, 128.0),
+    };
+    LogicalSize {
+        width: width * scale,
+        height: height * scale,
+    }
+}
+
+pub fn apply_widget_geometry(
+    window: &WebviewWindow,
+    style: &str,
+    scale: f64,
+) -> Result<(), String> {
+    window
+        .set_size(widget_size(style, scale))
+        .map_err(|error| format!("调整悬浮窗尺寸失败：{error}"))
 }
 
 #[tauri::command]

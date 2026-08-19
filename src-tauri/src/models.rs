@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct TokenBreakdown {
     pub uncached_input: u64,
     pub cached_input: u64,
@@ -108,9 +108,35 @@ pub struct SkillUsageItem {
 pub struct SourceHealthStatus {
     pub id: String,
     pub name: String,
-    pub status: String, // "healthy", "degraded", "stale", "unavailable"
+    pub status: String, // "healthy", "degraded", "stale", "refreshing", "unavailable"
     pub message: String,
     pub last_success_at: Option<String>,
+    pub last_attempt_at: Option<String>,
+    pub error_code: Option<String>,
+    pub source_schema: Option<String>,
+    pub locations: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub scanned_files: usize,
+    pub parsed_sessions: usize,
+}
+
+impl Default for SourceHealthStatus {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            status: "unavailable".to_string(),
+            message: String::new(),
+            last_success_at: None,
+            last_attempt_at: None,
+            error_code: None,
+            source_schema: None,
+            locations: Vec::new(),
+            capabilities: Vec::new(),
+            scanned_files: 0,
+            parsed_sessions: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,7 +154,7 @@ pub struct DashboardSnapshot {
 }
 
 /// Internal aggregation result produced by each provider.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderData {
     pub tokens: TokenPeriods,
     pub daily_activities: Vec<DailyActivity>,
@@ -140,10 +166,11 @@ pub struct ProviderData {
     pub skill_details: HashMap<String, SkillAgg>,
     /// Number of successfully parsed sessions (for source health).
     pub session_count: usize,
+    pub source_health: SourceHealthStatus,
 }
 
 /// Raw skill/tool aggregation detail.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillAgg {
     pub kind: String,
     pub count: u64,

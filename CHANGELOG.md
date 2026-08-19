@@ -1,5 +1,155 @@
 # CodexUU 更新日志
 
+## 2026-08-19 · 1.3.0 · 审计缺陷修复
+
+- 累计 Token 改为按调和后的每日汇总求和，禁止用分量 max 拼出从未发生的总量。
+- 保存时区后立即重拉快照；趋势图按所选窗口生成连续自然日并补 0。
+- `degraded` 解析仍写入快照缓存；手动刷新改为强制重扫会话与额度。
+- 修复聚合渠道 `primary_model` 死代码、项目路径大小写/斜杠归一、Skill 仅统计显式加载事件、Codex `last_token_usage` 按单轮累加。
+- 额度罗盘按方案 C 实现已用向左、剩余向右；去掉无效语言切换；设置补默认渠道；顶栏导出改为打开项目排行。
+- 主窗口与悬浮窗使用独立 WebView2 数据目录；托盘切换悬浮窗会写回设置；设置保存失败会回滚登录启动。
+- 失败未加载快照时指标卡显示 `--`；README 不再声称计价覆盖率 100%；AGENTS.md 版本同步为 1.3.0。
+- 增加 PR/push CI 工作流，补趋势补零、历史求和、路径归一与 merge 测试。
+
+### 影响范围
+
+- 涉及聚合/缓存/历史口径、设置保存回流、趋势补零、罗盘方向、悬浮窗与 Windows WebView2 目录、文档和 CI。
+- 不执行 EXE/MSI/NSIS 打包；本地 tag `v1.0.3`–`v1.2.1` 仍指向上游 codexU，发布时只应打在本仓库提交上。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：6/6 passed。
+- `cargo test --all-targets`：16/16 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 未执行 `tauri build`，不生成 EXE/MSI/NSIS 安装包。
+
+## 2026-08-18 · 1.3.0 · 三阶段 UI/UX 全面修复
+
+- 修复 Antigravity Token 为 0：直接解析 `conversations/*.db` 的 `gen_metadata.data` protobuf，读取系统提示词、新输入、缓存输入、输出和思考 Token。
+- 数据库 Token 记录现在优先于 Brain transcript，避免同一轮重复统计；transcript 继续负责任务标题、状态、工具和旧格式 Token 兜底。
+- 增加 responseId 去重、逐轮时间、模型恢复和工作目录解析；来源诊断显示 protobuf 解析记录数及离线数据库能力。
+- 修复默认窗口布局比例：默认宽度调整为 1200，使用容器查询让 1200px 级窗口直接采用“额度罗盘 + 四张指标卡”宽屏布局，1060px 最小窗口自动降为可读的两列指标布局。
+- 修复跨分辨率面板高度：任务、项目、Skill 和趋势面板改为跟随可用视口高度，避免固定 420px 在 720px 高度窗口中挤压内容或产生异常空白。
+- 完善键盘与语义交互：设置弹窗支持 Esc 关闭、Tab 焦点循环、打开时自动聚焦、关闭后恢复焦点；补齐按钮类型、选中状态、ARIA 标签、表单关联标签和错误/保存状态播报。
+- 完善数据可读性：趋势图加入 SVG 语义描述、数据点标题和可展开明细表；项目、Skill、任务等列表补齐空状态，导出按钮增加防重复提交和状态反馈。
+- 修复浅色主题输出金额对比度，统一全局焦点样式，增加 `prefers-reduced-motion` 降级和可选择文本，降低长时间使用的视觉与操作负担。
+- 修复悬浮窗缩放：缩放设置现在同步调整 Tauri 原生窗口尺寸，避免前端 transform 导致内容裁切和透明点击区域过大；悬浮窗口径切换改为可聚焦语义按钮。
+- 轻量优化 React 列表筛选/分栏计算，保持现有本地缓存、后台单飞解析和 60 秒轮询策略，不新增依赖。
+- 修正趋势图无数据与全零数据的峰值显示和绘图缩放：无数据显示“暂无”，全零数据仍保持安全的 0 基线，不再伪显示 1 Token / $1.00 或产生除零。
+
+### 影响范围
+
+- 涉及主窗口响应式布局、设置中心、额度/趋势/项目/任务/Skill/悬浮窗交互、主题令牌和 Tauri 悬浮窗几何尺寸。
+- 不改变 Token 聚合、计价、时区、项目过滤、数据源和导出口径；不执行 EXE/MSI/NSIS 打包。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：4/4 passed。
+- `pnpm run build`：通过。
+- `cargo test`：12/12 passed。
+- 当前本机 Antigravity 实测：16 个数据库、1084 行 protobuf、1079 条 Token 记录成功解析；累计 151,626,932 Token 写入快照。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `git diff --check`：通过。
+- `pnpm tauri dev --config src-tauri/tauri.dev.conf.json`：已运行并完成最小宽度 1060px 级窗口与默认 1200px 窗口布局实测；同时抽查趋势图、项目排行页和设置交互。
+
+## 2026-08-18 · 1.2.1 · 非阻塞快照刷新与卡顿修复
+
+- 修复启动、手动刷新和悬浮窗轮询重复触发 Codex/Antigravity 全量会话解析的问题：命中旧快照时立即返回，后台单飞刷新完成后由下一次刷新读取最新结果。
+- 修复首次无缓存时界面被大数据源扫描阻塞的问题：首次扫描改为后台进行，界面先进入“刷新中”状态并保留可诊断的来源路径。
+- 增加 Codex 额度查询 30 秒内存缓存，避免主窗口和悬浮窗同时请求 app-server 时重复等待。
+- 悬浮窗轮询间隔调整为 60 秒，关闭悬浮窗时不再发起快照请求。
+- 针对持续增长的活动 Codex JSONL 增加 120 秒后台重算最短间隔，避免每次悬浮窗轮询都重新解析全部历史文件。
+- 版本同步：根目录 `VERSION`、前端包、Cargo、Tauri 配置和 README 更新至 `1.2.1`。
+
+### 影响范围
+
+- 主要涉及 Rust 聚合器的后台刷新/额度缓存、悬浮窗轮询和版本元数据。
+- 不改变 Token、计价、时区和项目统计口径；不引入新依赖；不启用打包或自动更新。
+
+### 验证
+
+- `cargo fmt --all`：通过。
+- `cargo test`：10/10 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm test`：4/4 passed。
+- `pnpm run typecheck`：通过。
+
+## 2026-08-18 · 1.2.0 · Windows 测试体验与故障自诊断
+
+- 修复 Windows 持久化覆盖：设置、Provider 快照和每日历史统一使用临时文件提交，并兼容 Windows 目标文件已存在时的替换行为，连续刷新不会因 `rename` 覆盖失败而丢失更新。
+- 修复多窗口 WebView2 数据目录冲突：主窗口与悬浮窗显式使用独立目录，避免 Windows 下已有 WebView2 锁导致测试版窗口创建失败。
+- 增加设置运行时校验：主题、语言、额度口径、时区、快捷键、悬浮窗样式/缩放和默认渠道在写入前统一验证；损坏或非法设置会安全回退默认值。
+- 增强数据源诊断：显示真实扫描路径、最近成功/尝试时间、文件/会话计数和错误码；诊断面板增加“重新扫描”按钮。
+- 增强首启与错误反馈：无可统计会话时给出首启提示；刷新或渠道切换失败提供直接重试，并在切换失败时恢复原渠道。
+- 增加测试版运行入口：新增 `scripts/dev.ps1`，统一通过 `pnpm tauri dev` 启动，不生成 EXE/MSI/NSIS 安装包。
+- 测试版使用独立 Tauri 标识 `com.ciaobye.codexuu.dev`，避免开发窗口与已安装/历史版本共用 WebView2 用户数据锁；正式版本标识不变。
+- Windows 启动项关闭时静默处理不存在的注册表值，避免每次启动向开发/诊断日志输出误导性错误。
+- 版本同步：根目录 `VERSION`、前端包、Cargo、Tauri 配置和 README 更新至 `1.2.0`。
+
+### 影响范围
+
+- 涉及 Windows 本地文件持久化、设置存储、数据源模型/诊断面板、主界面首启与错误交互、开发运行脚本和版本元数据。
+- 不改变 Token、计价、时区和项目统计口径；不引入新依赖；不启用打包或自动更新。
+
+### 验证
+
+- `cargo fmt --all -- --check`：通过。
+- `cargo test --all-targets`：10/10 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm test`：4/4 passed。
+- `pnpm run typecheck`：通过。
+- `pnpm build`：通过。
+- `git diff --check`：通过。
+- 未执行 `tauri build`，不生成 EXE/MSI/NSIS 安装包。
+
+## 2026-08-18 · 1.1.0 · 增量快照与历史归档
+
+- 增加本地 Provider 快照缓存：按 Codex/Antigravity 数据源路径、文件大小和修改时间生成指纹，来源未变化时直接复用上次成功快照，减少重复扫描。
+- 增加失效保护：本次数据源暂时不可用时标记为 `stale` 并保留上次成功结果，不用空数据覆盖可用统计；缓存与历史文件采用临时文件替换写入，避免半写入损坏。
+- 增加每日历史归档：记录各渠道每日摘要和累计 Token，当前来源能读取的日期优先使用实时结果，已被清理或归档的旧日期从本地历史补回。
+- 设置中心补充缓存复用与历史归档说明，来源诊断能力中显示快照缓存能力。
+- 版本同步：根目录 `VERSION`、前端包、Cargo、Tauri 配置和 README 更新至 `1.1.0`。
+
+### 影响范围
+
+- 涉及 Rust 聚合入口、Provider 数据序列化、缓存/历史存储、设置中心说明和版本元数据。
+- 缓存与历史仅写入本机 `%APPDATA%/CodexUU`，不上传会话正文；不引入新依赖。
+
+### 验证
+
+- `cargo fmt --all`：通过。
+- `cargo test --all-targets`：7/7 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm test`：4/4 passed。
+- `pnpm run typecheck`：通过。
+- `pnpm build`：通过。
+- 未执行 `tauri build`，不生成 EXE/MSI/NSIS 安装包。
+
+## 2026-08-18 · 1.0.3 · 数据可信度与来源诊断
+
+- 数据源契约增强：Codex 会话、Antigravity 会话和 Codex 额度分别报告健康状态、最近尝试/成功时间、错误码、来源格式、能力列表、扫描文件数与解析会话数。
+- 诊断面板增强：设置中心展示来源格式、扫描数量、解析数量、能力和具体错误原因，区分不可用与降级状态。
+- 模型计价 fail-closed：Codex 缺失模型时统一标记为 `unknown`，不再默认归入 GPT-4o，未知模型保持未计价。
+- 解析错误可见：Codex/Antigravity 的文件读取失败、JSON 解析失败和缺失 transcript 不再静默吞掉，来源状态会明确标记降级。
+- 版本同步：根目录 `VERSION`、前端包、Cargo、Tauri 配置和 README 更新至 `1.0.3`。
+
+### 影响范围
+
+- 涉及 Rust 数据模型、Codex/Antigravity Provider、聚合器、设置中心诊断面板和版本元数据。
+- 不改变现有 Token 聚合、时区、项目、任务和导出口径；不引入新依赖。
+
+### 验证
+
+- `cargo fmt --all -- --check`：通过。
+- `cargo test --all-targets`：4/4 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm test`：4/4 passed。
+- `pnpm run typecheck`：通过。
+- `pnpm build`：通过。
+- `git diff --check`：通过。
+
 ## 2026-08-18 · 1.0.2 · 全面审计修复（数据真实性 / 时区 / 前端假功能 / 工程健康）
 
 - 后端数据真实性修复：

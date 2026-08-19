@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { DailyActivity, ModelUsage } from '../../types';
 import { formatTokens } from '../dashboard/TokenMetricCards';
+import { fillDailyRange, TrendPeriod } from '../../lib/trendRange';
 import { TrendingUp, DollarSign, Cpu } from 'lucide-react';
 
 interface UsageTrendsTabProps {
@@ -9,51 +10,39 @@ interface UsageTrendsTabProps {
   today: string;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function dateInRange(dateStr: string, period: 'daily' | 'weekly' | 'monthly' | 'all', todayStr: string): boolean {
-  if (period === 'all') return true;
-
-  const today = new Date(todayStr + 'T00:00:00Z');
-  const d = new Date(dateStr + 'T00:00:00Z');
-  if (d > today) return false;
-
-  if (period === 'daily') {
-    return today.getTime() - d.getTime() <= 6 * DAY_MS;
-  }
-
-  if (period === 'weekly') {
-    const day = today.getUTCDay();
-    const diffToMonday = day === 0 ? 6 : day - 1;
-    const monday = new Date(today);
-    monday.setUTCDate(today.getUTCDate() - diffToMonday);
-    return d >= monday && d <= today;
-  }
-
-  // monthly
-  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
-  return d >= first && d <= today;
-}
-
 export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
   dailyActivities,
   models,
   today,
 }) => {
-  const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'all'>('daily');
+  const [period, setPeriod] = useState<TrendPeriod>('daily');
   const [metricMode, setMetricMode] = useState<'tokens' | 'cost'>('tokens');
 
   const safeToday = today && !Number.isNaN(new Date(today + 'T00:00:00Z').getTime())
     ? today
     : new Date().toISOString().slice(0, 10);
 
-  const activities = dailyActivities.filter((a) => dateInRange(a.date, period, safeToday));
-
-  // Calculate maximum for 0-baseline chart
-  const maxVal = Math.max(
-    ...activities.map((a) => (metricMode === 'tokens' ? a.tokens.total : a.cost_usd)),
-    1
+  const activities = useMemo(
+    () => fillDailyRange(dailyActivities, period, safeToday),
+    [dailyActivities, period, safeToday],
   );
+
+  // Keep the displayed peak truthful while retaining a non-zero scale for an all-zero chart.
+  const metricValues = activities
+    .map((a) => (metricMode === 'tokens' ? a.tokens.total : a.cost_usd))
+    .filter((value) => Number.isFinite(value));
+  const dataMaxVal = Math.max(...metricValues, 0);
+  const chartMaxVal = dataMaxVal || 1;
+  const peakLabel = activities.length === 0
+    ? '暂无'
+    : metricMode === 'tokens'
+    ? formatTokens(dataMaxVal)
+    : `$${dataMaxVal.toFixed(2)}`;
+  const topScaleLabel = dataMaxVal === 0
+    ? '0'
+    : metricMode === 'tokens'
+    ? formatTokens(dataMaxVal)
+    : `$${Math.round(dataMaxVal)}`;
 
   // Scheme B date range calculation
   const firstDate = activities[0]?.date.slice(5) || safeToday.slice(5);
@@ -78,8 +67,9 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
 
   const points = activities.map((a, i) => {
     const x = paddingX + (i / Math.max(activities.length - 1, 1)) * (svgWidth - paddingX * 2);
-    const val = metricMode === 'tokens' ? a.tokens.total : a.cost_usd;
-    const y = svgHeight - paddingY - (val / maxVal) * (svgHeight - paddingY * 2);
+    const rawVal = metricMode === 'tokens' ? a.tokens.total : a.cost_usd;
+    const val = Number.isFinite(rawVal) ? Math.max(rawVal, 0) : 0;
+    const y = svgHeight - paddingY - (val / chartMaxVal) * (svgHeight - paddingY * 2);
     return { x, y, a };
   });
 
@@ -90,19 +80,23 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
   const areaD = points.length > 0
     ? `${pathD} L ${points[points.length - 1].x} ${svgHeight - paddingY} L ${points[0].x} ${svgHeight - paddingY} Z`
     : '';
+  const chartDescriptionId = 'usage-trends-chart-description';
 
   return (
-    <div className="space-y-3 select-none">
+    <div className="space-y-3">
       {/* Scheme B Date Range Bar */}
       <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-2.5 flex items-center justify-between shadow-sm">
         {/* Left: Period buttons */}
         <div className="flex items-center gap-3">
-          <div className="flex items-center p-0.5 bg-[var(--bg-subtle)] border border-[var(--border-default)] rounded-lg text-xs">
+          <div role="tablist" aria-label="趋势统计范围" className="flex items-center p-0.5 bg-[var(--bg-subtle)] border border-[var(--border-default)] rounded-lg text-xs">
             {(['daily', 'weekly', 'monthly', 'all'] as const).map((p) => {
               const labels = { daily: '每日', weekly: '本周', monthly: '本月', all: '累计' };
               return (
                 <button
                   key={p}
+                  type="button"
+                  role="tab"
+                  aria-selected={period === p}
                   onClick={() => setPeriod(p)}
                   className={`px-3 py-1 rounded-md font-medium transition ${
                     period === p
@@ -125,10 +119,13 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
         {/* Right: Metric switcher */}
         <div className="flex items-center gap-2">
           <button
+            type="button"
+            aria-pressed={metricMode === 'cost'}
+            aria-label={metricMode === 'tokens' ? '切换到 API 等效价值' : '切换到 Token 消耗'}
             onClick={() => setMetricMode(metricMode === 'tokens' ? 'cost' : 'tokens')}
             className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-primary)] transition"
           >
-            {metricMode === 'tokens' ? <TrendingUp className="w-3.5 h-3.5 text-teal-400" /> : <DollarSign className="w-3.5 h-3.5 text-amber-400" />}
+            {metricMode === 'tokens' ? <TrendingUp aria-hidden="true" className="w-3.5 h-3.5 text-teal-400" /> : <DollarSign aria-hidden="true" className="w-3.5 h-3.5 text-amber-400" />}
             <span>{metricMode === 'tokens' ? '指标: Token 消耗' : '指标: API 等效价值 ($)'}</span>
           </button>
         </div>
@@ -137,20 +134,27 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
       {/* Main Trends & Heatmap Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         {/* Left 2 Cols: 0-baseline trend chart */}
-        <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-2xl p-4 flex flex-col justify-between shadow-sm h-[320px]">
+        <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm min-h-[320px]">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <TrendingUp className="w-4 h-4 text-teal-400" />
+              <TrendingUp aria-hidden="true" className="w-4 h-4 text-teal-400" />
               <span>趋势折线图 (0 基线)</span>
             </h4>
             <span className="text-[11px] text-[var(--text-muted)]">
-              峰值: {metricMode === 'tokens' ? formatTokens(maxVal) : `$${maxVal.toFixed(2)}`}
+              峰值: {peakLabel}
             </span>
           </div>
 
           {/* SVG Line Chart */}
           <div className="flex-1 flex items-center justify-center my-2 relative">
-            <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-full">
+            <svg
+              viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+              role="img"
+              aria-label={`${rangeLabel} ${metricMode === 'tokens' ? 'Token' : 'API 等效价值'}趋势图`}
+              aria-describedby={chartDescriptionId}
+              className="w-full h-full"
+            >
+              <title>{`${rangeLabel} ${metricMode === 'tokens' ? 'Token' : 'API 等效价值'}趋势图`}</title>
               <defs>
                 <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="var(--accent-brand)" stopOpacity="0.35" />
@@ -166,7 +170,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
               {/* Baseline 0 text */}
               <text x={paddingX - 6} y={svgHeight - paddingY + 3} textAnchor="end" fill="var(--text-muted)" fontSize="10">0</text>
               <text x={paddingX - 6} y={paddingY + 4} textAnchor="end" fill="var(--text-muted)" fontSize="10">
-                {metricMode === 'tokens' ? formatTokens(maxVal) : `$${Math.round(maxVal)}`}
+                {topScaleLabel}
               </text>
 
               {/* Area & Line */}
@@ -174,9 +178,10 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
               {points.length > 0 && <path d={pathD} fill="none" stroke="var(--accent-brand)" strokeWidth="2.5" strokeLinecap="round" />}
 
               {/* Data points */}
-              {points.map((p, i) => (
-                <g key={i}>
+              {points.map((p) => (
+                <g key={p.a.date}>
                   <circle cx={p.x} cy={p.y} r="3.5" fill="var(--bg-canvas)" stroke="var(--accent-brand)" strokeWidth="2" />
+                  <title>{`${p.a.date}：${metricMode === 'tokens' ? formatTokens(p.a.tokens.total) : `$${p.a.cost_usd.toFixed(2)}`}`}</title>
                   <text x={p.x} y={svgHeight - paddingY + 14} textAnchor="middle" fill="var(--text-muted)" fontSize="9">
                     {p.a.date.slice(5)}
                   </text>
@@ -188,6 +193,34 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
             )}
           </div>
 
+          <p id={chartDescriptionId} className="sr-only">
+            图表从零基线展示连续自然日数据；缺失日期已按零补全。当前峰值为 {peakLabel}。
+          </p>
+
+          <details className="mt-1 text-[11px] text-[var(--text-secondary)]">
+            <summary className="cursor-pointer select-none hover:text-[var(--text-primary)]">查看趋势明细</summary>
+            <div className="mt-2 max-h-28 overflow-auto rounded-lg border border-[var(--border-default)]">
+              <table className="w-full text-left">
+                <thead className="sticky top-0 bg-[var(--bg-elevated)] text-[var(--text-muted)]">
+                  <tr>
+                    <th scope="col" className="px-2 py-1 font-medium">日期</th>
+                    <th scope="col" className="px-2 py-1 font-medium">Token</th>
+                    <th scope="col" className="px-2 py-1 font-medium">价值</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activities.map((activity) => (
+                    <tr key={activity.date} className="border-t border-[var(--border-default)]/60">
+                      <th scope="row" className="px-2 py-1 font-medium">{activity.date}</th>
+                      <td className="px-2 py-1 font-mono">{formatTokens(activity.tokens.total)}</td>
+                      <td className="px-2 py-1 font-mono">${activity.cost_usd.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+
           <div className="flex items-center justify-between pt-2 border-t border-[var(--border-default)] text-[11px] text-[var(--text-secondary)]">
             <span>连续自然日统计</span>
             <span>缺失日期按 0 补全</span>
@@ -195,13 +228,13 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
         </div>
 
         {/* Right 1 Col: Model ranking & API equivalent cost */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-2xl p-4 flex flex-col justify-between shadow-sm h-[320px]">
+        <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm min-h-[320px]">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
             <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <Cpu className="w-4 h-4 text-purple-400" />
+              <Cpu aria-hidden="true" className="w-4 h-4 text-purple-400" />
               <span>模型消耗排行</span>
             </h4>
-            <span className="text-[10px] text-[var(--text-muted)]">官方单价估算</span>
+            <span className="text-[10px] text-[var(--text-muted)]">累计口径 · 官方单价估算</span>
           </div>
 
           {/* Model items scroll list */}
@@ -224,7 +257,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                   <div className="font-mono font-bold text-teal-400">
                     {formatTokens(m.tokens.total)}
                   </div>
-                  <div className="text-[10px] font-mono text-amber-400">
+                  <div className="text-[10px] font-mono text-[var(--token-output)]">
                     {m.pricing_status === 'exact' ? `$${m.cost_usd.toFixed(2)}` : '未计价'}
                   </div>
                 </div>

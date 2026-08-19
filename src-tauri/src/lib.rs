@@ -49,6 +49,13 @@ pub fn run() {
                 let _ = main_window.set_always_on_top(settings.always_on_top);
             }
             if let Some(widget_window) = app.get_webview_window("widget") {
+                if let Err(error) = commands::apply_widget_geometry(
+                    &widget_window,
+                    &settings.widget_style,
+                    settings.widget_scale,
+                ) {
+                    tracing::warn!(%error, "widget geometry is unavailable");
+                }
                 if settings.widget_enabled {
                     let _ = widget_window.show();
                     let _ = widget_window.set_always_on_top(true);

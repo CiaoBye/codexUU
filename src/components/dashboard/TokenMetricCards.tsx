@@ -4,6 +4,7 @@ import { Zap, Calendar, TrendingUp, Archive } from 'lucide-react';
 
 interface TokenMetricCardsProps {
   tokens: TokenPeriods;
+  unavailable?: boolean;
 }
 
 export function formatTokens(num: number): string {
@@ -25,6 +26,7 @@ interface SingleCardProps {
   icon: React.ElementType;
   breakdown: TokenBreakdown;
   colorClass: string;
+  unavailable?: boolean;
 }
 
 const SingleCard: React.FC<SingleCardProps> = ({
@@ -33,19 +35,21 @@ const SingleCard: React.FC<SingleCardProps> = ({
   icon: Icon,
   breakdown,
   colorClass,
+  unavailable = false,
 }) => {
   const total = breakdown.total || 1;
   const pctUncached = (breakdown.uncached_input / total) * 100;
   const pctCached = (breakdown.cached_input / total) * 100;
   const pctOutput = (breakdown.output / total) * 100;
+  const displayTotal = unavailable ? '--' : formatTokens(breakdown.total);
 
   return (
-    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-2xl p-4 flex flex-col justify-between shadow-sm relative overflow-hidden h-[240px]">
+    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm relative overflow-hidden min-h-[232px]">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className={`p-1.5 rounded-lg ${colorClass} bg-opacity-15 border border-opacity-30`}>
-            <Icon className="w-4 h-4" />
+            <Icon aria-hidden="true" className="w-4 h-4" />
           </div>
           <div>
             <h3 className="text-xs font-semibold text-[var(--text-primary)]">{title}</h3>
@@ -57,10 +61,10 @@ const SingleCard: React.FC<SingleCardProps> = ({
       {/* Main Big Number */}
       <div className="my-2">
         <div className="text-2xl font-extrabold font-mono tracking-tight text-[var(--text-primary)]">
-          {formatTokens(breakdown.total)}
+          {displayTotal}
         </div>
         <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
-          {breakdown.total.toLocaleString()} tokens
+          {unavailable ? '等待真实快照' : `${breakdown.total.toLocaleString()} tokens`}
         </div>
       </div>
 
@@ -104,15 +108,16 @@ const SingleCard: React.FC<SingleCardProps> = ({
   );
 };
 
-export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens }) => {
+export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens, unavailable = false }) => {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+    <div className="dashboard-token-grid">
       <SingleCard
         title="今日用量"
         subtitle="当日自然日统计"
         icon={Zap}
         breakdown={tokens.today}
-        colorClass="text-amber-400 bg-amber-500/10 border-amber-500/30"
+        colorClass="text-[var(--token-output)] bg-amber-500/10 border-amber-500/30"
+        unavailable={unavailable}
       />
       <SingleCard
         title="本周用量"
@@ -120,6 +125,7 @@ export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens }) =>
         icon={Calendar}
         breakdown={tokens.week}
         colorClass="text-blue-400 bg-blue-500/10 border-blue-500/30"
+        unavailable={unavailable}
       />
       <SingleCard
         title="本月用量"
@@ -127,6 +133,7 @@ export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens }) =>
         icon={TrendingUp}
         breakdown={tokens.month}
         colorClass="text-purple-400 bg-purple-500/10 border-purple-500/30"
+        unavailable={unavailable}
       />
       <SingleCard
         title="累计记录"
@@ -134,6 +141,7 @@ export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens }) =>
         icon={Archive}
         breakdown={tokens.all_time}
         colorClass="text-teal-400 bg-teal-500/10 border-teal-500/30"
+        unavailable={unavailable}
       />
     </div>
   );

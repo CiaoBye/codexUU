@@ -12,7 +12,7 @@
 
     --text-primary: #f3f6fa;
     --text-secondary: #a7b2c0;
-    --text-muted: #778596;
+    --text-muted: #8c99a8;
 
     --accent-brand: #2c9f9b;
     --quota-5h: #4d9fff;
@@ -38,14 +38,14 @@
 
     --text-primary: #121a24;
     --text-secondary: #4a5b6d;
-    --text-muted: #7e90a2;
+    --text-muted: #5b6b7c;
 
     --accent-brand: #0f766e;
     --quota-5h: #2563eb;
     --quota-7d: #7c3aed;
     --token-uncached: #2563eb;
     --token-cached: #7c3aed;
-    --token-output: #d97706;
+    --token-output: #a15c00;
 
     --success: #10b981;
     --warning: #f59e0b;
@@ -54,18 +54,94 @@
   }
 
   html, body, #root {
+    height: 100%;
     background-color: transparent !important;
   }
 
   body {
     font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
     color: var(--text-primary);
-    user-select: none;
-    -webkit-user-select: none;
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   code, pre, .font-mono {
     font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  }
+}
+
+@layer components {
+  .dashboard-main {
+    container: codex-dashboard / inline-size;
+    scrollbar-gutter: stable;
+  }
+
+  .dashboard-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+
+  .dashboard-token-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+
+  .dashboard-data-panel {
+    min-height: 360px;
+    height: min(420px, calc(100dvh - 300px));
+  }
+}
+
+@container codex-dashboard (min-width: 680px) {
+  .dashboard-hero {
+    grid-template-columns: minmax(250px, 4fr) minmax(0, 8fr);
+  }
+
+  .dashboard-token-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container codex-dashboard (min-width: 1120px) {
+  .dashboard-hero {
+    grid-template-columns: minmax(250px, 3fr) minmax(0, 9fr);
+  }
+
+  .dashboard-token-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+button,
+[role="button"] {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent-brand);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

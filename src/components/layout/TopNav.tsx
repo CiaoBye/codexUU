@@ -19,6 +19,7 @@ interface TopNavProps {
   onOpenSettings: () => void;
   onOpenExport: () => void;
   theme: string;
+  effectiveTheme: 'dark' | 'light';
   onToggleTheme: () => void;
   onMinimize: () => void | Promise<void>;
   onClose: () => void | Promise<void>;
@@ -33,6 +34,7 @@ export const TopNav: React.FC<TopNavProps> = ({
   onOpenSettings,
   onOpenExport,
   theme,
+  effectiveTheme,
   onToggleTheme,
   onMinimize,
   onClose,
@@ -70,6 +72,10 @@ export const TopNav: React.FC<TopNavProps> = ({
           return (
             <button
               key={c.id}
+              type="button"
+              aria-pressed={isActive}
+              aria-label={`切换到${c.label}`}
+              disabled={isRefreshing}
               onClick={() => onChannelChange(c.id)}
               className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
                 isActive
@@ -77,7 +83,7 @@ export const TopNav: React.FC<TopNavProps> = ({
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-subtle)]'
               }`}
             >
-              <Icon className="w-3.5 h-3.5" />
+              <Icon aria-hidden="true" className="w-3.5 h-3.5" />
               <span>{c.label}</span>
             </button>
           );
@@ -94,57 +100,70 @@ export const TopNav: React.FC<TopNavProps> = ({
 
         {/* Refresh button */}
         <button
+          type="button"
           onClick={onRefresh}
           disabled={isRefreshing}
+          aria-label="刷新数据"
+          aria-busy={isRefreshing}
           title="刷新数据"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] border border-transparent hover:border-[var(--border-default)] transition"
         >
-          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-teal-400' : ''}`} />
+          <RefreshCw aria-hidden="true" className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-teal-400' : ''}`} />
         </button>
 
         {/* Export button */}
         <button
+          type="button"
           onClick={onOpenExport}
-          title="导出用量与项目"
+          aria-label="打开项目排行"
+          title="打开项目排行（可在该页导出）"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] border border-transparent hover:border-[var(--border-default)] transition"
         >
-          <Download className="w-4 h-4" />
+          <Download aria-hidden="true" className="w-4 h-4" />
         </button>
 
         {/* Theme toggle */}
         <button
+          type="button"
           onClick={onToggleTheme}
-          title={theme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
+          aria-label={effectiveTheme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
+          title={effectiveTheme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] border border-transparent hover:border-[var(--border-default)] transition"
         >
-          {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-indigo-400" />}
+          {effectiveTheme === 'dark' ? <Sun aria-hidden="true" className="w-4 h-4 text-amber-400" /> : <Moon aria-hidden="true" className="w-4 h-4 text-indigo-400" />}
         </button>
 
         {/* Settings button */}
         <button
+          type="button"
           onClick={onOpenSettings}
+          aria-label="打开设置"
           title="设置"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] border border-transparent hover:border-[var(--border-default)] transition"
         >
-          <SettingsIcon className="w-4 h-4" />
+          <SettingsIcon aria-hidden="true" className="w-4 h-4" />
         </button>
 
         <div className="h-4 w-px bg-[var(--border-default)] mx-1" />
 
         {/* Window controls */}
         <button
+          type="button"
           onClick={onMinimize}
+          aria-label="最小化窗口"
           title="最小化"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition"
         >
-          <Minus className="w-4 h-4" />
+          <Minus aria-hidden="true" className="w-4 h-4" />
         </button>
         <button
+          type="button"
           onClick={onClose}
+          aria-label="关闭窗口"
           title="关闭"
           className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-red-400 hover:bg-red-500/10 transition"
         >
-          <X className="w-4 h-4" />
+          <X aria-hidden="true" className="w-4 h-4" />
         </button>
       </div>
     </header>

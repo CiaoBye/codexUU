@@ -61,12 +61,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   default_channel: 'codex',
 };
 
-export async function fetchDashboardSnapshot(channel: string = 'codex', timezone?: string): Promise<DashboardSnapshot> {
+export async function fetchDashboardSnapshot(
+  channel: DashboardSnapshot['channel'] = 'codex',
+  timezone?: string,
+): Promise<DashboardSnapshot> {
   if (isTauri()) {
     return await invokeTauri<DashboardSnapshot>('get_dashboard_snapshot', { channel, timezone });
   }
-  // Outside Tauri there is no local data source. Never present fabricated
-  // usage as if it were real data.
   return { ...EMPTY_SNAPSHOT, channel };
 }
 
@@ -84,7 +85,9 @@ export async function updateSettings(settings: AppSettings): Promise<AppSettings
   return settings;
 }
 
-export async function triggerRefresh(scope: string = 'all'): Promise<DashboardSnapshot> {
+export async function triggerRefresh(
+  scope: DashboardSnapshot['channel'] = 'all',
+): Promise<DashboardSnapshot> {
   if (isTauri()) {
     return await invokeTauri<DashboardSnapshot>('refresh_data', { scope });
   }
@@ -95,7 +98,7 @@ export async function exportData(format: string, channel: string): Promise<strin
   if (isTauri()) {
     return await invokeTauri<string>('export_data', { format, channel });
   }
-  return '{"status": "exported"}';
+  throw new Error(`Tauri environment not detected for command export_data`);
 }
 
 export async function setWidgetVisible(visible: boolean): Promise<void> {

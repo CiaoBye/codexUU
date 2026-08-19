@@ -1,3 +1,5 @@
+use crate::commands::apply_widget_geometry;
+use crate::storage::settings::SettingsStorage;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -38,11 +40,20 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             }
             "widget" => {
                 if let Some(window) = app.get_webview_window("widget") {
-                    if window.is_visible().unwrap_or(false) {
-                        let _ = window.hide();
-                    } else {
+                    let visible = !window.is_visible().unwrap_or(false);
+                    let mut settings = SettingsStorage::load();
+                    settings.widget_enabled = visible;
+                    let _ = SettingsStorage::save(&settings);
+                    let _ = apply_widget_geometry(
+                        &window,
+                        &settings.widget_style,
+                        settings.widget_scale,
+                    );
+                    if visible {
                         let _ = window.show();
                         let _ = window.set_always_on_top(true);
+                    } else {
+                        let _ = window.hide();
                     }
                 }
             }

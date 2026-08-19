@@ -57,7 +57,7 @@
 ## 4. 版本与变更管理规范
 
 1. **单一版本源**：
-   - 根目录 `VERSION` 为单一版本来源（当前 `1.0.2`）。
+   - 根目录 `VERSION` 为单一版本来源（当前 `1.3.0`）。
    - 版本号同步至 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、`README.md` 与 UI 徽章。
    - 发布 Git 标签统一使用 `v<版本号>`。
 

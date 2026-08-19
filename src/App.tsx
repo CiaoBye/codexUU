@@ -50,11 +50,12 @@ export const App: React.FC = () => {
 
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(EMPTY_SNAPSHOT);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [activeChannel, setActiveChannel] = useState<string>('codex');
+  const [activeChannel, setActiveChannel] = useState<DashboardSnapshot['channel']>('codex');
   const [activeTab, setActiveTab] = useState<'tasks' | 'trends' | 'projects' | 'skills'>('tasks');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const snapshotReady = Boolean(snapshot.timestamp);
 
   // Apply theme whenever settings.theme changes, and follow OS changes for system mode.
   useEffect(() => {
@@ -95,6 +96,7 @@ export const App: React.FC = () => {
     const refreshWidget = async () => {
       try {
         const currentSettings = await fetchSettings();
+        if (!currentSettings.widget_enabled) return;
         const currentSnapshot = await fetchDashboardSnapshot(
           currentSettings.default_channel || 'codex',
           currentSettings.timezone,
@@ -109,7 +111,7 @@ export const App: React.FC = () => {
       }
     };
     void refreshWidget();
-    const timer = window.setInterval(refreshWidget, 30_000);
+    const timer = window.setInterval(refreshWidget, 60_000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
@@ -126,13 +128,16 @@ export const App: React.FC = () => {
 
   // Handle Channel Change
   const handleChannelChange = async (ch: string) => {
-    setActiveChannel(ch);
+    const nextChannel = ch as DashboardSnapshot['channel'];
+    const previousChannel = activeChannel;
+    setActiveChannel(nextChannel);
     setIsRefreshing(true);
     try {
-      const snap = await fetchDashboardSnapshot(ch, settings.timezone);
+      const snap = await fetchDashboardSnapshot(nextChannel, settings.timezone);
       setSnapshot(snap);
       setError(null);
     } catch (err) {
+      setActiveChannel(previousChannel);
       setError(`切换渠道失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsRefreshing(false);
@@ -182,26 +187,42 @@ export const App: React.FC = () => {
   // If floating widget window mode, render only widget
   if (isWidgetWindow) {
     return (
-      <DesktopStatusWidget
-        quota={snapshot.quota}
-        tokens={snapshot.tokens}
-        style={settings.widget_style}
-        scale={settings.widget_scale}
-        quotaMode={settings.quota_mode}
-        onToggleQuotaMode={handleToggleQuotaMode}
-      />
+      <>
+        {error && (
+          <div role="alert" className="px-2 py-1 text-[10px] text-red-500">
+            {error}
+          </div>
+        )}
+        <DesktopStatusWidget
+          quota={snapshot.quota}
+          tokens={snapshot.tokens}
+          style={settings.widget_style}
+          scale={settings.widget_scale}
+          quotaMode={settings.quota_mode}
+          onToggleQuotaMode={handleToggleQuotaMode}
+        />
+      </>
     );
   }
 
-  const tabs = [
+  const tabs: Array<{ id: 'tasks' | 'trends' | 'projects' | 'skills'; label: string; icon: typeof ListTodo }> = [
     { id: 'tasks', label: '今日任务', icon: ListTodo },
     { id: 'trends', label: '用量趋势', icon: TrendingUp },
     { id: 'projects', label: '项目排行', icon: Award },
     { id: 'skills', label: 'Skill & 工具', icon: Wrench },
   ];
 
+  const hasUsageData = snapshot.tokens.all_time.total > 0
+    || snapshot.daily_activities.length > 0
+    || snapshot.models.length > 0
+    || snapshot.projects.length > 0
+    || snapshot.tasks.length > 0;
+  const needsFirstRunHint = snapshot.sources_health.length > 0
+    && !hasUsageData
+    && snapshot.sources_health.some((source) => source.status === 'unavailable' || source.status === 'degraded');
+
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] select-none">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)]">
       {/* 1. Global Top Navigation */}
       <TopNav
         channel={activeChannel}
@@ -211,6 +232,7 @@ export const App: React.FC = () => {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenExport={() => setActiveTab('projects')}
         theme={settings.theme}
+        effectiveTheme={effectiveTheme(settings.theme)}
         onToggleTheme={handleToggleTheme}
         onMinimize={() => handleWindowCommand(minimizeMainWindow, '最小化窗口')}
         onClose={() => handleWindowCommand(closeMainWindow, '关闭窗口')}
@@ -218,17 +240,43 @@ export const App: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto p-4 space-y-4 max-w-7xl mx-auto w-full">
+      <main className="dashboard-main flex-1 overflow-y-auto p-4 space-y-4 max-w-7xl mx-auto w-full">
         {error && (
-          <div className="px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
-            {error}
+          <div role="alert" aria-live="assertive" className="px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-xs flex items-center justify-between gap-3">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={isRefreshing}
+              className="shrink-0 px-2 py-1 rounded-lg border border-red-400/30 hover:bg-red-500/10 disabled:opacity-50"
+            >
+              重试
+            </button>
+          </div>
+        )}
+
+        {needsFirstRunHint && (
+          <div role="status" className="px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-amber-300">尚未发现可统计的本地会话</div>
+              <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                首次运行时请先使用 Codex 或 Antigravity 产生会话；如果你确认已有数据，请打开“数据源诊断”查看路径和错误原因。
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen(true)}
+              className="shrink-0 px-2.5 py-1.5 rounded-lg border border-amber-400/30 text-amber-300 hover:bg-amber-500/10"
+            >
+              查看诊断
+            </button>
           </div>
         )}
 
         {/* Row 1: Quota Compass + 4 Token Metric Cards */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+        <div className="dashboard-hero">
           {/* Quota Compass (Scheme C) */}
-          <div className="lg:col-span-4 xl:col-span-3">
+          <div className="min-w-0">
             <QuotaCompass
               quota={snapshot.quota}
               quotaMode={settings.quota_mode}
@@ -237,28 +285,33 @@ export const App: React.FC = () => {
           </div>
 
           {/* 4 Token Metric Cards */}
-          <div className="lg:col-span-8 xl:col-span-9">
-            <TokenMetricCards tokens={snapshot.tokens} />
+          <div className="min-w-0">
+            <TokenMetricCards tokens={snapshot.tokens} unavailable={!snapshotReady} />
           </div>
         </div>
 
         {/* Row 2: In-place Tab Switcher Bar */}
         <div className="flex items-center justify-between border-b border-[var(--border-default)] pb-1">
-          <div className="flex items-center gap-1">
+          <div role="tablist" aria-label="仪表盘内容" className="flex items-center gap-1">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
+                  type="button"
+                  role="tab"
+                  id={`dashboard-tab-${tab.id}`}
+                  aria-selected={isActive}
+                  aria-controls={`dashboard-panel-${tab.id}`}
+                  onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all relative ${
                     isActive
                       ? 'text-teal-400 bg-teal-500/10 border border-teal-500/30 shadow-sm'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)]'
                   }`}
                 >
-                  <Icon className="w-4 h-4" />
+                  <Icon aria-hidden="true" className="w-4 h-4" />
                   <span>{tab.label}</span>
                   {tab.id === 'tasks' && snapshot.tasks.length > 0 && (
                     <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[var(--bg-subtle)] font-mono text-[var(--text-muted)]">
@@ -282,7 +335,7 @@ export const App: React.FC = () => {
         </div>
 
         {/* Row 3: Tab Content Panels */}
-        <div className="min-h-[420px]">
+        <div id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="min-h-[360px]">
           {activeTab === 'tasks' && <TaskBoardTab tasks={snapshot.tasks} />}
           {activeTab === 'trends' && (
             <UsageTrendsTab
@@ -309,11 +362,26 @@ export const App: React.FC = () => {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
-        onSaveSettings={(s) => {
+        onSaveSettings={async (s) => {
+          const timezoneChanged = s.timezone !== settings.timezone;
           setSettings(s);
           applyTheme(s.theme);
+          if (timezoneChanged) {
+            setIsRefreshing(true);
+            try {
+              const snap = await fetchDashboardSnapshot(activeChannel, s.timezone);
+              setSnapshot(snap);
+              setError(null);
+            } catch (err) {
+              setError(`时区切换后刷新失败：${err instanceof Error ? err.message : String(err)}`);
+            } finally {
+              setIsRefreshing(false);
+            }
+          }
         }}
         sourcesHealth={snapshot.sources_health}
+        onRefreshSources={handleRefresh}
+        isRefreshing={isRefreshing}
       />
     </div>
   );

@@ -48,7 +48,7 @@ export interface TaskItem {
   project_name: string;
   project_path: string;
   title: string;
-  status: 'running' | 'pending' | 'scheduled' | 'completed' | string;
+  status: 'running' | 'pending' | 'scheduled' | 'completed';
   updated_at: string;
   thread_count: number;
   channel: string;
@@ -67,7 +67,7 @@ export interface ProjectRankingItem {
 
 export interface SkillUsageItem {
   name: string;
-  kind: 'skill' | 'tool' | string;
+  kind: 'skill' | 'tool';
   count: number;
   active_days: number;
   project_count: number;
@@ -77,13 +77,20 @@ export interface SkillUsageItem {
 export interface SourceHealthStatus {
   id: string;
   name: string;
-  status: 'healthy' | 'degraded' | 'stale' | 'unavailable' | string;
+  status: 'healthy' | 'degraded' | 'stale' | 'refreshing' | 'unavailable';
   message: string;
   last_success_at: string | null;
+  last_attempt_at: string | null;
+  error_code: string | null;
+  source_schema: string | null;
+  locations: string[];
+  capabilities: string[];
+  scanned_files: number;
+  parsed_sessions: number;
 }
 
 export interface DashboardSnapshot {
-  channel: 'codex' | 'antigravity' | 'all' | string;
+  channel: 'codex' | 'antigravity' | 'all';
   quota: QuotaSnapshot;
   tokens: TokenPeriods;
   daily_activities: DailyActivity[];

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { TaskItem } from '../../types';
 import { PlayCircle, Clock, CalendarClock, CheckCircle2, Bot, Sparkles, Folder } from 'lucide-react';
 
@@ -7,7 +7,7 @@ interface TaskBoardTabProps {
 }
 
 export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
-  const columns = [
+  const columns = useMemo(() => [
     {
       id: 'running',
       title: '进行中',
@@ -40,10 +40,10 @@ export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
       dotColor: 'bg-emerald-400',
       items: tasks.filter((t) => t.status === 'completed'),
     },
-  ];
+  ], [tasks]);
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 h-[420px] select-none">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 dashboard-data-panel">
       {columns.map((col) => {
         const Icon = col.icon;
         return (
@@ -55,7 +55,7 @@ export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
             <div className="flex items-center justify-between pb-2 mb-2 border-b border-[var(--border-default)]">
               <div className="flex items-center gap-1.5">
                 <div className={`p-1 rounded-md ${col.color}`}>
-                  <Icon className="w-3.5 h-3.5" />
+                  <Icon aria-hidden="true" className="w-3.5 h-3.5" />
                 </div>
                 <span className="text-xs font-bold text-[var(--text-primary)]">{col.title}</span>
               </div>
@@ -74,18 +74,18 @@ export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
                 col.items.map((task) => (
                   <div
                     key={task.id}
-                    className="p-2.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-teal-500/40 transition group cursor-pointer shadow-sm hover:shadow"
+                    className="p-2.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)] transition group shadow-sm"
                   >
                     {/* Project & Channel Tag */}
                     <div className="flex items-center justify-between mb-1.5 text-[10px]">
                       <div className="flex items-center gap-1 text-[var(--text-muted)] truncate max-w-[140px]">
-                        <Folder className="w-3 h-3 shrink-0" />
+                        <Folder aria-hidden="true" className="w-3 h-3 shrink-0" />
                         <span className="truncate">{task.project_name}</span>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {task.channel === 'antigravity' ? (
                           <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">
-                            <Sparkles className="w-2.5 h-2.5" />
+                            <Sparkles aria-hidden="true" className="w-2.5 h-2.5" />
                             Antigravity
                           </span>
                         ) : task.channel === 'all' ? (
@@ -94,7 +94,7 @@ export const TaskBoardTab: React.FC<TaskBoardTabProps> = ({ tasks }) => {
                           </span>
                         ) : (
                           <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
-                            <Bot className="w-2.5 h-2.5" />
+                            <Bot aria-hidden="true" className="w-2.5 h-2.5" />
                             Codex
                           </span>
                         )}

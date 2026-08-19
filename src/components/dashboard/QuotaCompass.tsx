@@ -1,6 +1,6 @@
 import React from 'react';
 import { QuotaSnapshot } from '../../types';
-import { Clock, ShieldCheck, AlertCircle } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 
 interface QuotaCompassProps {
   quota: QuotaSnapshot;
@@ -42,9 +42,15 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
   const isUnavailable = quota.status === 'unavailable'
     || quota.status === 'not_applicable'
     || (!quota.has_seven_day && !quota.has_five_hour);
+  const healthDotClass = isUnavailable
+    ? 'bg-red-400'
+    : quota.status === 'degraded' || quota.status === 'stale' || quota.status === 'refreshing'
+      ? 'bg-amber-400'
+      : 'bg-emerald-400 animate-pulse';
+  const ringDirectionClass = isUsedMode ? 'rotate-90' : 'rotate-90 -scale-x-100';
 
   return (
-    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-2xl p-3.5 flex flex-col justify-between shadow-sm relative overflow-hidden h-[240px]">
+    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-3.5 flex flex-col justify-between shadow-sm relative overflow-hidden min-h-[232px]">
       {/* Top Title Bar */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
@@ -54,7 +60,7 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
           </span>
         </div>
         <div className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
-          <span className={`w-1.5 h-1.5 rounded-full ${isUnavailable ? 'bg-red-400' : 'bg-emerald-400 animate-pulse'}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${healthDotClass}`} />
           <span className="truncate max-w-[100px]">{quota.source}</span>
         </div>
       </div>
@@ -63,17 +69,20 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
       <div className="flex items-center justify-center relative my-0.5">
         {isUnavailable ? (
           <div className="flex flex-col items-center justify-center py-4 text-center text-[var(--text-muted)]">
-            <AlertCircle className="w-7 h-7 text-[var(--text-muted)] mb-1 opacity-60" />
+            <AlertCircle aria-hidden="true" className="w-7 h-7 text-[var(--text-muted)] mb-1 opacity-60" />
             <span className="text-xs">无官方额度限制</span>
             <span className="text-[10px] text-[var(--text-secondary)] mt-0.5">{quota.source}</span>
           </div>
         ) : (
-          <div
-            className="relative cursor-pointer group flex items-center justify-center"
+          <button
+            type="button"
+            aria-label={`切换额度口径，当前为${isUsedMode ? '已用' : '剩余'}`}
+            aria-pressed={!isUsedMode}
+            className="relative cursor-pointer group flex items-center justify-center p-0 border-0 bg-transparent"
             onClick={onToggleQuotaMode}
             title="点击切换 已用 / 剩余 额度口径"
           >
-            <svg width={size} height={size} className="transform -rotate-90">
+            <svg aria-hidden="true" width={size} height={size} data-quota-direction={isUsedMode ? 'used-left' : 'remaining-right'} className={`origin-center ${ringDirectionClass}`}>
               {/* Outer track background (7D) */}
               <circle
                 cx={center}
@@ -148,7 +157,7 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
                 </div>
               )}
             </div>
-          </div>
+          </button>
         )}
       </div>
 

@@ -12,6 +12,19 @@ export interface TokenPeriods {
   all_time: TokenBreakdown;
 }
 
+export interface QuotaFamily {
+  id: string;
+  label: string;
+  five_hour_used_ratio: number | null;
+  five_hour_remaining_ratio: number | null;
+  five_hour_reset_at: string | null;
+  seven_day_used_ratio: number | null;
+  seven_day_remaining_ratio: number | null;
+  seven_day_reset_at: string | null;
+  has_five_hour: boolean;
+  has_seven_day: boolean;
+}
+
 export interface QuotaSnapshot {
   five_hour_used_ratio: number | null;
   five_hour_remaining_ratio: number | null;
@@ -24,6 +37,7 @@ export interface QuotaSnapshot {
   source: string;
   status: string;
   last_updated: string;
+  families: QuotaFamily[];
 }
 
 export interface ModelUsage {

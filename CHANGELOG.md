@@ -1,5 +1,273 @@
 # CodexUU 更新日志
 
+## 2026-08-19 · 1.3.14 · 审计修复：跨日/时区缓存与历史归档、请求乱序与渠道缓存、配额失败保留、刷新范围、原子写入、时间戳与启动项错误处理、测试门禁
+
+- 用量卡不再被拉高去填罗盘高度，标题、数字、色条贴在一起。
+- 空任务列去掉虚线白框，只留列标题和数量，画布底透出。
+- 修复前端异步乱序：App 初始化、快速渠道切换、刷新、时区重取与悬浮窗轮询统一走“最新请求胜出”守卫，慢的旧响应不再覆盖新快照；渠道切换按钮在刷新中保持可点以便快速切换。
+- `activeChannel` 与 `snapshot.channel` 在每次提交后保持一致，避免显示与选择渠道错位。
+- sessionStorage 快照缓存改为按渠道读写，首帧不再显示其他渠道数据；旧的单键快照自动迁移到所属渠道键并清理。
+- 设置“保存设置”后再单独应用悬浮窗；若仅悬浮窗应用失败显示“设置已保存，但悬浮窗应用失败”，不再误报整体保存失败；悬浮窗样式/缩放未变化时不再重复写。
+- 主 Dashboard Tab 条与额度家族 Tab 条补 roving tabindex、左右方向键与 Home/End；`aria-controls` 只指向实际存在渲染的 panel；额度罗盘去掉顶部重复的“已用/剩余”焦点入口，保留圆心点击切换。
+- 项目排行导出：下载 anchor 挂入 DOM 再点击，并延迟 1s revoke object URL，提升 Tauri 下导出稳定性。
+- 删除无引用的 `src/lib/dashboardScale.ts`。
+
+### 审计修复点
+
+- **跨日/时区缓存与历史归档**：修复跨自然日与时区切换导致的缓存错位与历史归档遗漏，统计口径统一到配置时区并按日正确归档。
+- **请求乱序与渠道缓存**：统一“最新请求胜出”守卫，消除快速切换/刷新下的旧响应覆盖；快照缓存按渠道读写并自动迁移旧单键数据。
+- **配额失败保留**：刷新/获取失败时保留上一次成功快照，避免配额显示被清空或误报。
+- **刷新范围**：收窄刷新作用域，避免刷新时覆盖无关渠道或错误重取时区。
+- **原子写入**：配置/历史持久化改为原子写入，避免写入中断导致文件损坏。
+- **时间戳与启动项错误处理**：修正时间戳口径并补全启动流程错误处理，异常不再静默。
+- **测试门禁**：补齐并固化了上述修复的回归测试。
+
+### 影响范围
+
+- 涉及仪表盘、渠道切换、跨日时区统计、历史归档、快照与配额缓存、设置中心、额度罗盘、项目导出、持久化写入与键盘可访问性。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm test`：33/33 passed。
+- `pnpm run typecheck`：通过（0 错误）。
+- `cargo test`：49/49 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.14-dev`。
+
+## 2026-08-19 · 1.3.13 · 还原窗口后用量卡不再被裁成空白
+
+- 去掉用量卡 `display: contents`，还原/缩放时不再把卡片高度算成 0。
+- 上次成功快照写入 sessionStorage，窗口重开先显示旧数据，再后台换成新快照。
+
+### 影响范围
+
+- 涉及仪表盘栅格与快照缓存。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：10/10 passed。
+- `cargo test --all-targets`：28/28 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.13-dev`。
+
+## 2026-08-19 · 1.3.12 · 上半区回到大约四成高度
+
+- 额度罗盘与用量卡占主区约 42% 高度（最低 240px），不再缩成一条细带。
+- 罗盘恢复到 156px，用量数字加大，四列看板比例保持不变。
+
+### 影响范围
+
+- 涉及仪表盘栅格、罗盘与用量卡。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：8/8 passed。
+- `cargo test --all-targets`：28/28 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.12-dev`。
+
+## 2026-08-19 · 1.3.11 · 看板恢复四列等宽，用量卡回到单行
+
+- 任务看板恢复四列等宽；空列用虚线底，不再压成左侧窄条、也不再把「已完成」拉满整行。
+- 额度罗盘与四张用量卡在桌面宽度下排成一行，取消 2×2 宽条。
+- 任务卡片收成单行标题，去掉卡片内多余留白。
+
+### 影响范围
+
+- 涉及仪表盘栅格、用量卡与任务看板。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：8/8 passed。
+- `cargo test --all-targets`：28/28 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.11-dev`。
+
+## 2026-08-19 · 1.3.10 · 看板不再铺三块空白，驾驶舱改成 2×2 贴齐罗盘
+
+- 空任务列只保留「标题 + 0」，不再拉成等高白卡片或虚线大框；有内容的列占满剩余宽度。
+- 额度罗盘缩小到 88px；无额度时画空环显示 `--`，不再出现感叹号和截断说明。
+- 四张用量卡改成 2×2 贴齐罗盘高度，条下三色数字图例不再画出。
+
+### 影响范围
+
+- 涉及罗盘、用量卡、任务看板与仪表盘栅格。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：8/8 passed。
+- `cargo test --all-targets`：28/28 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.10-dev`。
+
+## 2026-08-19 · 1.3.9 · 把驾驶舱收成桌面密度
+
+- 渠道切换贴到标题左侧，不再在顶栏正中留一条空带。
+- 用量卡只留标题、总数和三色条；额度罗盘缩小，去掉 app-server / 长错误文案。
+- 四个 Tab 拉满通栏；空任务列改成虚线底，不再铺三块空白白卡片。
+
+### 影响范围
+
+- 涉及顶栏、罗盘、用量卡、Tab 条、任务看板与仪表盘栅格。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：8/8 passed。
+- `cargo test --all-targets`：28/28 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.9-dev`。
+
+## 2026-08-19 · 1.3.8 · 对齐 Codex Token 口径并补齐 Antigravity 源目录
+
+- Codex 用量不再把 `reasoning_output_tokens` 加进 `output_tokens`（官方字段已包含推理，避免相对 token-monitor / tokscale 偏高）。
+- Antigravity 扫描补上 `antigravity-ide`、`antigravity-backup` 与 `antigravity-cli/conversations`（尊重 `GEMINI_CLI_HOME`）；同会话 ID 优先保留桌面目录，避免 backup 副本双计。
+
+### 影响范围
+
+- 涉及 Codex JSONL 解析与 Antigravity 数据源根目录。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：8/8 passed。
+- `cargo test --all-targets`：28/28 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.8-dev`。
+
+## 2026-08-19 · 1.3.7 · 收紧空白、去掉说明文案、禁止网页式刷新
+
+- Tab 栏去掉右侧时区说明，任务看板四列重新等高铺满，不再在空列下方留下大块空白。
+- 去掉用量卡副标题、未缓存/缓存/输出逐行说明、罗盘/趋势/排行/Skill 页脚口径解释，以及顶栏「本地 AI 编程控制台」标语。
+- 顶栏圆形刷新按钮已去掉；F5 / Ctrl+R / 右键菜单不再整页刷新。需要重读本地数据时点时间戳，或到设置里「重新扫描」。
+- 开发期 Vite 不再监视 Markdown、测试文件和 `VERSION`，避免改文档时把桌面窗口整页重载。
+
+### 影响范围
+
+- 涉及顶栏、罗盘、用量卡、任务看板、趋势、项目排行、Skill 与页面级键盘防护。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：8/8 passed。
+- `cargo test --all-targets`：25/25 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.7-dev`。
+
+## 2026-08-19 · 1.3.6 · 浅色对比、最大化与驾驶舱抛光
+
+- 最大化改为与最小化相同的 Rust 命令，不再依赖前端 `toggleMaximize`（无边框窗上常被权限拦住）。根布局改用 `h-full`，最大化后按真实客户区铺满。
+- Vite 开发服务器不再监视 `src-tauri/`，避免 Windows 上编译 DLL 时热更新进程因 `EBUSY` 退出。
+- 浅色主题的强调色全部改走 CSS 变量（品牌青绿、5H 蓝、7D 紫、警告色），不再使用 `text-teal-400` 这类深色专用类。
+- 顶栏下载图标改为项目排行；图标按钮加大到 40px；品牌标收到青绿主色。
+- 额度罗盘圆心加大，图例同时写清「内环 5 小时 / 外环 每周」。指标卡变薄，空任务列收成短提示，不再撑满空白。
+
+### 影响范围
+
+- 涉及窗口命令、顶栏、罗盘、用量卡、任务看板、趋势/排行/Skill/设置/悬浮窗配色。不生成 MSI/NSIS。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：7/7 passed。
+- `cargo test --all-targets`：25/25 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.6-dev`；最大化按钮应能铺满工作区；浅色主题下 Tab 与数字仍可读。
+
+## 2026-08-19 · 1.3.5 · 开发版真正加载当前前端
+
+- `tauri dev` 补上 `devUrl` / `beforeDevCommand`，开发窗口改为加载 Vite `http://127.0.0.1:1420`，不再误用过期的 `dist/`（那是 v1.3.0 的 UU 字标界面）。
+- 启动脚本会顺带释放 1420 端口，避免旧 Vite 占着导致热更新失败。
+
+### 影响范围
+
+- 涉及 Tauri 开发配置与启动脚本。不生成 MSI/NSIS。
+
+### 验证
+
+- 用 `启动开发版.bat` 启动后，顶栏应为 `v1.3.5-dev` 和图形品牌标。
+
+## 2026-08-19 · 1.3.4 · 开发期一键启动
+
+- 新增仓库根目录 `启动开发版.bat` 与 `pnpm start`：启动前先结束全部 `codexuu` 进程（含托盘旧窗口），避免单实例把你切回 v1.3.0。
+- 开发窗口顶栏显示 `v1.3.4-dev`，用来确认当前看的是热更新源码。
+- `scripts/restart.ps1` 同样改为先杀掉所有 CodexUU，再拉起本仓库的 release 可执行文件。
+
+### 影响范围
+
+- 涉及开发启动脚本、顶栏开发版徽章、重启脚本。不生成 MSI/NSIS 安装包。
+
+### 验证
+
+- 用 `启动开发版.bat` / `pnpm start` 拉起开发窗口。
+
+## 2026-08-19 · 1.3.3 · 品牌标、Gemini/Claude 切换与全窗口布局
+
+- 左上角改为弧线图形品牌标（不再使用 “UU” 字标），版本徽章读取 `VERSION`，本版为 `1.3.3`。
+- Antigravity 额度改为 **Gemini / Claude 切换**：一次只显示一套每周 + 5 小时罗盘，不再把英文 “You have used…” 截断铺在底部。
+- 去掉 CSS `zoom` 画布；顶栏铺满窗口并可拖动，最大化按真实窗口宽度排版，不再左右裁切。
+
+### 影响范围
+
+- 涉及顶栏品牌/拖拽、额度罗盘家族切换、主窗口布局。
+- 执行 `pnpm tauri build --no-bundle` 生成 `src-tauri/target/release/codexuu.exe`，不生成 MSI/NSIS 安装包。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：7/7 passed。
+- `cargo test --all-targets`：25/25 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm tauri build --no-bundle`：通过，生成 `src-tauri/target/release/codexuu.exe`。
+- `scripts/restart.ps1`：已启动 1.3.3（PID 33356）。
+
+## 2026-08-19 · 1.3.2 · Antigravity 双套额度、窗口拖拽与可读指标
+
+- Antigravity 额度改为读取 `%APPDATA%\Antigravity\logs` 中的动态 HTTPS 端口与 CSRF，**同时展示 Gemini 与 Claude/GPT 两套「每周 + 5 小时」窗口**，刷新文案与官方设置页一致。
+- 顶栏用 `startDragging` 拖动，按钮区标记 `data-no-drag`，修复 CSS zoom 后无法拖窗口。
+- 用量卡底部「未缓存 / 缓存 / 输出」改为完整数字三行，不再截断。
+- 项目排行主模型改为按 Token 占比选取，并把 `gemini-3.1-pro-low` 这类机器 ID 显示成可读名称。
+- 左上角改为内联品牌标，浅色主题下仍可见。
+
+### 影响范围
+
+- 涉及 Antigravity 额度查询、顶栏拖拽、用量卡图例、项目主模型显示、品牌标。
+- 执行 `pnpm tauri build --no-bundle` 生成 `src-tauri/target/release/codexuu.exe`，不生成 MSI/NSIS 安装包。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：7/7 passed。
+- `cargo test --all-targets`：24/24 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm tauri build --no-bundle`：通过，生成 `src-tauri/target/release/codexuu.exe`。
+- `scripts/restart.ps1`：已启动 1.3.2。
+
+## 2026-08-19 · 1.3.1 · 顶栏 Logo、等比缩放与 Antigravity 额度接入
+
+- 主窗口改为无边框；顶栏交互控件排除窗口拖拽区，修复最小化/关闭点击被 WebView2 吞掉。
+- 界面按 1200×760 画布等比缩放；最大化后字号和组件一起放大，不再横向拉稀。补最大化/还原按钮。
+- Antigravity 渠道改为读取本机 language server 额度；未运行时明确提示，不再写死「无官方额度限制」。
+- Antigravity 缺 protobuf 时间戳的尾部 generation 改用数据库文件修改时间；任务标题去掉 `<ADDITIONAL_METADATA>` 和尾部斜杠。
+- 浅色主题渠道选中态改用品牌色；任务看板随画布高度铺满。
+
+### 影响范围
+
+- 涉及主窗口装饰、仪表盘等比缩放、Antigravity Token 日期与额度查询、任务标题清洗。
+- 不执行 EXE/MSI/NSIS 打包。
+
+### 验证
+
+- `pnpm run typecheck`：通过。
+- `pnpm test`：7/7 passed。
+- `cargo test --all-targets`：24/24 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- 未执行 `tauri build`，不生成 EXE/MSI/NSIS 安装包。
+
 ## 2026-08-19 · 1.3.0 · 审计缺陷修复
 
 - 累计 Token 改为按调和后的每日汇总求和，禁止用分量 max 拼出从未发生的总量。

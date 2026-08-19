@@ -1,6 +1,6 @@
 [package]
 name = "codexuu"
-version = "1.3.0"
+version = "1.3.14"
 description = "CodexUU - Local AI Coding Activity & Quota Console for Windows"
 authors = ["CodexUU Team"]
 edition = "2021"

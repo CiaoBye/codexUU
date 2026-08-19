@@ -85,6 +85,8 @@ pub fn run() {
             commands::show_main_window,
             commands::minimize_main_window,
             commands::close_main_window,
+            commands::is_main_window_maximized,
+            commands::toggle_maximize_main_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -16,7 +16,7 @@ venv/
 .agents/
 
 # Legacy Python (kept for historical reference)
-old/tmp/
+/old/
 
 # Logs & screenshots
 *.log
@@ -35,3 +35,4 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/tools_bin/
 artifacts/
+/release-artifacts/

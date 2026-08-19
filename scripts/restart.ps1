@@ -10,10 +10,8 @@ if (-not (Test-Path $targetExe)) {
     throw "CodexUU binary not found. Please run 'cargo build --release' in src-tauri first."
 }
 
-# Stop any running instances
-Get-Process codexuu -ErrorAction SilentlyContinue | Where-Object {
-    $_.Path -like "*$workspace*" -or $_.CommandLine -like "*$workspace*"
-} | Stop-Process -Force -ErrorAction SilentlyContinue
+# Stop ALL running instances, including an older build still sitting in the tray.
+Get-Process -Name "codexuu" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 Start-Sleep -Milliseconds 500
 

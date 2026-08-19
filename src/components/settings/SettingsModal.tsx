@@ -44,17 +44,17 @@ function healthLabel(status: string): string {
 function healthClass(status: string): string {
   switch (status) {
     case 'healthy':
-      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+      return 'bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)] border-[color-mix(in_srgb,var(--success)_28%,transparent)]';
     case 'degraded':
-      return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+      return 'bg-[color-mix(in_srgb,var(--warning)_12%,transparent)] text-[var(--warning)] border-[color-mix(in_srgb,var(--warning)_28%,transparent)]';
     case 'stale':
-      return 'bg-orange-500/10 text-orange-400 border-orange-500/20';
+      return 'bg-[color-mix(in_srgb,var(--token-output)_12%,transparent)] text-[var(--token-output)] border-[color-mix(in_srgb,var(--token-output)_28%,transparent)]';
     case 'refreshing':
-      return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+      return 'bg-[color-mix(in_srgb,var(--info)_12%,transparent)] text-[var(--info)] border-[color-mix(in_srgb,var(--info)_28%,transparent)]';
     case 'unavailable':
-      return 'bg-red-500/10 text-red-400 border-red-500/20';
+      return 'bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] text-[var(--danger)] border-[color-mix(in_srgb,var(--danger)_28%,transparent)]';
     default:
-      return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+      return 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border-[var(--border-default)]';
   }
 }
 
@@ -134,23 +134,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isSaving) return;
     setSaveError(null);
     setIsSaving(true);
+    let saved: AppSettings;
     try {
-      const saved = await updateSettings({ ...draft, language: 'zh-CN' });
-      onSaveSettings(saved);
+      saved = await updateSettings({ ...draft, language: 'zh-CN' });
+    } catch (err) {
+      setSaveError(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+      setIsSaving(false);
+      return;
+    }
+    onSaveSettings(saved);
 
-      // Apply widget settings
+    // Apply the widget window AFTER settings are already persisted. A failure
+    // here is a partial failure (the app settings are saved) and must not be
+    // reported as an overall save failure. Widget style/scale are only
+    // re-applied when they actually changed, to avoid redundant writes and the
+    // partial-transaction confusion of writing them twice.
+    let widgetApplied = true;
+    try {
       await setWidgetVisible(draft.widget_enabled);
-      await setWidgetStyle(draft.widget_style, draft.widget_scale);
+      if (
+        draft.widget_style !== settings.widget_style
+        || draft.widget_scale !== settings.widget_scale
+      ) {
+        await setWidgetStyle(draft.widget_style, draft.widget_scale);
+      }
+    } catch (err) {
+      widgetApplied = false;
+      setSaveError(`设置已保存，但悬浮窗应用失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsSaving(false);
+    }
 
+    if (widgetApplied) {
       setSaveSuccess(true);
       saveTimerRef.current = window.setTimeout(() => {
         setSaveSuccess(false);
         onClose();
       }, 800);
-    } catch (err) {
-      setSaveError(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -179,7 +199,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Header */}
         <div className="h-12 border-b border-[var(--border-default)] px-4 flex items-center justify-between shrink-0 bg-[var(--bg-card)]">
           <div className="flex items-center gap-2">
-            <Settings aria-hidden="true" className="w-4 h-4 text-teal-400" />
+            <Settings aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
             <span id="settings-dialog-title" className="font-bold text-sm text-[var(--text-primary)]">设置中心</span>
           </div>
           <button
@@ -210,7 +230,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onClick={() => setActiveTab(tab.id)}
                   className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition ${
                     isActive
-                      ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
+                      ? 'ui-selected'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-subtle)]'
                   }`}
                 >
@@ -291,7 +311,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="checkbox"
                       checked={draft.close_to_tray}
                       onChange={(e) => setDraft({ ...draft, close_to_tray: e.target.checked })}
-                      className="rounded border-[var(--border-default)] text-teal-500 focus:ring-2 focus:ring-[var(--accent-brand)]/40"
+                      className="rounded border-[var(--border-default)] text-[var(--accent-brand)] focus:ring-2 focus:ring-[var(--accent-brand)]/40"
                     />
                     <span className="text-[var(--text-primary)]">关闭主窗口时最小化到系统托盘</span>
                   </label>
@@ -302,7 +322,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="checkbox"
                       checked={draft.start_at_login}
                       onChange={(e) => setDraft({ ...draft, start_at_login: e.target.checked })}
-                      className="rounded border-[var(--border-default)] text-teal-500 focus:ring-2 focus:ring-[var(--accent-brand)]/40"
+                      className="rounded border-[var(--border-default)] text-[var(--accent-brand)] focus:ring-2 focus:ring-[var(--accent-brand)]/40"
                     />
                     <span className="text-[var(--text-primary)]">登录 Windows 时自动启动</span>
                   </label>
@@ -327,7 +347,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onClick={() => setDraft({ ...draft, theme: th.id })}
                         className={`p-2.5 rounded-xl border text-center font-medium transition ${
                           draft.theme === th.id
-                            ? 'bg-teal-500/20 text-teal-300 border-teal-500/40'
+                            ? 'ui-selected'
                             : 'bg-[var(--bg-card)] border-[var(--border-default)] text-[var(--text-secondary)]'
                         }`}
                       >
@@ -346,7 +366,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onClick={() => setDraft({ ...draft, quota_mode: 'used' })}
                       className={`p-2.5 rounded-xl border text-center font-medium transition ${
                         draft.quota_mode === 'used'
-                          ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                          ? 'ui-selected'
                           : 'bg-[var(--bg-card)] border-[var(--border-default)] text-[var(--text-secondary)]'
                       }`}
                     >
@@ -358,7 +378,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onClick={() => setDraft({ ...draft, quota_mode: 'remaining' })}
                       className={`p-2.5 rounded-xl border text-center font-medium transition ${
                         draft.quota_mode === 'remaining'
-                          ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
+                          ? 'ui-selected'
                           : 'bg-[var(--bg-card)] border-[var(--border-default)] text-[var(--text-secondary)]'
                       }`}
                     >
@@ -374,7 +394,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="checkbox"
                       checked={draft.always_on_top}
                       onChange={(e) => setDraft({ ...draft, always_on_top: e.target.checked })}
-                      className="rounded border-[var(--border-default)] text-teal-500 focus:ring-2 focus:ring-[var(--accent-brand)]/40"
+                      className="rounded border-[var(--border-default)] text-[var(--accent-brand)] focus:ring-2 focus:ring-[var(--accent-brand)]/40"
                     />
                     <span className="text-[var(--text-primary)]">主窗口始终置顶</span>
                   </label>
@@ -391,7 +411,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="checkbox"
                       checked={draft.widget_enabled}
                       onChange={(e) => setDraft({ ...draft, widget_enabled: e.target.checked })}
-                      className="rounded border-[var(--border-default)] text-teal-500 focus:ring-2 focus:ring-[var(--accent-brand)]/40"
+                      className="rounded border-[var(--border-default)] text-[var(--accent-brand)] focus:ring-2 focus:ring-[var(--accent-brand)]/40"
                     />
                     <span className="text-[var(--text-primary)] font-bold">启用桌面状态悬浮窗</span>
                   </label>
@@ -414,7 +434,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onClick={() => setDraft({ ...draft, widget_style: st.id })}
                         className={`p-2 rounded-xl border text-left font-medium text-xs transition ${
                           draft.widget_style === st.id
-                            ? 'bg-teal-500/20 text-teal-300 border-teal-500/40'
+                            ? 'ui-selected'
                             : 'bg-[var(--bg-card)] border-[var(--border-default)] text-[var(--text-secondary)]'
                         }`}
                       >
@@ -427,7 +447,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label htmlFor="settings-widget-scale" className="text-[var(--text-secondary)] font-medium">自定义缩放比例</label>
-                    <span className="font-mono text-teal-400 font-bold">{Math.round(draft.widget_scale * 100)}%</span>
+                    <span className="font-mono text-[var(--accent-brand)] font-bold">{Math.round(draft.widget_scale * 100)}%</span>
                   </div>
                   <input
                     id="settings-widget-scale"
@@ -438,7 +458,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     value={draft.widget_scale}
                     aria-valuetext={`${Math.round(draft.widget_scale * 100)}%`}
                     onChange={(e) => setDraft({ ...draft, widget_scale: parseFloat(e.target.value) })}
-                    className="w-full accent-teal-500 cursor-pointer"
+                    className="w-full cursor-pointer accent-[var(--accent-brand)]"
                   />
                   <div className="flex justify-between text-[10px] text-[var(--text-muted)] mt-1">
                     <span>20% (超小)</span>
@@ -477,7 +497,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     disabled={isRefreshing}
                     aria-label="重新扫描数据源"
                     aria-busy={isRefreshing}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[var(--bg-card)] border border-[var(--border-default)] text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-teal-500/40 disabled:opacity-50"
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[var(--bg-card)] border border-[var(--border-default)] text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[color-mix(in_srgb,var(--accent-brand)_40%,transparent)] disabled:opacity-50"
                   >
                     <RefreshCw aria-hidden="true" className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
                     重新扫描
@@ -501,7 +521,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span>文件 {src.scanned_files ?? 0}</span>
                       <span>会话 {src.parsed_sessions ?? 0}</span>
                       {src.source_schema && <span>格式 {src.source_schema}</span>}
-                      {src.error_code && <span className="text-amber-400">错误 {src.error_code}</span>}
+                      {src.error_code && <span className="text-[var(--warning)]">错误 {src.error_code}</span>}
                       {src.last_success_at && <span>最近成功 {src.last_success_at}</span>}
                       {src.last_attempt_at && <span>最近尝试 {src.last_attempt_at}</span>}
                     </div>
@@ -540,7 +560,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onClick={handleSave}
               disabled={isSaving}
               aria-busy={isSaving}
-              className="px-4 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-slate-950 font-bold flex items-center gap-1.5 shadow-sm transition disabled:opacity-60 disabled:cursor-wait"
+              className="px-4 py-1.5 rounded-xl bg-[var(--accent-brand)] hover:opacity-90 text-[var(--on-accent)] font-bold flex items-center gap-1.5 shadow-sm transition disabled:opacity-60 disabled:cursor-wait"
             >
               {saveSuccess ? <Check aria-hidden="true" className="w-4 h-4" /> : <Save aria-hidden="true" className="w-4 h-4" />}
               <span>{isSaving ? '保存中…' : saveSuccess ? '已保存！' : '保存设置'}</span>

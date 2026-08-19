@@ -36,13 +36,23 @@ pub fn unregister_global_shortcut(app: &AppHandle, shortcut: &str) {
 }
 
 #[cfg(windows)]
+fn delete_already_missing(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("unable to find")
+        || lower.contains("does not exist")
+        || lower.contains("does not have a value")
+        || lower.contains("找不到")
+        || lower.contains("不存在")
+}
+
+#[cfg(windows)]
 pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    let result = if enabled {
+    if enabled {
         let executable =
             std::env::current_exe().map_err(|error| format!("获取程序路径失败：{error}"))?;
-        Command::new("reg.exe")
+        let status = Command::new("reg.exe")
             .args([
                 "ADD",
                 key,
@@ -56,16 +66,30 @@ pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
             ])
             .stderr(Stdio::null())
             .status()
+            .map_err(|error| format!("执行 Windows 登录启动设置失败：{error}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        Err(format!("设置 Windows 登录启动失败，退出码：{status}"))
     } else {
-        Command::new("reg.exe")
+        let output = Command::new("reg.exe")
             .args(["DELETE", key, "/v", "CodexUU", "/f"])
-            .stderr(Stdio::null())
-            .status()
-    };
-    match result {
-        Ok(status) if status.success() || !enabled => Ok(()),
-        Ok(status) => Err(format!("设置 Windows 登录启动失败，退出码：{status}")),
-        Err(error) => Err(format!("执行 Windows 登录启动设置失败：{error}")),
+            .output()
+            .map_err(|error| format!("执行 Windows 登录启动设置失败：{error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        // The only idempotent disable outcome is "the value did not exist" —
+        // anything else (permissions, registry lock, ...) is a real failure.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if delete_already_missing(&stderr) {
+            return Ok(());
+        }
+        Err(format!(
+            "禁用 Windows 登录启动失败，退出码：{}，{}",
+            output.status,
+            stderr.trim()
+        ))
     }
 }
 
@@ -278,4 +302,58 @@ pub fn close_main_window(app: AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn is_main_window_maximized(app: AppHandle) -> Result<bool, String> {
+    Ok(app
+        .get_webview_window("main")
+        .and_then(|window| window.is_maximized().ok())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn toggle_maximize_main_window(app: AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不可用".to_string())?;
+    window
+        .unminimize()
+        .map_err(|error| format!("还原最小化失败：{error}"))?;
+    if window.is_maximized().unwrap_or(false) {
+        window
+            .unmaximize()
+            .map_err(|error| format!("还原窗口失败：{error}"))?;
+        Ok(false)
+    } else {
+        window
+            .maximize()
+            .map_err(|error| format!("最大化窗口失败：{error}"))?;
+        Ok(true)
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::delete_already_missing;
+
+    #[test]
+    fn reg_delete_value_not_found_is_idempotent() {
+        assert!(delete_already_missing(
+            "ERROR: The system was unable to find the specified registry key or value."
+        ));
+        assert!(delete_already_missing(
+            "ERROR: The system was unable to find the specified registry key or value.\r\n"
+        ));
+        assert!(delete_already_missing(
+            "错误: 系统找不到指定的注册表项或值。"
+        ));
+    }
+
+    #[test]
+    fn reg_delete_other_failures_are_not_idempotent() {
+        assert!(!delete_already_missing("ERROR: Access is denied."));
+        assert!(!delete_already_missing("ERROR: The process cannot access the file because it is being used by another process."));
+        assert!(!delete_already_missing(""));
+    }
 }

@@ -119,13 +119,47 @@ pub fn parse_file(path: &Path) -> ParsedDbSession {
 
         parsed.generations.push(DbGeneration {
             model_id,
-            timestamp_ms: raw.timestamp_ms.unwrap_or(session_timestamp_ms),
+            timestamp_ms: raw
+                .timestamp_ms
+                .filter(|timestamp| *timestamp > 0)
+                .unwrap_or(0),
             tokens: raw.tokens,
             response_id: raw.response_id,
         });
     }
 
+    fill_missing_generation_timestamps(
+        &mut parsed.generations,
+        parsed.session_timestamp_ms,
+        file_modified_ms(path),
+    );
+
     parsed
+}
+
+fn fill_missing_generation_timestamps(
+    generations: &mut [DbGeneration],
+    session_timestamp_ms: i64,
+    file_mtime_ms: i64,
+) {
+    let last_valid_index = generations
+        .iter()
+        .rposition(|generation| generation.timestamp_ms > 0);
+    let mut carry = session_timestamp_ms.max(0);
+    for (index, generation) in generations.iter_mut().enumerate() {
+        if generation.timestamp_ms > 0 {
+            carry = generation.timestamp_ms;
+            continue;
+        }
+        let trailing = last_valid_index
+            .map(|valid_index| index > valid_index)
+            .unwrap_or(true);
+        generation.timestamp_ms = if trailing && file_mtime_ms > carry {
+            file_mtime_ms
+        } else {
+            carry
+        };
+    }
 }
 
 fn parse_raw_generation(blob: &[u8]) -> Option<RawGeneration> {
@@ -230,7 +264,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 fn proto_timestamp_ms(timestamp: &[u8]) -> Option<i64> {
     let seconds = i64::try_from(varint_field(timestamp, 1)?).ok()?;
     let nanos = i64::try_from(varint_field(timestamp, 2).unwrap_or(0)).ok()?;
-    if !(0..=999_999_999).contains(&nanos) {
+    if seconds <= 0 || !(0..=999_999_999).contains(&nanos) {
         return None;
     }
     seconds.checked_mul(1_000)?.checked_add(nanos / 1_000_000)
@@ -508,5 +542,39 @@ mod tests {
         drop(connection);
 
         assert_eq!(parse_file(&path).generations.len(), 1);
+    }
+
+    fn generation(timestamp_ms: i64) -> DbGeneration {
+        DbGeneration {
+            model_id: "gemini-3-flash-a".to_string(),
+            timestamp_ms,
+            tokens: TokenBreakdown::default(),
+            response_id: None,
+        }
+    }
+
+    #[test]
+    fn trailing_missing_timestamps_use_newer_file_mtime() {
+        let mut generations = vec![generation(1_781_600_000_000), generation(0)];
+        fill_missing_generation_timestamps(&mut generations, 1_781_500_000_000, 1_781_700_000_000);
+        assert_eq!(generations[0].timestamp_ms, 1_781_600_000_000);
+        assert_eq!(generations[1].timestamp_ms, 1_781_700_000_000);
+    }
+
+    #[test]
+    fn middle_missing_timestamps_carry_forward() {
+        let mut generations = vec![
+            generation(1_781_600_000_000),
+            generation(0),
+            generation(1_781_650_000_000),
+        ];
+        fill_missing_generation_timestamps(&mut generations, 1_781_500_000_000, 1_781_700_000_000);
+        assert_eq!(generations[1].timestamp_ms, 1_781_600_000_000);
+    }
+
+    #[test]
+    fn zero_proto_timestamp_is_rejected() {
+        let timestamp = encode_varint_field(1, 0);
+        assert_eq!(proto_timestamp_ms(&timestamp), None);
     }
 }

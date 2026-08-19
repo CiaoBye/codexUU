@@ -30,6 +30,17 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: '127.0.0.1',
+    watch: {
+      ignored: [
+        '**/src-tauri/**',
+        '**/old/**',
+        '**/scripts/**',
+        '**/*.md',
+        '**/*.test.ts',
+        '**/*.test.tsx',
+        '**/VERSION',
+      ],
+    },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: {

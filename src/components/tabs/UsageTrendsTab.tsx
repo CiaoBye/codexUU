@@ -100,7 +100,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                   onClick={() => setPeriod(p)}
                   className={`px-3 py-1 rounded-md font-medium transition ${
                     period === p
-                      ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                      ? 'ui-selected'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
@@ -110,9 +110,8 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
             })}
           </div>
 
-          <div className="text-xs text-[var(--text-secondary)] font-medium">
-            <span>统计范围: </span>
-            <span className="font-mono text-[var(--text-primary)] font-bold">{rangeLabel}</span>
+          <div className="text-xs font-mono text-[var(--text-primary)] font-bold">
+            {rangeLabel}
           </div>
         </div>
 
@@ -123,10 +122,10 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
             aria-pressed={metricMode === 'cost'}
             aria-label={metricMode === 'tokens' ? '切换到 API 等效价值' : '切换到 Token 消耗'}
             onClick={() => setMetricMode(metricMode === 'tokens' ? 'cost' : 'tokens')}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-primary)] transition"
+            className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-[color-mix(in_srgb,var(--accent-brand)_40%,transparent)] text-[var(--text-primary)] transition"
           >
-            {metricMode === 'tokens' ? <TrendingUp aria-hidden="true" className="w-3.5 h-3.5 text-teal-400" /> : <DollarSign aria-hidden="true" className="w-3.5 h-3.5 text-amber-400" />}
-            <span>{metricMode === 'tokens' ? '指标: Token 消耗' : '指标: API 等效价值 ($)'}</span>
+            {metricMode === 'tokens' ? <TrendingUp aria-hidden="true" className="w-3.5 h-3.5 text-[var(--accent-brand)]" /> : <DollarSign aria-hidden="true" className="w-3.5 h-3.5 text-[var(--warning)]" />}
+            <span>{metricMode === 'tokens' ? 'Token' : '$'}</span>
           </button>
         </div>
       </div>
@@ -137,8 +136,8 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
         <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm min-h-[320px]">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <TrendingUp aria-hidden="true" className="w-4 h-4 text-teal-400" />
-              <span>趋势折线图 (0 基线)</span>
+              <TrendingUp aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
+              <span>趋势</span>
             </h4>
             <span className="text-[11px] text-[var(--text-muted)]">
               峰值: {peakLabel}
@@ -189,7 +188,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
               ))}
             </svg>
             {activities.length === 0 && (
-              <span className="absolute text-xs text-[var(--text-muted)]">暂无可用活动数据</span>
+              <span className="absolute text-xs text-[var(--text-muted)]">暂无</span>
             )}
           </div>
 
@@ -220,21 +219,16 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
               </table>
             </div>
           </details>
-
-          <div className="flex items-center justify-between pt-2 border-t border-[var(--border-default)] text-[11px] text-[var(--text-secondary)]">
-            <span>连续自然日统计</span>
-            <span>缺失日期按 0 补全</span>
-          </div>
         </div>
 
         {/* Right 1 Col: Model ranking & API equivalent cost */}
         <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm min-h-[320px]">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
             <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <Cpu aria-hidden="true" className="w-4 h-4 text-purple-400" />
+              <Cpu aria-hidden="true" className="w-4 h-4 text-[var(--quota-7d)]" />
               <span>模型消耗排行</span>
             </h4>
-            <span className="text-[10px] text-[var(--text-muted)]">累计口径 · 官方单价估算</span>
+            <span className="text-[10px] text-[var(--text-muted)]">{models.length}</span>
           </div>
 
           {/* Model items scroll list */}
@@ -254,7 +248,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                 </div>
 
                 <div className="text-right">
-                  <div className="font-mono font-bold text-teal-400">
+                  <div className="font-mono font-bold text-[var(--accent-brand)]">
                     {formatTokens(m.tokens.total)}
                   </div>
                   <div className="text-[10px] font-mono text-[var(--token-output)]">

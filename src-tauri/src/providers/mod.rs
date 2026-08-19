@@ -1,5 +1,6 @@
 pub mod antigravity;
 pub mod antigravity_db;
+pub mod antigravity_quota;
 pub mod codex;
 
 use std::collections::HashMap;
@@ -21,6 +22,38 @@ pub fn normalize_project_path(raw: &str) -> String {
     }
 }
 
+/// A normalized path that is a tool home directory or runtime scratch rooted in
+/// the OS temp directory. This deliberately does NOT blanket-tag every path
+/// that merely contains a `temp`/`tmp` segment: users keep real projects in
+/// folders like `C:\Temp`, and those must stay in the ranking.
+fn is_cache_or_tool_home(normalized: &str) -> bool {
+    let parts: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    // Tool home dirs are never user project workspaces.
+    if parts
+        .iter()
+        .any(|part| matches!(*part, ".codex" | ".gemini"))
+    {
+        return true;
+    }
+
+    // A workspace rooted directly inside the OS temp directory is runtime
+    // scratch rather than a user project. The prefix match keeps drive-level
+    // folders such as `C:\Temp` (a distinct, real directory) from being dropped.
+    if let Ok(tmp) = std::env::temp_dir().canonicalize() {
+        let tmp_norm = normalize_project_path(&tmp.to_string_lossy());
+        if !tmp_norm.is_empty() && normalized.starts_with(&tmp_norm) {
+            let remainder = &normalized[tmp_norm.len()..];
+            if remainder.is_empty() || remainder.starts_with('/') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Keep project ranking limited to directories that still exist and are not
 /// clearly runtime/cache locations rather than user projects.
 pub fn is_real_project_path(raw: &str) -> bool {
@@ -28,19 +61,7 @@ pub fn is_real_project_path(raw: &str) -> bool {
     if raw.trim().is_empty() || !path.is_dir() {
         return false;
     }
-
-    let normalized = normalize_project_path(raw);
-    let parts: Vec<&str> = normalized
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect();
-    if parts
-        .iter()
-        .any(|part| matches!(*part, ".codex" | ".gemini" | "temp" | "tmp"))
-    {
-        return false;
-    }
-    true
+    !is_cache_or_tool_home(&normalize_project_path(raw))
 }
 
 pub fn is_explicit_skill_event(kinds: &[&str]) -> bool {
@@ -85,7 +106,10 @@ pub fn group_tasks_by_project(tasks: Vec<TaskItem>) -> Vec<TaskItem> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_explicit_skill_event, is_real_project_path, normalize_project_path};
+    use super::{
+        is_cache_or_tool_home, is_explicit_skill_event, is_real_project_path,
+        normalize_project_path,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -101,6 +125,16 @@ mod tests {
     fn real_project_path_keeps_existing_source_tree() {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         assert!(is_real_project_path(&manifest.to_string_lossy()));
+    }
+
+    #[test]
+    fn cache_home_rejects_tool_home_dirs_and_os_temp_roots() {
+        assert!(is_cache_or_tool_home("c:/users/x/.codex/sessions"));
+        assert!(is_cache_or_tool_home("c:/users/x/.gemini/antigravity"));
+        // A plain "temp"/"tmp" segment is no longer treated as disqualifying.
+        assert!(!is_cache_or_tool_home("c:/work/tmp/project"));
+        assert!(!is_cache_or_tool_home("c:/temp"));
+        assert!(!is_cache_or_tool_home("c:/work/app"));
     }
 
     #[test]

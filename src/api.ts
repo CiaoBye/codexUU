@@ -29,6 +29,7 @@ export const EMPTY_SNAPSHOT: DashboardSnapshot = {
     source: '',
     status: 'unavailable',
     last_updated: '',
+    families: [],
   },
   tokens: {
     today: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },
@@ -123,4 +124,27 @@ export async function minimizeMainWindow(): Promise<void> {
 
 export async function closeMainWindow(): Promise<void> {
   if (isTauri()) await invokeTauri('close_main_window');
+}
+
+export async function isMainWindowMaximized(): Promise<boolean> {
+  if (isTauri()) {
+    return await invokeTauri<boolean>('is_main_window_maximized');
+  }
+  return false;
+}
+
+export async function toggleMaximizeMainWindow(): Promise<boolean> {
+  if (isTauri()) {
+    return await invokeTauri<boolean>('toggle_maximize_main_window');
+  }
+  return false;
+}
+
+export function startWindowDrag(event: { button: number; target: EventTarget | null }): void {
+  if (event.button !== 0 || !isTauri()) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('[data-no-drag]')) return;
+  void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+    void getCurrentWindow().startDragging();
+  });
 }

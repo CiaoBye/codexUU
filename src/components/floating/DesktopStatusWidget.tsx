@@ -89,7 +89,7 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
             className="absolute inset-0 flex flex-col items-center justify-center text-center cursor-pointer group z-10"
             title="点击切换 已用/剩余"
           >
-            <span className="text-[11px] font-black text-purple-400 font-mono group-hover:scale-110 transition-transform">
+            <span className="text-[11px] font-black text-[var(--quota-7d)] font-mono group-hover:scale-110 transition-transform">
               {pct7d == null ? '--' : `${pct7d}%`}
             </span>
             <span className="text-[8px] text-[var(--text-muted)] font-mono">
@@ -112,7 +112,7 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
               onClick={handleClickCenter}
               aria-label={`切换额度显示口径，当前为${isUsedMode ? '已用' : '剩余'}`}
               aria-pressed={!isUsedMode}
-              className="w-8 h-8 rounded-full bg-purple-500/20 border border-purple-500/30 flex items-center justify-center text-[10px] font-bold text-purple-300 font-mono cursor-pointer hover:bg-purple-500/30 transition"
+              className="w-8 h-8 rounded-full ui-chip-7d flex items-center justify-center text-[11px] font-bold font-mono cursor-pointer hover:opacity-90 transition"
               title="点击切换 已用/剩余"
             >
               {pct7d == null ? '--' : `${pct7d}%`}
@@ -123,7 +123,7 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
             </div>
           </div>
           <div data-tauri-drag-region className="text-right">
-            <div data-tauri-drag-region className="text-xs font-bold font-mono text-teal-400">{formatTokens(tokens.today.total)}</div>
+            <div data-tauri-drag-region className="text-xs font-bold font-mono text-[var(--accent-brand)]">{formatTokens(tokens.today.total)}</div>
             <div data-tauri-drag-region className="text-[8px] text-[var(--text-muted)]">今日 Token</div>
           </div>
         </div>
@@ -142,24 +142,24 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
         >
           <div data-tauri-drag-region className="flex items-center justify-between text-[10px]">
             <span data-tauri-drag-region className="font-bold text-[var(--text-primary)]">额度状态</span>
-            <span data-tauri-drag-region className="font-mono text-teal-400 font-bold">{formatTokens(tokens.today.total)}</span>
+            <span data-tauri-drag-region className="font-mono text-[var(--accent-brand)] font-bold">{formatTokens(tokens.today.total)}</span>
           </div>
           <div data-tauri-drag-region className="space-y-1 text-[9px]">
             <div data-tauri-drag-region className="flex items-center justify-between">
-              <span data-tauri-drag-region className="text-purple-400">7D 额度</span>
+              <span data-tauri-drag-region className="text-[var(--quota-7d)]">7D 额度</span>
               <span data-tauri-drag-region className="font-mono text-[var(--text-primary)]">{pct7d == null ? '--' : `${pct7d}%`}</span>
             </div>
             <div data-tauri-drag-region className="h-1.5 w-full bg-[var(--bg-subtle)] rounded-full overflow-hidden">
-              <div style={{ width: `${pct7d ?? 0}%` }} className="h-full bg-purple-500 rounded-full" />
+              <div style={{ width: `${pct7d ?? 0}%` }} className="h-full bg-[var(--quota-7d)] rounded-full" />
             </div>
             {quota.has_five_hour && (
               <>
                 <div data-tauri-drag-region className="flex items-center justify-between">
-                  <span data-tauri-drag-region className="text-blue-400">5H 额度</span>
+                  <span data-tauri-drag-region className="text-[var(--quota-5h)]">5H 额度</span>
                   <span data-tauri-drag-region className="font-mono text-[var(--text-primary)]">{pct5h == null ? '--' : `${pct5h}%`}</span>
                 </div>
                 <div data-tauri-drag-region className="h-1.5 w-full bg-[var(--bg-subtle)] rounded-full overflow-hidden">
-                  <div style={{ width: `${pct5h ?? 0}%` }} className="h-full bg-blue-500 rounded-full" />
+                  <div style={{ width: `${pct5h ?? 0}%` }} className="h-full bg-[var(--quota-5h)] rounded-full" />
                 </div>
               </>
             )}
@@ -182,11 +182,11 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
             className="cursor-pointer group"
             title="点击切换 已用/剩余"
           >
-            <span className="text-xs font-black text-purple-400 font-mono group-hover:scale-110 inline-block transition">{pct7d == null ? '--' : `${pct7d}%`}</span>
+            <span className="text-xs font-black text-[var(--quota-7d)] font-mono group-hover:scale-110 inline-block transition">{pct7d == null ? '--' : `${pct7d}%`}</span>
             <span className="text-[9px] text-[var(--text-muted)] block">{isUsedMode ? '已用' : '剩余'}</span>
           </button>
           <div className="w-10 h-px bg-[var(--border-default)] my-1 pointer-events-none" />
-          <span data-tauri-drag-region className="text-[10px] font-bold font-mono text-teal-400">{formatTokens(tokens.today.total)}</span>
+          <span data-tauri-drag-region className="text-[11px] font-bold font-mono text-[var(--accent-brand)]">{formatTokens(tokens.today.total)}</span>
           <span data-tauri-drag-region className="text-[8px] text-[var(--text-muted)]">今日用量</span>
         </div>
       )}
@@ -204,19 +204,19 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
               onClick={handleClickCenter}
               aria-label={`切换额度显示口径，当前为${isUsedMode ? '已用' : '剩余'}`}
               aria-pressed={!isUsedMode}
-              className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex flex-col items-center justify-center cursor-pointer hover:bg-purple-500/20 transition"
+              className="w-10 h-10 rounded-xl ui-chip-7d flex flex-col items-center justify-center cursor-pointer hover:opacity-90 transition"
               title="点击切换 已用/剩余"
             >
-              <span className="text-xs font-black text-purple-400 font-mono">{pct7d == null ? '--' : `${pct7d}%`}</span>
-              <span className="text-[7px] text-purple-300">7D</span>
+              <span className="text-xs font-black font-mono">{pct7d == null ? '--' : `${pct7d}%`}</span>
+              <span className="text-[8px]">7D</span>
             </button>
-            <div data-tauri-drag-region className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/30 flex flex-col items-center justify-center">
-              <span className="text-xs font-black text-blue-400 font-mono">{pct5h == null ? '--' : `${pct5h}%`}</span>
-              <span className="text-[7px] text-blue-300">5H</span>
+            <div data-tauri-drag-region className="w-10 h-10 rounded-xl ui-chip-5h flex flex-col items-center justify-center">
+              <span className="text-xs font-black font-mono">{pct5h == null ? '--' : `${pct5h}%`}</span>
+              <span className="text-[8px]">5H</span>
             </div>
           </div>
           <div data-tauri-drag-region className="text-right">
-            <div data-tauri-drag-region className="text-xs font-mono font-bold text-teal-400">{formatTokens(tokens.today.total)}</div>
+            <div data-tauri-drag-region className="text-xs font-mono font-bold text-[var(--accent-brand)]">{formatTokens(tokens.today.total)}</div>
             <div data-tauri-drag-region className="text-[9px] text-[var(--text-muted)]">当日 Token</div>
           </div>
         </div>

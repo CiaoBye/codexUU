@@ -1,6 +1,6 @@
 # CodexUU
 
-当前版本：`1.3.0`。
+当前版本：`1.3.14`。
 
 CodexUU 是一个面向 Windows 的高性能、本地优先 AI 编程控制台，采用 **Tauri 2 + Rust + React 19 + TypeScript + Tailwind CSS** 架构构建。
 
@@ -14,7 +14,7 @@ CodexUU 是一个面向 Windows 的高性能、本地优先 AI 编程控制台�
 
 1. **双渠道与全部聚合**：
    - **Codex 官方**：接入 `codex app-server --stdio` 实时查询官方 5h/7d 额度，流式解析 `~/.codex` 本机会话、分支去重与真实工具调用。
-   - **Antigravity**：接入 `~/.gemini/antigravity` 会话数据库与 Brain 轨迹，统计 Gemini 2.5/3.7 模型、子 Agent 轨迹与工具执行。
+   - **Antigravity**：接入 `~/.gemini/antigravity` 会话数据库与 Brain 轨迹；打开 Antigravity 后读取本机 language server，可在 Gemini 与 Claude 之间切换查看每周、5 小时额度。
    - **全部聚合**：一站式合并本机两大 AI 助手的总 Token 消耗、每日热力图与等效估算。
 
 2. **方案 C 双层/单层额度罗盘**：
@@ -71,22 +71,19 @@ CodexUU (Windows x64)
 
 ## 本地开发与测试
 
+开发期间请双击仓库根目录的 **`启动开发版.bat`**（或 `pnpm start`）。它会先关掉所有 CodexUU（含托盘里的旧窗口），再通过 Vite 热更新启动当前源码。顶栏徽章为 `v1.3.14-dev` 即表示看的是这份代码。
+
 ```powershell
-# 1. 安装前端依赖
-pnpm install
-
-# 2. 运行 Tauri 测试版（推荐，不生成 EXE/MSI/NSIS）
-pnpm tauri dev --config src-tauri/tauri.dev.conf.json
+# 推荐：一键启动开发版
+启动开发版.bat
 # 或
-powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
+pnpm start
 
-# 3. 仅运行前端开发服务器
+# 仅前端
 pnpm dev
 
-# 4. 运行前端 Vitest 测试
+# 测试
 pnpm test
-
-# 5. 运行 Rust 后端测试
 cd src-tauri
 cargo test
 ```

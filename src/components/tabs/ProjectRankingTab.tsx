@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ProjectRankingItem } from '../../types';
 import { formatTokens } from '../dashboard/TokenMetricCards';
+import { formatModelLabel } from '../../lib/modelLabel';
 import { Award, PieChart, Clock, Download } from 'lucide-react';
 import { exportData } from '../../api';
 
@@ -32,16 +33,25 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
   const handleExport = async (format: 'json' | 'csv' | 'markdown') => {
     if (isExporting) return;
     setIsExporting(true);
+    let anchor: HTMLAnchorElement | null = null;
     try {
       const res = await exportData(format, channel);
       const mime = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/markdown';
       const blob = new Blob([res], { type: `${mime};charset=utf-8` });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `codexuu-projects-${channel}.${format === 'markdown' ? 'md' : format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      // Mount the anchor into the DOM before clicking so the download starts
+      // reliably in the Tauri webview, then remove it and delay revoking the
+      // object URL so the download is not cut short.
+      anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `codexuu-projects-${channel}.${format === 'markdown' ? 'md' : format}`;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      window.setTimeout(() => {
+        URL.revokeObjectURL(url);
+        anchor?.remove();
+      }, 1000);
       setExportNotice(`已导出 ${format.toUpperCase()} 文件！`);
     } catch (err) {
       setExportNotice(`导出失败：${err instanceof Error ? err.message : String(err)}`);
@@ -59,10 +69,9 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
         <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
           <div className="flex items-center gap-2">
             <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-              <Award aria-hidden="true" className="w-4 h-4 text-amber-400" />
+              <Award aria-hidden="true" className="w-4 h-4 text-[var(--warning)]" />
               <span>项目用量排行</span>
             </h4>
-            <span className="text-[11px] text-[var(--text-muted)]">真实有效目录 · 累计</span>
           </div>
 
           <div className="flex items-center gap-1">
@@ -72,7 +81,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
               aria-busy={isExporting}
               disabled={isExporting}
               onClick={() => handleExport('json')}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-[color-mix(in_srgb,var(--accent-brand)_40%,transparent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
             >
               <Download aria-hidden="true" className="w-3 h-3" />
               JSON
@@ -83,7 +92,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
               aria-busy={isExporting}
               disabled={isExporting}
               onClick={() => handleExport('csv')}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-[color-mix(in_srgb,var(--accent-brand)_40%,transparent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
             >
               <Download aria-hidden="true" className="w-3 h-3" />
               CSV
@@ -94,7 +103,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
               aria-busy={isExporting}
               disabled={isExporting}
               onClick={() => handleExport('markdown')}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-teal-500/40 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium bg-[var(--bg-subtle)] border border-[var(--border-default)] hover:border-[color-mix(in_srgb,var(--accent-brand)_40%,transparent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition disabled:opacity-50 disabled:cursor-wait"
             >
               <Download aria-hidden="true" className="w-3 h-3" />
               MD
@@ -106,7 +115,7 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
         <div className="flex-1 overflow-y-auto space-y-2 py-2 pr-1">
           {projects.length === 0 && (
             <div className="flex h-full items-center justify-center text-xs text-[var(--text-muted)]">
-              当前口径暂无有效项目目录
+              暂无
             </div>
           )}
           {projects.map((p) => {
@@ -114,28 +123,28 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
             return (
               <div
                 key={p.path || p.name}
-                className="p-2.5 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-teal-500/30 transition group shadow-sm"
+                className="p-2.5 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-[color-mix(in_srgb,var(--accent-brand)_30%,transparent)] transition group"
               >
                 <div className="flex items-center justify-between text-xs mb-1.5">
                   <div className="flex items-center gap-2">
                     <span className={`w-5 h-5 rounded-md flex items-center justify-center font-bold text-[11px] ${
-                      p.rank === 1 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
-                      p.rank === 2 ? 'bg-slate-300/20 text-slate-200 border border-slate-300/30' :
-                      p.rank === 3 ? 'bg-amber-700/20 text-amber-500 border border-amber-700/30' :
+                      p.rank === 1 ? 'ui-chip-warning' :
+                      p.rank === 2 ? 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border border-[var(--border-default)]' :
+                      p.rank === 3 ? 'text-[var(--token-output)] bg-[color-mix(in_srgb,var(--token-output)_14%,transparent)] border border-[color-mix(in_srgb,var(--token-output)_32%,transparent)]' :
                       'bg-[var(--bg-subtle)] text-[var(--text-secondary)]'
                     }`}>
                       {p.rank}
                     </span>
-                    <span className="font-bold text-[var(--text-primary)] group-hover:text-teal-400 transition-colors">
+                    <span className="font-bold text-[var(--text-primary)] group-hover:text-[var(--accent-brand)] transition-colors">
                       {p.name}
                     </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">
-                      {p.primary_model}
+                    <span className="text-[11px] px-1.5 py-0.5 rounded ui-chip-7d font-medium whitespace-nowrap" title={p.primary_model}>
+                      {formatModelLabel(p.primary_model)}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-3 font-mono">
-                    <span className="text-teal-400 font-bold">{formatTokens(p.tokens.total)}</span>
+                    <span className="text-[var(--accent-brand)] font-bold">{formatTokens(p.tokens.total)}</span>
                     <span className="text-[var(--token-output)] text-[11px]">${p.cost_usd.toFixed(2)}</span>
                   </div>
                 </div>
@@ -144,12 +153,12 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
                 <div className="w-full h-1.5 bg-[var(--bg-subtle)] rounded-full overflow-hidden mb-1.5">
                   <div
                     style={{ width: `${pct}%` }}
-                    className="h-full bg-gradient-to-r from-teal-500 to-blue-500 rounded-full transition-all duration-500"
+                    className="h-full bg-[var(--accent-brand)] rounded-full transition-all duration-500"
                   />
                 </div>
 
                 {/* Sub info */}
-                <div className="flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+                <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
                   <span className="truncate max-w-[280px] font-mono opacity-80">{p.path}</span>
                   <div className="flex items-center gap-2">
                     <span>{p.sessions} 会话</span>
@@ -161,21 +170,20 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
           })}
         </div>
 
-        {/* Footer Notice */}
-        <div className="pt-2 border-t border-[var(--border-default)] text-[10px] text-[var(--text-muted)] flex justify-between">
-          <span role="status" aria-live="polite">{exportNotice || '已过滤临时及已删除目录 · 本机真实有效记录'}</span>
-          <span>按 Token 降序排列</span>
-        </div>
+        {exportNotice && (
+          <div className="pt-2 border-t border-[var(--border-default)] text-[11px] text-[var(--text-muted)]">
+            <span role="status" aria-live="polite">{exportNotice}</span>
+          </div>
+        )}
       </div>
 
       {/* Right 1 Col: Activity Overview Summary */}
       <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm">
         <div className="pb-2 border-b border-[var(--border-default)]">
           <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
-            <PieChart aria-hidden="true" className="w-4 h-4 text-teal-400" />
-            <span>活动概览指标</span>
+            <PieChart aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
+            <span>活动概览</span>
           </h4>
-          <span className="text-[10px] text-[var(--text-muted)]">当前口径统计汇总</span>
         </div>
 
         <div className="space-y-3 py-3">
@@ -192,12 +200,12 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
             <span className="text-[11px] text-[var(--text-secondary)]">用量集中度</span>
             <div className="grid grid-cols-2 gap-2 mt-1.5">
               <div>
-                <span className="text-[10px] text-[var(--text-muted)]">Top 1 占比</span>
-                <div className="text-base font-bold font-mono text-teal-400">{top1Pct}%</div>
+                <span className="text-[11px] text-[var(--text-muted)]">Top 1 占比</span>
+                <div className="text-base font-bold font-mono text-[var(--accent-brand)]">{top1Pct}%</div>
               </div>
               <div>
-                <span className="text-[10px] text-[var(--text-muted)]">Top 3 占比</span>
-                <div className="text-base font-bold font-mono text-purple-400">{top3Pct}%</div>
+                <span className="text-[11px] text-[var(--text-muted)]">Top 3 占比</span>
+                <div className="text-base font-bold font-mono text-[var(--quota-7d)]">{top3Pct}%</div>
               </div>
             </div>
           </div>
@@ -205,21 +213,18 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
           {/* Card 3: Most Recently Active */}
           <div className="p-3 rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)]">
             <div className="flex items-center gap-1 text-[11px] text-[var(--text-secondary)]">
-              <Clock aria-hidden="true" className="w-3.5 h-3.5 text-blue-400" />
+              <Clock aria-hidden="true" className="w-3.5 h-3.5 text-[var(--quota-5h)]" />
               <span>最近活跃项目</span>
             </div>
             <div className="font-semibold text-xs text-[var(--text-primary)] mt-1 truncate">
               {recentProject?.name || '暂无项目'}
             </div>
-            <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
+            <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
               {recentProject?.last_active_at || '—'}
             </div>
           </div>
         </div>
 
-        <div className="pt-2 border-t border-[var(--border-default)] text-[10px] text-[var(--text-muted)] text-center">
-          所有口径跟随顶栏渠道同步切换
-        </div>
       </div>
     </div>
   );

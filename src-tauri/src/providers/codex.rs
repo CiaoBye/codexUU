@@ -31,6 +31,9 @@ struct ProjectAcc {
     sessions: u64,
     last_active: DateTime<Tz>,
     primary_model: String,
+    /// Per-model token totals used to choose the project primary model by
+    /// actual token contribution rather than by session-level metadata.
+    model_tokens: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +134,67 @@ impl CodexProvider {
         DateTime::parse_from_rfc3339(ts_str)
             .ok()
             .map(|dt| dt.with_timezone(tz))
+    }
+
+    /// Parse a timestamp value that may be an RFC3339 string, a numeric
+    /// seconds value, or a numeric milliseconds value.
+    fn parse_ts_value(value: &Value, tz: &Tz) -> Option<DateTime<Tz>> {
+        let instant = match value {
+            Value::String(text) => {
+                let text = text.trim();
+                if text.is_empty() {
+                    return None;
+                }
+                if let Ok(parsed) = DateTime::parse_from_rfc3339(text) {
+                    return Some(parsed.with_timezone(tz));
+                }
+                let number = text.parse::<i64>().ok()?;
+                Self::numeric_to_datetime(number)?
+            }
+            Value::Number(number) => Self::numeric_to_datetime(number.as_i64()?)?,
+            _ => return None,
+        };
+        Some(instant.with_timezone(tz))
+    }
+
+    fn numeric_to_datetime(value: i64) -> Option<DateTime<Utc>> {
+        if value <= 0 {
+            return None;
+        }
+        // 13-digit values are milliseconds; 10-digit values are seconds.
+        if value >= 100_000_000_000 {
+            DateTime::from_timestamp_millis(value)
+        } else {
+            DateTime::from_timestamp(value, 0)
+        }
+    }
+
+    /// Account `tokens` toward a project's model and promote the model that
+    /// contributes the most tokens as the project primary model.
+    fn account_project_model(entry: &mut ProjectAcc, model_id: &str, tokens: u64) {
+        let model_total = {
+            let slot = entry.model_tokens.entry(model_id.to_string()).or_insert(0);
+            *slot = slot.saturating_add(tokens);
+            *slot
+        };
+        let primary_total = entry
+            .model_tokens
+            .get(&entry.primary_model)
+            .copied()
+            .unwrap_or(0);
+        if model_total >= primary_total {
+            entry.primary_model = model_id.to_string();
+        }
+    }
+
+    /// Codex reports `reasoning_output_tokens` inside `output_tokens`. Adding
+    /// them together double-counts reasoning.
+    fn output_tokens_from_usage(usage: &Value) -> u64 {
+        usage
+            .get("output_tokens")
+            .or_else(|| usage.get("output"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
     }
 
     fn unavailable_quota(tz: &Tz, source: &str) -> QuotaSnapshot {
@@ -555,7 +619,16 @@ impl CodexProvider {
             let mut session_primary_model = Self::normalize_model(None);
             let mut session_tokens = TokenBreakdown::default();
             let mut file_project_tokens = TokenBreakdown::default();
-            let mut session_last_active = now;
+            // Anchor untimestamped sessions to the file's real modification
+            // time so old sessions are never attributed to "now" (today).
+            let mut session_last_active = fs::metadata(&file_path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .map(|time| {
+                    let dt: DateTime<Utc> = time.into();
+                    dt.with_timezone(tz)
+                })
+                .unwrap_or(now);
             let mut thread_id = file_path
                 .file_stem()
                 .unwrap_or_default()
@@ -631,13 +704,9 @@ impl CodexProvider {
                 }
 
                 // 2. Timestamp
-                let mut event_dt = now;
-                if let Some(ts_str) = val
-                    .get("timestamp")
-                    .or_else(|| val.get("created_at"))
-                    .and_then(|s| s.as_str())
-                {
-                    if let Some(parsed) = Self::parse_ts(ts_str, tz) {
+                let mut event_dt = session_last_active;
+                if let Some(ts_value) = val.get("timestamp").or_else(|| val.get("created_at")) {
+                    if let Some(parsed) = Self::parse_ts_value(ts_value, tz) {
                         event_dt = parsed;
                         session_last_active = parsed;
                     }
@@ -676,16 +745,8 @@ impl CodexProvider {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     let uncached = total_input.saturating_sub(cached);
-                    let output_main = tc
-                        .get("output_tokens")
-                        .or_else(|| tc.get("output"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let reasoning = tc
-                        .get("reasoning_output_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let output = output_main + reasoning;
+                    // Codex/OpenAI: output_tokens already includes reasoning_output_tokens.
+                    let output = Self::output_tokens_from_usage(tc);
 
                     let (delta_uncached, delta_cached, delta_output) = if is_cumulative {
                         let du = uncached.saturating_sub(highest_uncached);
@@ -743,9 +804,11 @@ impl CodexProvider {
                                     sessions: 0,
                                     last_active: event_dt,
                                     primary_model: session_primary_model.clone(),
+                                    model_tokens: HashMap::new(),
                                 });
                             entry.tokens.add(&delta);
                             entry.cost += cost;
+                            Self::account_project_model(entry, &session_primary_model, delta.total);
                             file_project_tokens.add(&delta);
                             if event_dt > entry.last_active {
                                 entry.last_active = event_dt;
@@ -884,6 +947,7 @@ impl CodexProvider {
                         sessions: 0,
                         last_active: session_last_active,
                         primary_model: session_primary_model.clone(),
+                        model_tokens: HashMap::new(),
                     });
 
                 // Add any tokens that appeared before the project path was known.
@@ -903,6 +967,7 @@ impl CodexProvider {
                     let (cost, _) =
                         PricingEngine::calculate_cost(&session_primary_model, &remaining);
                     entry.cost += cost;
+                    Self::account_project_model(entry, &session_primary_model, remaining.total);
                 }
 
                 entry.sessions += 1;
@@ -1200,5 +1265,80 @@ mod tests {
         assert_eq!(CodexProvider::normalize_model(None), "unknown");
         assert_eq!(CodexProvider::normalize_model(Some("  ")), "unknown");
         assert_eq!(CodexProvider::normalize_model(Some("gpt-5.6")), "gpt-5.6");
+    }
+
+    #[test]
+    fn output_tokens_do_not_add_reasoning() {
+        let usage = json!({
+            "output_tokens": 100,
+            "reasoning_output_tokens": 40
+        });
+        assert_eq!(CodexProvider::output_tokens_from_usage(&usage), 100);
+        assert_eq!(
+            CodexProvider::output_tokens_from_usage(&json!({ "output": 12 })),
+            12
+        );
+    }
+
+    #[test]
+    fn timestamp_value_supports_rfc3339_seconds_and_millis() {
+        let tz = &Shanghai;
+        // RFC3339 string.
+        let rfc = json!("2026-08-19T06:12:00Z");
+        let parsed = CodexProvider::parse_ts_value(&rfc, tz).unwrap();
+        assert_eq!(
+            parsed.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-08-19 14:12:00"
+        );
+        // Numeric seconds (10 digits).
+        let seconds = json!(1_783_375_920i64);
+        let s = CodexProvider::parse_ts_value(&seconds, tz).unwrap();
+        assert_eq!(
+            s.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-07-07 06:12:00"
+        );
+        // Numeric milliseconds (13 digits).
+        let millis = json!(1_783_375_920_000i64);
+        let m = CodexProvider::parse_ts_value(&millis, tz).unwrap();
+        assert_eq!(
+            m.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-07-07 06:12:00"
+        );
+        // String-form seconds.
+        let s_str = json!("1783375920");
+        assert_eq!(
+            CodexProvider::parse_ts_value(&s_str, tz)
+                .unwrap()
+                .timestamp(),
+            1_783_375_920
+        );
+        // Invalid / empty values return None.
+        assert!(CodexProvider::parse_ts_value(&json!("not-a-time"), tz).is_none());
+        assert!(CodexProvider::parse_ts_value(&json!(""), tz).is_none());
+        assert!(CodexProvider::parse_ts_value(&json!(null), tz).is_none());
+    }
+
+    #[test]
+    fn project_primary_model_follows_largest_token_contributor() {
+        let mut acc = super::ProjectAcc {
+            path: "C:/Work/App".to_string(),
+            tokens: crate::models::TokenBreakdown::default(),
+            cost: 0.0,
+            sessions: 0,
+            last_active: chrono::Utc::now().with_timezone(&Shanghai),
+            primary_model: "gemini-2.5-pro".to_string(),
+            model_tokens: std::collections::HashMap::new(),
+        };
+        // gemini contributes 40, gpt contributes 100 -> gpt becomes primary.
+        CodexProvider::account_project_model(&mut acc, "gemini-2.5-pro", 40);
+        assert_eq!(acc.primary_model, "gemini-2.5-pro");
+        CodexProvider::account_project_model(&mut acc, "gpt-5.6", 100);
+        assert_eq!(acc.primary_model, "gpt-5.6");
+        // Another large gpt contribution keeps it primary.
+        CodexProvider::account_project_model(&mut acc, "gpt-5.6", 200);
+        assert_eq!(acc.primary_model, "gpt-5.6");
+        // A gemini contribution that overtakes gpt promotes gemini again.
+        CodexProvider::account_project_model(&mut acc, "gemini-2.5-pro", 1000);
+        assert_eq!(acc.primary_model, "gemini-2.5-pro");
     }
 }

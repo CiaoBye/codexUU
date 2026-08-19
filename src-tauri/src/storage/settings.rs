@@ -137,9 +137,7 @@ impl SettingsStorage {
         let path = Self::get_settings_path();
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-        let temp = path.with_extension("json.tmp");
-        fs::write(&temp, content).map_err(|e| format!("Failed to write settings: {}", e))?;
-        crate::storage::file::replace(&temp, &path)
+        crate::storage::file::write_atomic(&path, &content)
             .map_err(|e| format!("Failed to commit settings: {e}"))?;
         Ok(())
     }

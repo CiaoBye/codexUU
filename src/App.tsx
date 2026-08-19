@@ -6,10 +6,16 @@ import {
   triggerRefresh,
   updateSettings,
   minimizeMainWindow,
+  toggleMaximizeMainWindow,
   closeMainWindow,
   DEFAULT_SETTINGS,
   EMPTY_SNAPSHOT,
+  isTauri,
+  isMainWindowMaximized,
 } from './api';
+import { readCachedSnapshot, writeCachedSnapshot } from './lib/snapshotCache';
+import { createLatestWins, LatestWinsGuard, RequestToken } from './lib/requestGuard';
+import { nextTabId, prevTabId, isTabListNavKey } from './lib/rovingTabs';
 import { TopNav } from './components/layout/TopNav';
 import { QuotaCompass } from './components/dashboard/QuotaCompass';
 import { TokenMetricCards } from './components/dashboard/TokenMetricCards';
@@ -44,18 +50,34 @@ function effectiveTheme(theme: string): 'dark' | 'light' {
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
+// A stable latest-wins guard shared across all async snapshot fetch paths, so
+// ordering is tracked across renders without resetting on every re-render.
+function useLatestWinsRef(): React.MutableRefObject<LatestWinsGuard> {
+  const ref = React.useRef<LatestWinsGuard | null>(null);
+  if (ref.current === null) ref.current = createLatestWins();
+  return ref as React.MutableRefObject<LatestWinsGuard>;
+}
+
 export const App: React.FC = () => {
   // Check if this window is the floating desktop widget
   const isWidgetWindow = typeof window !== 'undefined' && window.location.hash === '#widget';
 
-  const [snapshot, setSnapshot] = useState<DashboardSnapshot>(EMPTY_SNAPSHOT);
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot>(
+    () => readCachedSnapshot('codex') ?? EMPTY_SNAPSHOT,
+  );
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [activeChannel, setActiveChannel] = useState<DashboardSnapshot['channel']>('codex');
   const [activeTab, setActiveTab] = useState<'tasks' | 'trends' | 'projects' | 'skills'>('tasks');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
   const snapshotReady = Boolean(snapshot.timestamp);
+
+  // Latest-wins guard: across init, channel switches, refresh, timezone
+  // refetch and widget polling, only the newest request may commit its result;
+  // slower stale responses are dropped so a snapshot never lands out of order.
+  const orderingRef = useLatestWinsRef();
 
   // Apply theme whenever settings.theme changes, and follow OS changes for system mode.
   useEffect(() => {
@@ -68,24 +90,65 @@ export const App: React.FC = () => {
     }
   }, [settings.theme]);
 
+  // Persist the snapshot, but only under its own channel key, so a later
+  // channel is never re-read as the current channel on the next open.
+  useEffect(() => {
+    writeCachedSnapshot(snapshot);
+  }, [snapshot]);
+
+  // Commit a freshly fetched snapshot to the UI if it is still the latest
+  // request, keeping activeChannel and snapshot.channel consistent so the
+  // visible data always belongs to the selected channel.
+  const commitSnapshot = React.useCallback(
+    (token: RequestToken, snap: DashboardSnapshot, nextChannel?: DashboardSnapshot['channel']) => {
+      token.commit(() => {
+        const channel = snap.channel ?? nextChannel;
+        setActiveChannel(channel);
+        setSnapshot(snap);
+        setIsRefreshing(false);
+        setError(null);
+      });
+    },
+    [],
+  );
+
   // Load initial settings and snapshot
   useEffect(() => {
+    if (isWidgetWindow) return;
+    const token = orderingRef.current.next();
     async function init() {
-      if (isWidgetWindow) return;
       try {
         const s = await fetchSettings();
+        // Settings are not channel-ordered: they must always land even if the
+        // user switched channels while settings were loading (otherwise the
+        // app would be stuck on DEFAULT_SETTINGS for the whole session).
         setSettings(s);
-        setActiveChannel(s.default_channel || 'codex');
-
+        // The default-channel selection and cached first frame are gated by the
+        // latest-wins token so a stale init never overrides a user channel
+        // switch that happened during startup.
+        token.commit(() => {
+          const channel = s.default_channel || 'codex';
+          setActiveChannel(channel);
+          // First frame: show this channel's own cache (never another channel's),
+          // then the live fetch replaces it.
+          const cached = readCachedSnapshot(channel);
+          if (cached) {
+            setSnapshot(cached);
+            setError(null);
+          }
+        });
         const snap = await fetchDashboardSnapshot(s.default_channel || 'codex', s.timezone);
-        setSnapshot(snap);
-        setError(null);
+        commitSnapshot(token, snap);
       } catch (err) {
-        setError(`初始化失败：${err instanceof Error ? err.message : String(err)}`);
+        token.commit(() => {
+          setError(`初始化失败：${err instanceof Error ? err.message : String(err)}`);
+          setIsRefreshing(false);
+        });
       }
     }
-    init();
-  }, []);
+    void init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWidgetWindow]);
 
   // The widget is a separate webview. Refresh its settings and snapshot so
   // style/scale/quota changes made in the main window become visible without
@@ -93,21 +156,29 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!isWidgetWindow) return;
     let disposed = false;
+    let refreshInFlight = false;
     const refreshWidget = async () => {
+      if (refreshInFlight || disposed) return;
+      refreshInFlight = true;
+      const token = orderingRef.current.next();
       try {
         const currentSettings = await fetchSettings();
-        if (!currentSettings.widget_enabled) return;
+        if (disposed || !currentSettings.widget_enabled) return;
+        token.commit(() => {
+          setSettings(currentSettings);
+          setActiveChannel(currentSettings.default_channel || 'codex');
+        });
         const currentSnapshot = await fetchDashboardSnapshot(
           currentSettings.default_channel || 'codex',
           currentSettings.timezone,
         );
-        if (!disposed) {
-          setSettings(currentSettings);
-          setActiveChannel(currentSettings.default_channel || 'codex');
-          setSnapshot(currentSnapshot);
-        }
+        commitSnapshot(token, currentSnapshot);
       } catch (err) {
-        if (!disposed) setError(`悬浮窗刷新失败：${err instanceof Error ? err.message : String(err)}`);
+        token.commit(() => {
+          if (!disposed) setError(`悬浮窗刷新失败：${err instanceof Error ? err.message : String(err)}`);
+        });
+      } finally {
+        refreshInFlight = false;
       }
     };
     void refreshWidget();
@@ -116,6 +187,7 @@ export const App: React.FC = () => {
       disposed = true;
       window.clearInterval(timer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWidgetWindow]);
 
   const handleWindowCommand = async (command: () => Promise<void>, label: string) => {
@@ -126,35 +198,51 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleToggleMaximize = async () => {
+    try {
+      const maximized = await toggleMaximizeMainWindow();
+      setIsMaximized(maximized);
+    } catch (err) {
+      setError(`最大化窗口失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   // Handle Channel Change
   const handleChannelChange = async (ch: string) => {
     const nextChannel = ch as DashboardSnapshot['channel'];
-    const previousChannel = activeChannel;
-    setActiveChannel(nextChannel);
-    setIsRefreshing(true);
+    const token = orderingRef.current.next();
+    // Optimistically switch the selected channel so the UI reflects intent
+    // immediately; only the latest switch may commit the fetched snapshot.
+    token.commit(() => {
+      setActiveChannel(nextChannel);
+      setIsRefreshing(true);
+      // First frame uses this channel's own cached data, never another channel's.
+      const cached = readCachedSnapshot(nextChannel);
+      if (cached) setSnapshot(cached);
+    });
     try {
       const snap = await fetchDashboardSnapshot(nextChannel, settings.timezone);
-      setSnapshot(snap);
-      setError(null);
+      commitSnapshot(token, snap, nextChannel);
     } catch (err) {
-      setActiveChannel(previousChannel);
-      setError(`切换渠道失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setIsRefreshing(false);
+      token.commit(() => {
+        setError(`切换渠道失败：${err instanceof Error ? err.message : String(err)}`);
+        setIsRefreshing(false);
+      });
     }
   };
 
   // Handle Refresh
   const handleRefresh = async () => {
-    setIsRefreshing(true);
+    const token = orderingRef.current.next();
+    token.commit(() => setIsRefreshing(true));
     try {
       const snap = await triggerRefresh(activeChannel);
-      setSnapshot(snap);
-      setError(null);
+      commitSnapshot(token, snap, activeChannel);
     } catch (err) {
-      setError(`刷新失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setIsRefreshing(false);
+      token.commit(() => {
+        setError(`刷新失败：${err instanceof Error ? err.message : String(err)}`);
+        setIsRefreshing(false);
+      });
     }
   };
 
@@ -183,6 +271,51 @@ export const App: React.FC = () => {
       setError(`额度口径设置保存失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
+
+  // Roving-tabindex navigation for the dashboard tablist: arrow keys / Home /
+  // End move the active tab and focus, keeping only the selected tab in the
+  // sequential tab order.
+  const dashboardTabIds = ['tasks', 'trends', 'projects', 'skills'];
+  const handleDashboardTabKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (!isTabListNavKey(event.key)) return;
+    event.preventDefault();
+    const current = activeTab;
+    const next = event.key === 'ArrowRight'
+      ? nextTabId(dashboardTabIds, current)
+      : event.key === 'ArrowLeft'
+        ? prevTabId(dashboardTabIds, current)
+        : event.key === 'Home'
+          ? dashboardTabIds[0]
+          : dashboardTabIds[dashboardTabIds.length - 1];
+    setActiveTab(next as typeof activeTab);
+    document.getElementById(`dashboard-tab-${next}`)?.focus();
+  };
+
+  useEffect(() => {
+    if (isWidgetWindow || !isTauri()) {
+      return;
+    }
+    let cancelled = false;
+    const syncMaximized = async () => {
+      try {
+        const maximized = await isMainWindowMaximized();
+        if (!cancelled) {
+          setIsMaximized(maximized);
+        }
+      } catch {
+        // Keep the last known maximize state if the native query fails.
+      }
+    };
+    const onResize = () => {
+      void syncMaximized();
+    };
+    void syncMaximized();
+    window.addEventListener('resize', onResize);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('resize', onResize);
+    };
+  }, [isWidgetWindow]);
 
   // If floating widget window mode, render only widget
   if (isWidgetWindow) {
@@ -222,8 +355,7 @@ export const App: React.FC = () => {
     && snapshot.sources_health.some((source) => source.status === 'unavailable' || source.status === 'degraded');
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)]">
-      {/* 1. Global Top Navigation */}
+    <div className="h-full w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] flex flex-col">
       <TopNav
         channel={activeChannel}
         onChannelChange={handleChannelChange}
@@ -235,12 +367,13 @@ export const App: React.FC = () => {
         effectiveTheme={effectiveTheme(settings.theme)}
         onToggleTheme={handleToggleTheme}
         onMinimize={() => handleWindowCommand(minimizeMainWindow, '最小化窗口')}
+        onToggleMaximize={() => void handleToggleMaximize()}
         onClose={() => handleWindowCommand(closeMainWindow, '关闭窗口')}
+        isMaximized={isMaximized}
         lastUpdated={snapshot.timestamp}
       />
 
-      {/* Main Content Area */}
-      <main className="dashboard-main flex-1 overflow-y-auto p-4 space-y-4 max-w-7xl mx-auto w-full">
+      <main className="dashboard-main flex-1 min-h-0 overflow-hidden px-3 py-1.5 flex flex-col gap-1.5 w-full" data-no-drag>
         {error && (
           <div role="alert" aria-live="assertive" className="px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-xs flex items-center justify-between gap-3">
             <span>{error}</span>
@@ -256,17 +389,17 @@ export const App: React.FC = () => {
         )}
 
         {needsFirstRunHint && (
-          <div role="status" className="px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between gap-3">
+          <div role="status" className="px-4 py-3 rounded-xl ui-chip-warning text-xs flex items-center justify-between gap-3">
             <div>
-              <div className="font-semibold text-amber-300">尚未发现可统计的本地会话</div>
-              <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+              <div className="font-semibold">尚未发现可统计的本地会话</div>
+              <div className="text-xs text-[var(--text-secondary)] mt-0.5">
                 首次运行时请先使用 Codex 或 Antigravity 产生会话；如果你确认已有数据，请打开“数据源诊断”查看路径和错误原因。
               </div>
             </div>
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
-              className="shrink-0 px-2.5 py-1.5 rounded-lg border border-amber-400/30 text-amber-300 hover:bg-amber-500/10"
+              className="shrink-0 px-2.5 py-1.5 rounded-lg border border-current/30 hover:bg-[color-mix(in_srgb,var(--warning)_12%,transparent)]"
             >
               查看诊断
             </button>
@@ -275,24 +408,17 @@ export const App: React.FC = () => {
 
         {/* Row 1: Quota Compass + 4 Token Metric Cards */}
         <div className="dashboard-hero">
-          {/* Quota Compass (Scheme C) */}
-          <div className="min-w-0">
-            <QuotaCompass
-              quota={snapshot.quota}
-              quotaMode={settings.quota_mode}
-              onToggleQuotaMode={handleToggleQuotaMode}
-            />
-          </div>
-
-          {/* 4 Token Metric Cards */}
-          <div className="min-w-0">
-            <TokenMetricCards tokens={snapshot.tokens} unavailable={!snapshotReady} />
-          </div>
+          <QuotaCompass
+            quota={snapshot.quota}
+            quotaMode={settings.quota_mode}
+            onToggleQuotaMode={handleToggleQuotaMode}
+          />
+          <TokenMetricCards tokens={snapshot.tokens} unavailable={!snapshotReady} />
         </div>
 
         {/* Row 2: In-place Tab Switcher Bar */}
-        <div className="flex items-center justify-between border-b border-[var(--border-default)] pb-1">
-          <div role="tablist" aria-label="仪表盘内容" className="flex items-center gap-1">
+        <div className="flex items-stretch border-b border-[var(--border-default)] shrink-0">
+          <div role="tablist" aria-label="仪表盘内容" className="flex items-stretch w-full">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -302,24 +428,28 @@ export const App: React.FC = () => {
                   type="button"
                   role="tab"
                   id={`dashboard-tab-${tab.id}`}
+                  tabIndex={isActive ? 0 : -1}
                   aria-selected={isActive}
-                  aria-controls={`dashboard-panel-${tab.id}`}
+                  // aria-controls only points at a panel that is rendered —
+                  // only the active tab's panel exists in the DOM.
+                  {...(isActive ? { 'aria-controls': `dashboard-panel-${tab.id}` } : {})}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all relative ${
+                  onKeyDown={handleDashboardTabKeyDown}
+                  className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-semibold transition-all border-b-2 -mb-px ${
                     isActive
-                      ? 'text-teal-400 bg-teal-500/10 border border-teal-500/30 shadow-sm'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)]'
+                      ? 'text-[var(--accent-brand)] border-[var(--accent-brand)]'
+                      : 'text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)]'
                   }`}
                 >
-                  <Icon aria-hidden="true" className="w-4 h-4" />
+                  <Icon aria-hidden="true" className="w-3.5 h-3.5" />
                   <span>{tab.label}</span>
                   {tab.id === 'tasks' && snapshot.tasks.length > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[var(--bg-subtle)] font-mono text-[var(--text-muted)]">
+                    <span className="text-[11px] font-mono text-[var(--text-muted)]">
                       {snapshot.tasks.length}
                     </span>
                   )}
                   {tab.id === 'projects' && snapshot.projects.length > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[var(--bg-subtle)] font-mono text-[var(--text-muted)]">
+                    <span className="text-[11px] font-mono text-[var(--text-muted)]">
                       {snapshot.projects.length}
                     </span>
                   )}
@@ -327,15 +457,10 @@ export const App: React.FC = () => {
               );
             })}
           </div>
-
-          {/* Quick channel info badge */}
-          <div className="text-[11px] text-[var(--text-muted)] flex items-center gap-2">
-            <span>当前时区: <strong className="font-mono text-[var(--text-primary)]">{settings.timezone}</strong></span>
-          </div>
         </div>
 
         {/* Row 3: Tab Content Panels */}
-        <div id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="min-h-[360px]">
+        <div id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="flex-1 min-h-0 h-full overflow-hidden">
           {activeTab === 'tasks' && <TaskBoardTab tasks={snapshot.tasks} />}
           {activeTab === 'trends' && (
             <UsageTrendsTab
@@ -367,15 +492,16 @@ export const App: React.FC = () => {
           setSettings(s);
           applyTheme(s.theme);
           if (timezoneChanged) {
-            setIsRefreshing(true);
+            const token = orderingRef.current.next();
+            token.commit(() => setIsRefreshing(true));
             try {
               const snap = await fetchDashboardSnapshot(activeChannel, s.timezone);
-              setSnapshot(snap);
-              setError(null);
+              commitSnapshot(token, snap, activeChannel);
             } catch (err) {
-              setError(`时区切换后刷新失败：${err instanceof Error ? err.message : String(err)}`);
-            } finally {
-              setIsRefreshing(false);
+              token.commit(() => {
+                setError(`时区切换后刷新失败：${err instanceof Error ? err.message : String(err)}`);
+                setIsRefreshing(false);
+              });
             }
           }
         }}

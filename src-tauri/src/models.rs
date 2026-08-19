@@ -37,6 +37,20 @@ pub struct TokenPeriods {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QuotaFamily {
+    pub id: String,
+    pub label: String,
+    pub five_hour_used_ratio: Option<f64>,
+    pub five_hour_remaining_ratio: Option<f64>,
+    pub five_hour_reset_at: Option<String>,
+    pub seven_day_used_ratio: Option<f64>,
+    pub seven_day_remaining_ratio: Option<f64>,
+    pub seven_day_reset_at: Option<String>,
+    pub has_five_hour: bool,
+    pub has_seven_day: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QuotaSnapshot {
     pub five_hour_used_ratio: Option<f64>,
     pub five_hour_remaining_ratio: Option<f64>,
@@ -49,6 +63,8 @@ pub struct QuotaSnapshot {
     pub source: String,
     pub status: String,
     pub last_updated: String,
+    #[serde(default)]
+    pub families: Vec<QuotaFamily>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

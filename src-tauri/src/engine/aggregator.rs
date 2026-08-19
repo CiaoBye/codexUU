@@ -11,6 +11,7 @@ use crate::models::{
     SkillAgg, SkillUsageItem, SourceHealthStatus, TokenBreakdown,
 };
 use crate::providers::antigravity::AntigravityProvider;
+use crate::providers::antigravity_quota;
 use crate::providers::codex::CodexProvider;
 use crate::providers::{group_tasks_by_project, normalize_project_path};
 use crate::storage::{cache, history};
@@ -29,6 +30,11 @@ impl Aggregator {
     }
 
     fn quota_cache() -> &'static Mutex<Option<(String, Instant, QuotaSnapshot)>> {
+        static CACHE: OnceLock<Mutex<Option<(String, Instant, QuotaSnapshot)>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(None))
+    }
+
+    fn antigravity_quota_cache() -> &'static Mutex<Option<(String, Instant, QuotaSnapshot)>> {
         static CACHE: OnceLock<Mutex<Option<(String, Instant, QuotaSnapshot)>>> = OnceLock::new();
         CACHE.get_or_init(|| Mutex::new(None))
     }
@@ -71,9 +77,11 @@ impl Aggregator {
             _ => CodexProvider::source_roots(),
         };
         let fingerprint = cache::source_fingerprint(&roots);
+        let period = cache::stat_period(tz);
         let _ = cache::save(
             provider,
             timezone,
+            &period,
             &fingerprint,
             parsed,
             &Self::cache_timestamp(tz),
@@ -121,9 +129,9 @@ impl Aggregator {
         }
 
         thread::spawn(move || {
+            let _guard = InFlightGuard { key };
             let parsed = CodexProvider::parse_all_sessions(0, &tz);
             Self::persist_provider("codex", &timezone, &tz, &parsed);
-            Self::finish_refresh(&key);
         });
         true
     }
@@ -135,9 +143,9 @@ impl Aggregator {
         }
 
         thread::spawn(move || {
+            let _guard = InFlightGuard { key };
             let parsed = AntigravityProvider::parse_all(0, &tz);
             Self::persist_provider("antigravity", &timezone, &tz, &parsed);
-            Self::finish_refresh(&key);
         });
         true
     }
@@ -149,6 +157,7 @@ impl Aggregator {
         }
 
         thread::spawn(move || {
+            let _guard = InFlightGuard { key };
             let snapshot = CodexProvider::fetch_quota(&tz);
             if let Ok(mut cache) = Self::quota_cache().lock() {
                 let replace_cache = cache
@@ -161,7 +170,29 @@ impl Aggregator {
                     *cache = Some((timezone, Instant::now(), snapshot));
                 }
             }
-            Self::finish_refresh(&key);
+        });
+    }
+
+    fn schedule_antigravity_quota_refresh(timezone: String, tz: Tz) {
+        let key = format!("ag-quota|{timezone}");
+        if !Self::start_refresh(&key, Duration::from_secs(30)) {
+            return;
+        }
+
+        thread::spawn(move || {
+            let _guard = InFlightGuard { key };
+            let snapshot = antigravity_quota::fetch_quota(&tz);
+            if let Ok(mut cache) = Self::antigravity_quota_cache().lock() {
+                let replace_cache = cache
+                    .as_ref()
+                    .map(|(_, _, cached)| {
+                        snapshot.status == "available" || cached.status != "available"
+                    })
+                    .unwrap_or(true);
+                if replace_cache {
+                    *cache = Some((timezone, Instant::now(), snapshot));
+                }
+            }
         });
     }
 
@@ -220,11 +251,28 @@ impl Aggregator {
         data
     }
 
+    /// A forced quota fetch that comes back unavailable must not overwrite a
+    /// previously fetched available snapshot with nothing.
+    fn should_keep_previous_quota(fresh_status: &str, cached_status: &str) -> bool {
+        fresh_status != "available" && cached_status == "available"
+    }
+
     fn load_quota(tz: &Tz, force: bool) -> QuotaSnapshot {
         let timezone = tz.to_string();
         if force {
             let snapshot = CodexProvider::fetch_quota(tz);
             if let Ok(mut cache) = Self::quota_cache().lock() {
+                let keep_previous = cache
+                    .as_ref()
+                    .map(|(_, _, cached)| {
+                        Self::should_keep_previous_quota(&snapshot.status, &cached.status)
+                    })
+                    .unwrap_or(false);
+                if keep_previous {
+                    if let Some((_, _, cached)) = cache.as_ref().cloned() {
+                        return cached;
+                    }
+                }
                 *cache = Some((timezone, Instant::now(), snapshot.clone()));
             }
             return snapshot;
@@ -253,6 +301,50 @@ impl Aggregator {
         }
     }
 
+    fn load_antigravity_quota(tz: &Tz, force: bool) -> QuotaSnapshot {
+        let timezone = tz.to_string();
+        if force {
+            let snapshot = antigravity_quota::fetch_quota(tz);
+            if let Ok(mut cache) = Self::antigravity_quota_cache().lock() {
+                let keep_previous = cache
+                    .as_ref()
+                    .map(|(_, _, cached)| {
+                        Self::should_keep_previous_quota(&snapshot.status, &cached.status)
+                    })
+                    .unwrap_or(false);
+                if keep_previous {
+                    if let Some((_, _, cached)) = cache.as_ref().cloned() {
+                        return cached;
+                    }
+                }
+                *cache = Some((timezone, Instant::now(), snapshot.clone()));
+            }
+            return snapshot;
+        }
+
+        if let Ok(cache) = Self::antigravity_quota_cache().lock() {
+            if let Some((cached_timezone, cached_at, snapshot)) = cache.as_ref() {
+                if cached_timezone == &timezone && cached_at.elapsed() < Duration::from_secs(30) {
+                    return snapshot.clone();
+                }
+                if cached_timezone == &timezone {
+                    let stale_snapshot = snapshot.clone();
+                    drop(cache);
+                    Self::schedule_antigravity_quota_refresh(timezone, *tz);
+                    return stale_snapshot;
+                }
+            }
+        }
+
+        Self::schedule_antigravity_quota_refresh(timezone, *tz);
+        QuotaSnapshot {
+            status: "refreshing".to_string(),
+            source: "Antigravity 额度后台查询中".to_string(),
+            last_updated: Self::cache_timestamp(tz),
+            ..Default::default()
+        }
+    }
+
     fn load_codex_data(tz: &Tz, force: bool) -> ProviderData {
         let timezone = tz.to_string();
         if force {
@@ -262,8 +354,9 @@ impl Aggregator {
         }
 
         let fingerprint = cache::source_fingerprint(&CodexProvider::source_roots());
+        let period = cache::stat_period(tz);
         if let Some(mut cached) =
-            cache::load_exact::<ProviderData>("codex", &timezone, &fingerprint)
+            cache::load_exact::<ProviderData>("codex", &timezone, &period, &fingerprint)
         {
             cached.source_health.message = format!("缓存命中：{}", cached.source_health.message);
             cached.source_health.last_attempt_at = Some(Self::cache_timestamp(tz));
@@ -314,8 +407,9 @@ impl Aggregator {
         }
 
         let fingerprint = cache::source_fingerprint(&AntigravityProvider::source_roots());
+        let period = cache::stat_period(tz);
         if let Some(mut cached) =
-            cache::load_exact::<ProviderData>("antigravity", &timezone, &fingerprint)
+            cache::load_exact::<ProviderData>("antigravity", &timezone, &period, &fingerprint)
         {
             cached.source_health.message = format!("缓存命中：{}", cached.source_health.message);
             cached.source_health.last_attempt_at = Some(Self::cache_timestamp(tz));
@@ -361,15 +455,31 @@ impl Aggregator {
         Self::build_snapshot_with_refresh(channel, timezone, false)
     }
 
+    /// Map a refresh request onto per-provider force flags. A single channel
+    /// only forces that provider; the other provider keeps its cached snapshot
+    /// (normal non-force load). "all" forces both, preserving the original
+    /// full-rescan semantics.
+    fn refresh_force_for(channel: &str, provider: &str, force: bool) -> bool {
+        if !force {
+            return false;
+        }
+        matches!(channel, "all") || channel == provider
+    }
+
     pub fn build_snapshot_with_refresh(
         channel: &str,
         timezone: Option<String>,
         force: bool,
     ) -> DashboardSnapshot {
         let tz = Self::resolve_tz(timezone.as_deref());
-        let codex_quota = Self::load_quota(&tz, force);
-        let c_data = Self::load_codex_data(&tz, force);
-        let a_data = Self::load_antigravity_data(&tz, force);
+        // A refresh on a single channel only re-scans that provider; the other
+        // provider keeps its cached snapshot instead of forcing a full rescan.
+        let codex_force = Self::refresh_force_for(channel, "codex", force);
+        let antigravity_force = Self::refresh_force_for(channel, "antigravity", force);
+        let codex_quota = Self::load_quota(&tz, codex_force);
+        let antigravity_quota = Self::load_antigravity_quota(&tz, antigravity_force);
+        let c_data = Self::load_codex_data(&tz, codex_force);
+        let a_data = Self::load_antigravity_data(&tz, antigravity_force);
 
         let now_str = Utc::now()
             .with_timezone(&tz)
@@ -412,8 +522,43 @@ impl Aggregator {
             scanned_files: 0,
             parsed_sessions: 0,
         };
+        let ag_quota_available = antigravity_quota.status == "available";
+        let ag_quota_refreshing = antigravity_quota.status == "refreshing";
+        let antigravity_quota_health = SourceHealthStatus {
+            id: "antigravity_quota".to_string(),
+            name: "Antigravity Runtime / 额度".to_string(),
+            status: if ag_quota_refreshing {
+                "refreshing"
+            } else if ag_quota_available {
+                "healthy"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
+            message: if ag_quota_refreshing {
+                "正在查询本机 Antigravity 语言服务额度".to_string()
+            } else if ag_quota_available {
+                format!("已连接 (数据源: {})", antigravity_quota.source)
+            } else {
+                antigravity_quota.source.clone()
+            },
+            last_success_at: ag_quota_available.then_some(antigravity_quota.last_updated.clone()),
+            last_attempt_at: Some(now_str.clone()),
+            error_code: (!ag_quota_available && !ag_quota_refreshing)
+                .then_some("quota_unavailable".to_string()),
+            source_schema: Some("Antigravity language server RetrieveUserQuotaSummary".to_string()),
+            locations: vec!["127.0.0.1 language_server".to_string()],
+            capabilities: vec![
+                "quota_windows".to_string(),
+                "reset_time".to_string(),
+                "background_refresh".to_string(),
+            ],
+            scanned_files: 0,
+            parsed_sessions: 0,
+        };
         let sources_health = vec![
             codex_quota_health,
+            antigravity_quota_health,
             c_data.source_health.clone(),
             a_data.source_health.clone(),
         ];
@@ -421,12 +566,7 @@ impl Aggregator {
         let snapshot = match channel {
             "antigravity" => DashboardSnapshot {
                 channel: "antigravity".to_string(),
-                quota: QuotaSnapshot {
-                    status: "not_applicable".to_string(),
-                    source: "Antigravity 无官方额度限制".to_string(),
-                    last_updated: now_str.clone(),
-                    ..Default::default()
-                },
+                quota: antigravity_quota,
                 tokens: a_data.tokens,
                 daily_activities: a_data.daily_activities,
                 models: a_data.models,
@@ -464,16 +604,14 @@ impl Aggregator {
                 timestamp: now_str,
             },
         };
-        history::reconcile(snapshot)
+        history::reconcile(snapshot, &tz.to_string())
     }
 
     fn merge_all(codex: ProviderData, antigravity: ProviderData, tz: &Tz) -> ProviderData {
-        let mut merged_tokens = codex.tokens.clone();
-        merged_tokens.today.add(&antigravity.tokens.today);
-        merged_tokens.week.add(&antigravity.tokens.week);
-        merged_tokens.month.add(&antigravity.tokens.month);
-        merged_tokens.all_time.add(&antigravity.tokens.all_time);
-
+        // Period buckets are recomputed from the merged daily rows below so the
+        // "all" channel's today/week/month/all_time always equal the sum of its
+        // own daily activities (single-source consistency), never a sum of two
+        // independently-computed per-provider buckets.
         let mut daily_map: HashMap<String, (TokenBreakdown, f64, u64)> = HashMap::new();
         for d in &codex.daily_activities {
             let entry =
@@ -503,6 +641,7 @@ impl Aggregator {
             })
             .collect();
         merged_daily.sort_by(|a, b| a.date.cmp(&b.date));
+        let merged_tokens = history::recompute_periods(&merged_daily, tz);
 
         let mut model_map: HashMap<String, ModelUsage> = HashMap::new();
         for m in codex.models {
@@ -596,10 +735,23 @@ impl Aggregator {
     }
 }
 
+/// Clears the in-flight marker on drop so a panicking background worker cannot
+/// leave a key stuck forever (which would starve future refreshes).
+struct InFlightGuard {
+    key: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        Aggregator::finish_refresh(&self.key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Aggregator;
+    use super::{Aggregator, InFlightGuard};
     use crate::models::{ProjectRankingItem, ProviderData, TokenBreakdown, TokenPeriods};
+    use std::time::Duration;
 
     fn project(path: &str, total: u64, model: &str) -> ProjectRankingItem {
         ProjectRankingItem {
@@ -630,5 +782,64 @@ mod tests {
         assert_eq!(merged.projects.len(), 1);
         assert_eq!(merged.projects[0].tokens.total, 50);
         assert_eq!(merged.projects[0].primary_model, "gemini-2.5-pro");
+    }
+
+    #[test]
+    fn in_flight_marker_is_cleared_when_worker_panics() {
+        let key = "codex|panic-test-tz";
+        assert!(Aggregator::start_refresh(key, Duration::ZERO));
+        assert!(Aggregator::refresh_in_flight(key));
+
+        // A panicking worker still releases the in-flight marker on unwind.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = InFlightGuard {
+                key: key.to_string(),
+            };
+            panic!("worker boom");
+        }));
+        assert!(result.is_err());
+        assert!(!Aggregator::refresh_in_flight(key));
+    }
+
+    #[test]
+    fn in_flight_marker_cleared_on_normal_completion() {
+        let key = "codex|completion-test-tz";
+        assert!(Aggregator::start_refresh(key, Duration::ZERO));
+        {
+            let _guard = InFlightGuard {
+                key: key.to_string(),
+            };
+        }
+        assert!(!Aggregator::refresh_in_flight(key));
+    }
+
+    #[test]
+    fn single_channel_force_does_not_force_other_provider() {
+        // Force refresh on codex only: codex is forced, antigravity is not.
+        assert!(Aggregator::refresh_force_for("codex", "codex", true));
+        assert!(!Aggregator::refresh_force_for("codex", "antigravity", true));
+        // Force refresh on antigravity only.
+        assert!(!Aggregator::refresh_force_for("antigravity", "codex", true));
+        assert!(Aggregator::refresh_force_for(
+            "antigravity",
+            "antigravity",
+            true
+        ));
+    }
+
+    #[test]
+    fn all_channel_forces_both_and_non_force_never_forces() {
+        // "all" preserves full-rescan semantics for both providers.
+        assert!(Aggregator::refresh_force_for("all", "codex", true));
+        assert!(Aggregator::refresh_force_for("all", "antigravity", true));
+        // Non-force refresh never forces either provider.
+        assert!(!Aggregator::refresh_force_for("codex", "codex", false));
+        assert!(!Aggregator::refresh_force_for(
+            "codex",
+            "antigravity",
+            false
+        ));
+        assert!(!Aggregator::refresh_force_for("all", "codex", false));
+        assert!(!Aggregator::refresh_force_for("all", "antigravity", false));
     }
 }

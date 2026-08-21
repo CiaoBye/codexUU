@@ -64,14 +64,14 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 dashboard-data-panel">
       {/* Left 2 Cols: Project Ranking Table */}
-      <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm overflow-hidden">
+      <div className="dashboard-panel-card lg:col-span-2 p-4 flex flex-col justify-between overflow-hidden">
         {/* Header with export */}
         <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
           <div className="flex items-center gap-2">
-            <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+            <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
               <Award aria-hidden="true" className="w-4 h-4 text-[var(--warning)]" />
               <span>项目用量排行</span>
-            </h4>
+            </h3>
           </div>
 
           <div className="flex items-center gap-1">
@@ -114,8 +114,8 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
         {/* Project List Scrollable */}
         <div className="flex-1 overflow-y-auto space-y-2 py-2 pr-1">
           {projects.length === 0 && (
-            <div className="flex h-full items-center justify-center text-xs text-[var(--text-muted)]">
-              暂无
+            <div className="flex h-full min-h-40 items-center justify-center text-xs text-[var(--text-muted)] text-center">
+              暂无仍存在的项目目录
             </div>
           )}
           {projects.map((p) => {
@@ -135,17 +135,17 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
                     }`}>
                       {p.rank}
                     </span>
-                    <span className="font-bold text-[var(--text-primary)] group-hover:text-[var(--accent-brand)] transition-colors">
+                    <span className="font-bold text-[var(--text-primary)] group-hover:text-[var(--accent-brand)] transition-colors truncate max-w-[180px]" title={p.name}>
                       {p.name}
                     </span>
-                    <span className="text-[11px] px-1.5 py-0.5 rounded ui-chip-7d font-medium whitespace-nowrap" title={p.primary_model}>
+                    <span className="text-xs px-1.5 py-0.5 rounded ui-chip-7d font-medium whitespace-nowrap" title={p.primary_model}>
                       {formatModelLabel(p.primary_model)}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-3 font-mono">
                     <span className="text-[var(--accent-brand)] font-bold">{formatTokens(p.tokens.total)}</span>
-                    <span className="text-[var(--token-output)] text-[11px]">${p.cost_usd.toFixed(2)}</span>
+                    <span className="text-[var(--token-output)] text-xs">${p.cost_usd.toFixed(2)}</span>
                   </div>
                 </div>
 
@@ -158,8 +158,8 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
                 </div>
 
                 {/* Sub info */}
-                <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-                  <span className="truncate max-w-[280px] font-mono opacity-80">{p.path}</span>
+                <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                  <span className="truncate max-w-[280px] font-mono opacity-80" title={p.path} aria-label={`项目路径：${p.path}`}>{p.path}</span>
                   <div className="flex items-center gap-2">
                     <span>{p.sessions} 会话</span>
                     <span>活跃: {p.last_active_at}</span>
@@ -178,12 +178,12 @@ export const ProjectRankingTab: React.FC<ProjectRankingTabProps> = ({
       </div>
 
       {/* Right 1 Col: Activity Overview Summary */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm">
+      <div className="dashboard-panel-card p-4 flex flex-col justify-start">
         <div className="pb-2 border-b border-[var(--border-default)]">
-          <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+          <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
             <PieChart aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
             <span>活动概览</span>
-          </h4>
+          </h3>
         </div>
 
         <div className="space-y-3 py-3">

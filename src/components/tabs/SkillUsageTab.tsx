@@ -14,23 +14,33 @@ export const SkillUsageTab: React.FC<SkillUsageTabProps> = ({
   const tools = useMemo(() => skillsAndTools.filter((s) => s.kind === 'tool'), [skillsAndTools]);
   const skills = useMemo(() => skillsAndTools.filter((s) => s.kind === 'skill'), [skillsAndTools]);
 
-  const filteredItems = useMemo(() => filterKind === 'all'
-    ? skillsAndTools
-    : filterKind === 'tool'
-    ? tools
-    : skills, [filterKind, skillsAndTools, skills, tools]);
+  const visibleColumns = useMemo(() => {
+    const sortByCount = (items: SkillUsageItem[]) => [...items].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    if (filterKind === 'tool') return [{ kind: 'tool' as const, title: '工具使用 TOP20', items: sortByCount(tools) }];
+    if (filterKind === 'skill') return [{ kind: 'skill' as const, title: 'Skill 使用 TOP20', items: sortByCount(skills) }];
+    return [
+      { kind: 'skill' as const, title: 'Skill 使用 TOP20', items: sortByCount(skills) },
+      { kind: 'tool' as const, title: '工具使用 TOP20', items: sortByCount(tools) },
+    ];
+  }, [filterKind, skillsAndTools, skills, tools]);
+
+  const filteredCount = filterKind === 'all' ? skillsAndTools.length : filterKind === 'tool' ? tools.length : skills.length;
 
   return (
-    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm dashboard-data-panel">
+    <div className="dashboard-panel-card p-4 flex flex-col justify-between dashboard-data-panel">
       {/* Header with Segmented Filter */}
       <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
-        <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+        <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
           <Wrench aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
           <span>Skill 与工具</span>
-        </h4>
+        </h3>
 
         {/* Filter Segmented Control */}
-        <div className="flex items-center p-0.5 bg-[var(--bg-subtle)] border border-[var(--border-default)] rounded-lg text-xs">
+        <div
+          role="group"
+          aria-label="Skill 与工具筛选"
+          className="flex items-center p-0.5 bg-[var(--bg-subtle)] border border-[var(--border-default)] rounded-lg text-xs"
+        >
           <button
             type="button"
             aria-pressed={filterKind === 'all'}
@@ -70,71 +80,66 @@ export const SkillUsageTab: React.FC<SkillUsageTabProps> = ({
         </div>
       </div>
 
-      {/* Grid of Skill & Tool Cards */}
-      <div className="flex-1 overflow-y-auto py-2 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 pr-1">
-        {filteredItems.length === 0 && (
-          <div className="col-span-full flex items-center justify-center py-12 text-xs text-[var(--text-muted)]">
-            暂无
-          </div>
-        )}
-        {filteredItems.map((item) => {
-          const isSkill = item.kind === 'skill';
+      {/* Two ranked rails mirror the Mac layout while preserving the Windows data model. */}
+      <div className={`dashboard-skill-grid flex-1 min-h-0 overflow-y-auto py-2 pr-1 ${visibleColumns.length === 1 ? 'is-single' : ''}`}>
+        {visibleColumns.map((column) => {
+          const isSkill = column.kind === 'skill';
+          const maxCount = Math.max(...column.items.map((item) => item.count), 1);
+          const Icon = isSkill ? Sparkles : Wrench;
           return (
-            <div
-              key={item.name}
-              className="p-3 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)] hover:border-[color-mix(in_srgb,var(--accent-brand)_30%,transparent)] transition flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-1.5 truncate max-w-[160px]">
-                    {isSkill ? (
-                      <Sparkles aria-hidden="true" className="w-3.5 h-3.5 text-[var(--quota-7d)] shrink-0" />
-                    ) : (
-                      <Wrench aria-hidden="true" className="w-3.5 h-3.5 text-[var(--quota-5h)] shrink-0" />
-                    )}
-                    <span className="font-bold text-xs text-[var(--text-primary)] truncate font-mono">
-                      {item.name}
-                    </span>
-                  </div>
-
-                  <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium border ${
-                    isSkill
-                      ? 'ui-chip-7d'
-                      : 'ui-chip-5h'
-                  }`}>
-                    {isSkill ? 'Skill' : 'Tool'}
-                  </span>
-                </div>
-
-                <div className="flex items-baseline gap-1 my-1">
-                  <span className="text-xl font-extrabold font-mono text-[var(--text-primary)]">
-                    {item.count}
-                  </span>
-                  <span className="text-[11px] text-[var(--text-muted)]">次调用</span>
-                </div>
+            <section key={column.kind} className="dashboard-skill-column" aria-labelledby={`skill-column-${column.kind}`}>
+              <div className="flex items-center justify-between gap-2 px-1 pb-2 border-b border-[var(--border-default)]">
+                <h4 id={`skill-column-${column.kind}`} className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                  <Icon aria-hidden="true" className={`w-4 h-4 ${isSkill ? 'text-[var(--quota-7d)]' : 'text-[var(--quota-5h)]'}`} />
+                  {column.title}
+                </h4>
+                <span className="text-[11px] text-[var(--text-muted)]">{column.items.length}</span>
               </div>
-
-              {/* Sub details */}
-              <div className="flex items-center justify-between pt-2 border-t border-[var(--border-default)]/60 text-[11px] text-[var(--text-muted)]">
-                <div className="flex items-center gap-2">
-                  <span className="flex items-center gap-0.5">
-                    <Calendar aria-hidden="true" className="w-3 h-3" />
-                    {item.active_days} 天
-                  </span>
-                  <span className="flex items-center gap-0.5">
-                    <Folder aria-hidden="true" className="w-3 h-3" />
-                    {item.project_count} 项目
-                  </span>
+              {column.items.length === 0 ? (
+                <div className="flex min-h-32 items-center justify-center text-xs text-[var(--text-muted)] text-center" role="status">
+                  暂无{isSkill ? ' Skill' : '工具'}记录
                 </div>
-                <span>{item.last_used_at}</span>
-              </div>
-            </div>
+              ) : (
+                <div className="space-y-2 pt-2">
+                  {column.items.slice(0, 20).map((item) => {
+                    const width = Math.max(4, Math.round((item.count / maxCount) * 100));
+                    return (
+                      <div key={item.name} className="dashboard-skill-row group" title={`${item.name}：${item.count} 次调用`}>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex items-center gap-2">
+                            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${isSkill ? 'ui-chip-7d' : 'ui-chip-5h'}`}>
+                              <Icon aria-hidden="true" className="w-3.5 h-3.5" />
+                            </span>
+                            <div className="min-w-0">
+                              <div className="truncate text-xs font-bold font-mono text-[var(--text-primary)]">{item.name}</div>
+                              <div className="truncate text-[11px] text-[var(--text-muted)]">
+                                <Calendar aria-hidden="true" className="mr-0.5 inline-block h-3 w-3" />{item.active_days} 天
+                                <span className="mx-1">·</span>
+                                <Folder aria-hidden="true" className="mr-0.5 inline-block h-3 w-3" />{item.project_count} 项目
+                                <span className="mx-1">·</span>{item.last_used_at}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <div className="font-mono text-sm font-extrabold text-[var(--text-primary)]">{item.count} <span className="text-[11px] font-normal text-[var(--text-muted)]">次</span></div>
+                            <div className="text-[10px] text-[var(--text-muted)]">调用</div>
+                          </div>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                          <div className={`h-full rounded-full transition-all duration-500 ${isSkill ? 'bg-[var(--quota-7d)]' : 'bg-[var(--quota-5h)]'}`} style={{ width: `${width}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           );
         })}
       </div>
 
-      <div className="pt-2 border-t border-[var(--border-default)] text-[11px] text-[var(--text-muted)]">
-        {filteredItems.length} 项
+      <div className="pt-2 border-t border-[var(--border-default)] text-xs text-[var(--text-muted)]">
+        {filteredCount} 项
       </div>
     </div>
   );

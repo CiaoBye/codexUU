@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import React from 'react';
 import { App } from './App';
 import { formatTokens } from './components/dashboard/TokenMetricCards';
@@ -76,11 +76,13 @@ describe('CodexUU 1.0 Architecture & Frontend Tests', () => {
   it('renders dual-channel TopNav correctly', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getAllByText('CodexUU').length).toBeGreaterThan(0));
+    expect(screen.getByRole('heading', { name: 'CodexUU 用量控制台', level: 1 })).toBeDefined();
+    expect(screen.getByRole('link', { name: '跳到主要内容' }).getAttribute('href')).toBe('#dashboard-main');
     expect(screen.getByText('Codex 官方')).toBeDefined();
     expect(screen.getAllByText('Antigravity').length).toBeGreaterThan(0);
     expect(screen.getByLabelText('打开项目排行')).toBeDefined();
     expect(screen.getByLabelText('最大化窗口')).toBeDefined();
-    expect(screen.queryByLabelText('刷新')).toBeNull();
+    expect(screen.getByLabelText('刷新数据')).toBeDefined();
     expect(screen.queryByText('当前时区: Asia/Shanghai')).toBeNull();
   });
 
@@ -127,8 +129,12 @@ describe('Dashboard tablist accessibility (roving tabindex)', () => {
     disableTauri();
   });
 
-  it('uses roving tabindex, arrow keys, and only points aria-controls at the rendered panel', () => {
+  it('uses roving tabindex, arrow keys, and only points aria-controls at the rendered panel', async () => {
     render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     const tasksTab = screen.getByRole('tab', { name: /今日任务/ });
     const trendsTab = screen.getByRole('tab', { name: /用量趋势/ });
 
@@ -159,12 +165,77 @@ describe('App async request ordering (Tauri invoke boundary)', () => {
     disableTauri();
   });
 
-  function flush() {
-    return new Promise<void>((resolve) => {
-      const { act } = require('@testing-library/react') as typeof import('@testing-library/react');
-      act(() => resolve());
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
   }
+
+  it('does not show the previous channel when an uncached channel fails to load', async () => {
+    sessionStorage.setItem(
+      'codexuu.last-snapshot:codex',
+      JSON.stringify(freshSnapshot('codex', 777)),
+    );
+    let rejectSnapshot!: (reason?: unknown) => void;
+    invokeMock.mockClear();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_settings') {
+        return { ...DEFAULT_SETTINGS, default_channel: 'antigravity' };
+      }
+      if (cmd === 'get_dashboard_snapshot') {
+        return new Promise<DashboardSnapshot>((_resolve, reject) => {
+          rejectSnapshot = reject;
+        });
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('切换到Antigravity').getAttribute('aria-pressed')).toBe('true');
+    });
+    expect(container.textContent).not.toContain('777');
+
+    await act(async () => {
+      rejectSnapshot(new Error('offline'));
+    });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('初始化失败'));
+    expect(container.textContent).not.toContain('777');
+  });
+
+  it('clears the previous snapshot during a manual switch to an uncached channel', async () => {
+    let rejectSwitch!: (reason?: unknown) => void;
+    invokeMock.mockClear();
+    invokeMock.mockImplementation(async (cmd: string, args?: any) => {
+      if (cmd === 'get_settings') return DEFAULT_SETTINGS;
+      if (cmd === 'get_dashboard_snapshot' && args.channel === 'codex') {
+        return freshSnapshot('codex', 777);
+      }
+      if (cmd === 'get_dashboard_snapshot' && args.channel === 'antigravity') {
+        return new Promise<DashboardSnapshot>((_resolve, reject) => {
+          rejectSwitch = reject;
+        });
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => expect(container.textContent).toContain('777'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('切换到Antigravity'));
+    });
+    expect(screen.getByLabelText('切换到Antigravity').getAttribute('aria-pressed')).toBe('true');
+    expect(container.textContent).not.toContain('777');
+
+    await act(async () => {
+      rejectSwitch(new Error('offline'));
+    });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('切换渠道失败'));
+    expect(container.textContent).not.toContain('777');
+  });
 
   it('initialises with the default channel and calls the snapshot command for it', async () => {
     const invoke = invokeMock;
@@ -227,10 +298,9 @@ describe('App async request ordering (Tauri invoke boundary)', () => {
     expect(container.textContent).not.toContain('999');
   });
 
-  it('keeps a user channel switch even when init settings finish loading late', async () => {
+  it('waits for late settings so a user channel switch uses the saved UTC timezone', async () => {
     const invoke = invokeMock;
     invoke.mockClear();
-    const act = (require('@testing-library/react') as typeof import('@testing-library/react')).act;
     let resolveSettings!: (s: AppSettings) => void;
     const pendingSnap: Record<number, (v: DashboardSnapshot) => void> = {};
     let snapCall = 0;
@@ -256,22 +326,26 @@ describe('App async request ordering (Tauri invoke boundary)', () => {
     await act(async () => {
       fireEvent.click(screen.getByLabelText('切换到全部聚合'));
     });
-    await waitFor(() => expect(snapCall).toBe(1)); // user's switch snapshot
+    expect(snapCall).toBe(0);
 
-    // Now init's settings resolve with a *different* default channel (codex),
-    // which triggers init's own snapshot fetch (call 2 -> codex).
-    await act(async () => { resolveSettings({ ...DEFAULT_SETTINGS, default_channel: 'codex' }); });
-    await waitFor(() => expect(snapCall).toBe(2));
+    // Once settings resolve, only the user's selected channel is fetched and
+    // it uses the persisted timezone rather than DEFAULT_SETTINGS.
+    await act(async () => {
+      resolveSettings({ ...DEFAULT_SETTINGS, default_channel: 'codex', timezone: 'UTC' });
+    });
+    await waitFor(() => expect(snapCall).toBe(1));
+    expect(invoke).toHaveBeenCalledWith(
+      'get_dashboard_snapshot',
+      expect.objectContaining({ channel: 'all', timezone: 'UTC' }),
+    );
 
-    // The user's switch (all, call 1) is the newest request and must win;
-    // init's later codex snapshot (call 2) belongs to a stale token and must be
-    // dropped, and the default channel must not override the user's choice.
+    // The user's switch remains selected; stale init work never starts a
+    // second, differently-zoned snapshot request.
     await act(async () => { pendingSnap[1](freshSnapshot('all', 555)); });
-    await act(async () => { pendingSnap[2](freshSnapshot('codex', 111)); });
     await flush();
 
     expect(screen.getByLabelText('切换到全部聚合').getAttribute('aria-pressed')).toBe('true');
     expect(container.textContent).toContain('555');
-    expect(container.textContent).not.toContain('111');
+    expect(snapCall).toBe(1);
   });
 });

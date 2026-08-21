@@ -9,12 +9,48 @@ pub fn replace(temp: &Path, destination: &Path) -> Result<(), String> {
     match fs::rename(temp, destination) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            fs::remove_file(destination)
-                .map_err(|remove_error| format!("替换旧文件失败：{remove_error}"))?;
-            fs::rename(temp, destination)
-                .map_err(|rename_error| format!("提交新文件失败：{rename_error}"))
+            #[cfg(windows)]
+            {
+                replace_windows(temp, destination)
+            }
+            #[cfg(not(windows))]
+            {
+                fs::rename(temp, destination)
+                    .map_err(|rename_error| format!("提交新文件失败：{rename_error}"))
+            }
         }
         Err(error) => Err(format!("提交新文件失败：{error}")),
+    }
+}
+
+/// Windows' standard rename refuses to replace an existing file.  Removing
+/// the destination first creates a crash window where the old configuration
+/// is gone.  ReplaceFileW performs the replacement as one filesystem commit,
+/// preserving the old file until the new file is ready.
+#[cfg(windows)]
+fn replace_windows(temp: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+    let destination_w: Vec<u16> = destination.as_os_str().encode_wide().chain([0]).collect();
+    let temp_w: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_w.as_ptr(),
+            temp_w.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced == 0 {
+        Err(format!(
+            "提交新文件失败：{}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
     }
 }
 

@@ -46,13 +46,38 @@ fn delete_already_missing(stderr: &str) -> bool {
 }
 
 #[cfg(windows)]
+fn sanitized_process_detail(stderr: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(stderr).ok()?.trim();
+    if text.is_empty() || text.contains('\u{fffd}') {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+#[cfg(windows)]
+fn startup_failure_message(
+    action: &str,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> String {
+    let code = status
+        .code()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "未知".to_string());
+    let detail = sanitized_process_detail(stderr)
+        .map(|value| format!("：{value}"))
+        .unwrap_or_else(|| "。请确认当前用户有权限后重试".to_string());
+    format!("{action} Windows 登录启动失败（退出码 {code}）{detail}")
+}
+
+#[cfg(windows)]
 pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
-    use std::process::{Command, Stdio};
+    use std::process::Command;
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     if enabled {
         let executable =
             std::env::current_exe().map_err(|error| format!("获取程序路径失败：{error}"))?;
-        let status = Command::new("reg.exe")
+        let output = Command::new("reg.exe")
             .args([
                 "ADD",
                 key,
@@ -64,13 +89,16 @@ pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
                 &format!("\"{}\"", executable.display()),
                 "/f",
             ])
-            .stderr(Stdio::null())
-            .status()
+            .output()
             .map_err(|error| format!("执行 Windows 登录启动设置失败：{error}"))?;
-        if status.success() {
+        if output.status.success() {
             return Ok(());
         }
-        Err(format!("设置 Windows 登录启动失败，退出码：{status}"))
+        Err(startup_failure_message(
+            "设置",
+            output.status,
+            &output.stderr,
+        ))
     } else {
         let output = Command::new("reg.exe")
             .args(["DELETE", key, "/v", "CodexUU", "/f"])
@@ -82,13 +110,20 @@ pub fn apply_start_at_login(enabled: bool) -> Result<(), String> {
         // The only idempotent disable outcome is "the value did not exist" —
         // anything else (permissions, registry lock, ...) is a real failure.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if delete_already_missing(&stderr) {
+        // `reg.exe` uses exit code 1 for a missing value. On localized Windows
+        // builds the diagnostic is emitted in the active code page, so it is
+        // not valid UTF-8 and cannot be matched safely; treat that exact
+        // undecodable case as the same idempotent "already disabled" result.
+        if delete_already_missing(&stderr)
+            || (output.status.code() == Some(1)
+                && sanitized_process_detail(&output.stderr).is_none())
+        {
             return Ok(());
         }
-        Err(format!(
-            "禁用 Windows 登录启动失败，退出码：{}，{}",
+        Err(startup_failure_message(
+            "禁用",
             output.status,
-            stderr.trim()
+            &output.stderr,
         ))
     }
 }
@@ -100,11 +135,16 @@ pub fn apply_start_at_login(_enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_dashboard_snapshot(
+    app: AppHandle,
     channel: String,
     timezone: Option<String>,
 ) -> Result<DashboardSnapshot, String> {
     let tz = timezone.unwrap_or_else(|| SettingsStorage::load().timezone);
-    Ok(Aggregator::build_snapshot(&channel, Some(tz)))
+    let snapshot = Aggregator::build_snapshot(&channel, Some(tz));
+    if let Err(error) = crate::windows::tray::update_tray_status(&app, &snapshot) {
+        tracing::warn!(%error, "dynamic tray status is unavailable");
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -147,13 +187,13 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<AppSetting
 }
 
 #[tauri::command]
-pub fn refresh_data(scope: String) -> Result<DashboardSnapshot, String> {
+pub fn refresh_data(app: AppHandle, scope: String) -> Result<DashboardSnapshot, String> {
     let tz = SettingsStorage::load().timezone;
-    Ok(Aggregator::build_snapshot_with_refresh(
-        &scope,
-        Some(tz),
-        true,
-    ))
+    let snapshot = Aggregator::build_snapshot_with_refresh(&scope, Some(tz), true);
+    if let Err(error) = crate::windows::tray::update_tray_status(&app, &snapshot) {
+        tracing::warn!(%error, "dynamic tray status is unavailable");
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -247,19 +287,20 @@ pub fn set_widget_style(app: AppHandle, style: String, scale: f64) -> Result<(),
 }
 
 /// Returns the native window size needed by each widget visual style.
-/// The webview applies the same scale to its content, so the native hitbox
-/// must scale with it as well; otherwise large widgets are clipped and small
-/// widgets keep an unnecessarily large transparent click area.
+/// The content itself is transformed by `scale`; the root's 12px padding is
+/// deliberately added after scaling so it neither clips nor creates a large
+/// transparent border at non-100% zoom levels.
 pub fn widget_size(style: &str, scale: f64) -> LogicalSize<f64> {
-    let (width, height) = match style {
-        "capsule" | "gauge" => (276.0, 92.0),
-        "tracks" => (286.0, 112.0),
-        "disc" => (144.0, 144.0),
-        _ => (128.0, 128.0),
+    let (content_width, content_height) = match style {
+        "capsule" => (224.0, 48.0),
+        "gauge" => (224.0, 64.0),
+        "tracks" => (240.0, 100.0),
+        "disc" => (112.0, 112.0),
+        _ => (96.0, 96.0),
     };
     LogicalSize {
-        width: width * scale,
-        height: height * scale,
+        width: content_width * scale + 12.0,
+        height: content_height * scale + 12.0,
     }
 }
 
@@ -335,7 +376,7 @@ pub fn toggle_maximize_main_window(app: AppHandle) -> Result<bool, String> {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::delete_already_missing;
+    use super::{delete_already_missing, sanitized_process_detail};
 
     #[test]
     fn reg_delete_value_not_found_is_idempotent() {
@@ -355,5 +396,38 @@ mod tests {
         assert!(!delete_already_missing("ERROR: Access is denied."));
         assert!(!delete_already_missing("ERROR: The process cannot access the file because it is being used by another process."));
         assert!(!delete_already_missing(""));
+    }
+
+    #[test]
+    fn invalid_windows_code_page_output_is_not_exposed_as_garbage() {
+        assert_eq!(sanitized_process_detail(&[0xff, 0xfe]), None);
+        assert_eq!(
+            sanitized_process_detail(b"  Access is denied.  "),
+            Some("Access is denied.".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod widget_size_tests {
+    use super::widget_size;
+
+    #[test]
+    fn widget_size_matches_content_plus_fixed_padding() {
+        let ring = widget_size("ring", 1.0);
+        assert_eq!(ring.width, 108.0);
+        assert_eq!(ring.height, 108.0);
+
+        let capsule = widget_size("capsule", 0.5);
+        assert_eq!(capsule.width, 124.0);
+        assert_eq!(capsule.height, 36.0);
+    }
+
+    #[test]
+    fn widget_scale_does_not_scale_transparent_padding() {
+        let standard = widget_size("tracks", 1.0);
+        let large = widget_size("tracks", 2.0);
+        assert_eq!(large.width, standard.width * 2.0 - 12.0);
+        assert_eq!(large.height, standard.height * 2.0 - 12.0);
     }
 }

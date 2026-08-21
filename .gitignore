@@ -32,6 +32,7 @@ screenshot*.png
 /tmp/
 node_modules/
 src-tauri/target/
+src-tauri/target-ui-*/
 src-tauri/gen/
 src-tauri/tools_bin/
 artifacts/

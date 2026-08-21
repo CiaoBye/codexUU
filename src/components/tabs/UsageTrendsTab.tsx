@@ -1,8 +1,23 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { DailyActivity, ModelUsage } from '../../types';
 import { formatTokens } from '../dashboard/TokenMetricCards';
 import { fillDailyRange, TrendPeriod } from '../../lib/trendRange';
+import { isTabListNavKey, nextTabId, prevTabId } from '../../lib/rovingTabs';
 import { TrendingUp, DollarSign, Cpu } from 'lucide-react';
+
+const HEATMAP_LEVELS = [0, 1, 2, 3, 4] as const;
+const TREND_PERIODS: TrendPeriod[] = ['daily', 'weekly', 'monthly', 'all'];
+const TREND_PERIOD_LABELS: Record<TrendPeriod, string> = {
+  daily: '每日',
+  weekly: '本周',
+  monthly: '本月',
+  all: '累计',
+};
+
+function heatmapColor(level: number): string {
+  if (level === 0) return 'var(--bg-subtle)';
+  return `color-mix(in srgb, var(--accent-brand) ${18 + level * 17}%, var(--bg-elevated))`;
+}
 
 interface UsageTrendsTabProps {
   dailyActivities: DailyActivity[];
@@ -17,6 +32,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
 }) => {
   const [period, setPeriod] = useState<TrendPeriod>('daily');
   const [metricMode, setMetricMode] = useState<'tokens' | 'cost'>('tokens');
+  const [focusedHeatmapLabel, setFocusedHeatmapLabel] = useState<string | null>(null);
 
   const safeToday = today && !Number.isNaN(new Date(today + 'T00:00:00Z').getTime())
     ? today
@@ -81,30 +97,116 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
     ? `${pathD} L ${points[points.length - 1].x} ${svgHeight - paddingY} L ${points[0].x} ${svgHeight - paddingY} Z`
     : '';
   const chartDescriptionId = 'usage-trends-chart-description';
+  const heatmapActivities = activities.slice(-365);
+  const heatmapRangeLabel = heatmapActivities.length === 0
+    ? '暂无日期'
+    : `${heatmapActivities[0].date} 至 ${heatmapActivities[heatmapActivities.length - 1].date}`;
+  useEffect(() => {
+    setFocusedHeatmapLabel(null);
+  }, [heatmapRangeLabel, metricMode]);
+  const heatmapMaxValue = Math.max(
+    ...heatmapActivities.map((activity) => (
+      metricMode === 'tokens' ? activity.tokens.total : activity.cost_usd
+    )),
+    0,
+  );
+  const heatmapLeadingSlots = heatmapActivities.length > 0
+    ? (new Date(`${heatmapActivities[0].date}T00:00:00Z`).getUTCDay() + 6) % 7
+    : 0;
+  const heatmapCells = heatmapActivities.map((activity) => {
+    const rawValue = metricMode === 'tokens' ? activity.tokens.total : activity.cost_usd;
+    const value = Number.isFinite(rawValue) ? Math.max(rawValue, 0) : 0;
+    const intensity = value <= 0 || heatmapMaxValue <= 0
+      ? 0
+      : Math.max(1, Math.min(4, Math.ceil((value / heatmapMaxValue) * 4)));
+    const valueLabel = metricMode === 'tokens'
+      ? `Token ${formatTokens(value)}`
+      : `API 等效价值 $${value.toFixed(2)}`;
+    const label = `${activity.date}，${valueLabel}，强度 ${intensity}/4`;
+    return { activity, intensity, label };
+  });
+  const heatmapWeekCount = Math.max(1, Math.ceil((heatmapLeadingSlots + heatmapCells.length) / 7));
+  const heatmapMonthTicks = Array.from({ length: heatmapWeekCount }, (_, weekIndex) => {
+    const firstDateIndex = Math.max(0, weekIndex * 7 - heatmapLeadingSlots);
+    const weekActivities = heatmapActivities.slice(firstDateIndex, firstDateIndex + 7);
+    const monthStarts = weekActivities.filter((activity, index) => (
+      index === 0
+        ? weekIndex === 0
+        : activity.date.slice(0, 7) !== weekActivities[index - 1].date.slice(0, 7)
+    ));
+    const labelDate = monthStarts[monthStarts.length - 1]?.date;
+    return labelDate
+      ? { weekIndex, label: `${labelDate.slice(0, 4)}-${labelDate.slice(5, 7)}` }
+      : null;
+  }).filter((tick): tick is { weekIndex: number; label: string } => tick !== null);
+
+  const handleHeatmapKeyDown = (
+    event: React.KeyboardEvent<HTMLSpanElement>,
+    index: number,
+  ) => {
+    let nextIndex = index;
+    if (event.key === 'ArrowDown') nextIndex += 1;
+    else if (event.key === 'ArrowUp') nextIndex -= 1;
+    else if (event.key === 'ArrowRight') nextIndex += 7;
+    else if (event.key === 'ArrowLeft') nextIndex -= 7;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = heatmapCells.length - 1;
+    else return;
+
+    event.preventDefault();
+    nextIndex = Math.max(0, Math.min(heatmapCells.length - 1, nextIndex));
+    const gridCells = event.currentTarget
+      .closest('[role="grid"]')
+      ?.querySelectorAll<HTMLElement>('[role="gridcell"]');
+    const target = gridCells?.item(nextIndex);
+    if (!target || target === event.currentTarget) return;
+    event.currentTarget.tabIndex = -1;
+    target.tabIndex = 0;
+    target.focus();
+  };
+
+  const handlePeriodKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentPeriod: TrendPeriod,
+  ) => {
+    if (!isTabListNavKey(event.key)) return;
+    event.preventDefault();
+    const nextPeriod = event.key === 'ArrowRight'
+      ? nextTabId(TREND_PERIODS, currentPeriod)
+      : event.key === 'ArrowLeft'
+        ? prevTabId(TREND_PERIODS, currentPeriod)
+        : event.key === 'Home'
+          ? TREND_PERIODS[0]
+          : TREND_PERIODS[TREND_PERIODS.length - 1];
+    setPeriod(nextPeriod as TrendPeriod);
+    document.getElementById(`usage-trend-period-${nextPeriod}`)?.focus();
+  };
 
   return (
-    <div className="space-y-3">
+    <div className="h-full min-h-0 overflow-y-auto space-y-3 pr-1 flex flex-col">
       {/* Scheme B Date Range Bar */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-2.5 flex items-center justify-between shadow-sm">
+      <div className="dashboard-panel-card p-2.5 flex items-center justify-between">
         {/* Left: Period buttons */}
         <div className="flex items-center gap-3">
-          <div role="tablist" aria-label="趋势统计范围" className="flex items-center p-0.5 bg-[var(--bg-subtle)] border border-[var(--border-default)] rounded-lg text-xs">
-            {(['daily', 'weekly', 'monthly', 'all'] as const).map((p) => {
-              const labels = { daily: '每日', weekly: '本周', monthly: '本月', all: '累计' };
+          <div role="tablist" aria-orientation="horizontal" aria-label="趋势统计范围" className="flex items-center p-0.5 bg-[var(--bg-subtle)] border border-[var(--border-default)] rounded-lg text-xs">
+            {TREND_PERIODS.map((p) => {
               return (
                 <button
                   key={p}
                   type="button"
                   role="tab"
+                  id={`usage-trend-period-${p}`}
+                  tabIndex={period === p ? 0 : -1}
                   aria-selected={period === p}
                   onClick={() => setPeriod(p)}
+                  onKeyDown={(event) => handlePeriodKeyDown(event, p)}
                   className={`px-3 py-1 rounded-md font-medium transition ${
                     period === p
                       ? 'ui-selected'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
-                  {labels[p]}
+                  {TREND_PERIOD_LABELS[p]}
                 </button>
               );
             })}
@@ -130,16 +232,118 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
         </div>
       </div>
 
-      {/* Main Trends & Heatmap Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <section
+        aria-labelledby="usage-heatmap-title"
+        aria-describedby="usage-heatmap-range usage-heatmap-focus"
+        className="dashboard-panel-card order-2 p-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <div>
+            <h3 id="usage-heatmap-title" className="text-sm font-bold text-[var(--text-primary)]">
+              连续自然日热力图
+            </h3>
+            <p className="text-xs leading-relaxed text-[var(--text-muted)] mt-0.5">
+              每格数字为 0–4 强度；0 表示无用量，4 表示热力图峰值。最多展示最近 365 天。
+            </p>
+            <p id="usage-heatmap-range" className="text-[11px] text-[var(--text-secondary)] mt-1 font-mono">
+              日期范围：{heatmapRangeLabel}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+            <span>低</span>
+            <ul aria-label="热力图强度图例" className="flex items-center gap-1">
+              {HEATMAP_LEVELS.map((level) => (
+                <li
+                  key={level}
+                  className="w-6 h-6 rounded-md border border-[var(--border-default)] flex items-center justify-center font-mono font-bold"
+                  style={{
+                    backgroundColor: heatmapColor(level),
+                    color: level >= 3 ? 'var(--on-accent)' : 'var(--text-primary)',
+                  }}
+                >
+                  {level}
+                </li>
+              ))}
+            </ul>
+            <span>高</span>
+          </div>
+        </div>
+
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <div aria-hidden="true" className="grid grid-rows-7 gap-1 shrink-0 pt-5 text-[9px] text-[var(--text-muted)]">
+            {['一', '二', '三', '四', '五', '六', '日'].map((weekday) => (
+              <span key={weekday} className="h-7 flex items-center justify-center">{weekday}</span>
+            ))}
+          </div>
+          <div className="min-w-max">
+            <div
+              aria-hidden="true"
+              className="grid gap-1 h-4 mb-1 text-[9px] text-[var(--text-muted)] font-mono"
+              style={{ gridTemplateColumns: `repeat(${heatmapWeekCount}, 1.75rem)` }}
+            >
+              {heatmapMonthTicks.map(({ weekIndex, label }) => (
+                <span key={`${label}-${weekIndex}`} style={{ gridColumn: weekIndex + 1 }}>
+                  {label}
+                </span>
+              ))}
+            </div>
+            <div
+              role="grid"
+              aria-label="连续自然日热力图"
+              className="grid grid-flow-col grid-rows-7 gap-1"
+              style={{ gridAutoColumns: '1.75rem' }}
+            >
+              {Array.from({ length: heatmapLeadingSlots }, (_, index) => (
+                <span key={`heatmap-leading-${index}`} aria-hidden="true" className="h-7 w-7" />
+              ))}
+              {heatmapCells.map(({ activity, intensity, label }, index) => (
+                <span
+                  key={activity.date}
+                  role="gridcell"
+                  tabIndex={index === 0 ? 0 : -1}
+                  aria-label={label}
+                  title={label}
+                  onFocus={(event) => {
+                    setFocusedHeatmapLabel(label);
+                    event.currentTarget
+                      .closest('[role="grid"]')
+                      ?.querySelectorAll<HTMLElement>('[role="gridcell"]')
+                      .forEach((cell) => { cell.tabIndex = cell === event.currentTarget ? 0 : -1; });
+                  }}
+                  onKeyDown={(event) => handleHeatmapKeyDown(event, index)}
+                  className="h-7 w-7 rounded-md border border-[var(--border-default)] flex items-center justify-center text-[10px] font-mono font-bold select-none"
+                  style={{
+                    backgroundColor: heatmapColor(intensity),
+                    color: intensity >= 3 ? 'var(--on-accent)' : 'var(--text-primary)',
+                  }}
+                >
+                  {intensity}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p id="usage-heatmap-focus" aria-live="polite" className="mt-2 min-h-4 text-[11px] text-[var(--text-secondary)]">
+          {focusedHeatmapLabel ? `当前日期：${focusedHeatmapLabel}` : '聚焦任意日期查看详细用量'}
+        </p>
+      </section>
+
+      {/* Trend chart and model ranking */}
+      <div className="order-1 grid grid-cols-1 lg:grid-cols-3 gap-3">
         {/* Left 2 Cols: 0-baseline trend chart */}
-        <div className="lg:col-span-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm min-h-[320px]">
+        <div className="dashboard-panel-card lg:col-span-2 p-4 flex flex-col justify-between min-h-[320px]">
           <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+            <h3
+              aria-label={`趋势 · ${metricMode === 'tokens' ? 'Token' : 'API 等效价值'}`}
+              className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5"
+            >
               <TrendingUp aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
               <span>趋势</span>
-            </h4>
-            <span className="text-[11px] text-[var(--text-muted)]">
+              <span className="text-xs text-[var(--text-muted)]">
+                · {metricMode === 'tokens' ? 'Token' : 'API 等效价值'}
+              </span>
+            </h3>
+            <span className="text-xs text-[var(--text-muted)]">
               峰值: {peakLabel}
             </span>
           </div>
@@ -198,8 +402,8 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
 
           <details className="mt-1 text-[11px] text-[var(--text-secondary)]">
             <summary className="cursor-pointer select-none hover:text-[var(--text-primary)]">查看趋势明细</summary>
-            <div className="mt-2 max-h-28 overflow-auto rounded-lg border border-[var(--border-default)]">
-              <table className="w-full text-left">
+            <div className="mt-2 overflow-x-auto rounded-lg border border-[var(--border-default)]">
+              <table aria-label="用量趋势明细" className="w-full text-left">
                 <thead className="sticky top-0 bg-[var(--bg-elevated)] text-[var(--text-muted)]">
                   <tr>
                     <th scope="col" className="px-2 py-1 font-medium">日期</th>
@@ -222,17 +426,17 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
         </div>
 
         {/* Right 1 Col: Model ranking & API equivalent cost */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-xl p-4 flex flex-col justify-between shadow-sm min-h-[320px]">
+        <div className="dashboard-panel-card p-4 flex flex-col justify-between min-h-[320px]">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--border-default)]">
-            <h4 className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+            <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
               <Cpu aria-hidden="true" className="w-4 h-4 text-[var(--quota-7d)]" />
               <span>模型消耗排行</span>
-            </h4>
-            <span className="text-[10px] text-[var(--text-muted)]">{models.length}</span>
+          </h3>
+            <span className="text-xs text-[var(--text-muted)]">{models.length}</span>
           </div>
 
           {/* Model items scroll list */}
-          <div className="flex-1 overflow-y-auto space-y-2 py-2 pr-1">
+          <div className="flex-1 space-y-2 py-2 pr-1">
             {models.map((m) => (
               <div
                 key={m.model_id}
@@ -242,7 +446,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                   <div className="font-semibold text-[var(--text-primary)] truncate max-w-[120px]">
                     {m.model_id}
                   </div>
-                  <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                  <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
                     {m.sessions} 会话 · {m.turns} 回合
                   </div>
                 </div>
@@ -251,7 +455,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
                   <div className="font-mono font-bold text-[var(--accent-brand)]">
                     {formatTokens(m.tokens.total)}
                   </div>
-                  <div className="text-[10px] font-mono text-[var(--token-output)]">
+                  <div className="text-[11px] font-mono text-[var(--token-output)]">
                     {m.pricing_status === 'exact' ? `$${m.cost_usd.toFixed(2)}` : '未计价'}
                   </div>
                 </div>
@@ -259,7 +463,7 @@ export const UsageTrendsTab: React.FC<UsageTrendsTabProps> = ({
             ))}
           </div>
 
-          <div className="pt-2 border-t border-[var(--border-default)] text-[10px] text-[var(--text-muted)] flex justify-between">
+          <div className="pt-2 border-t border-[var(--border-default)] text-[11px] text-[var(--text-muted)] flex justify-between">
             <span>定价状态: {pricingCoverage === 100 ? '官方精确匹配' : '部分模型未计价'}</span>
             <span>覆盖率 {pricingCoverage}%</span>
           </div>

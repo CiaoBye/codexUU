@@ -253,8 +253,15 @@ impl Aggregator {
 
     /// A forced quota fetch that comes back unavailable must not overwrite a
     /// previously fetched available snapshot with nothing.
-    fn should_keep_previous_quota(fresh_status: &str, cached_status: &str) -> bool {
-        fresh_status != "available" && cached_status == "available"
+    fn should_keep_previous_quota(
+        fresh_status: &str,
+        cached_status: &str,
+        requested_timezone: &str,
+        cached_timezone: &str,
+    ) -> bool {
+        requested_timezone == cached_timezone
+            && fresh_status != "available"
+            && cached_status == "available"
     }
 
     fn load_quota(tz: &Tz, force: bool) -> QuotaSnapshot {
@@ -264,8 +271,13 @@ impl Aggregator {
             if let Ok(mut cache) = Self::quota_cache().lock() {
                 let keep_previous = cache
                     .as_ref()
-                    .map(|(_, _, cached)| {
-                        Self::should_keep_previous_quota(&snapshot.status, &cached.status)
+                    .map(|(cached_timezone, _, cached)| {
+                        Self::should_keep_previous_quota(
+                            &snapshot.status,
+                            &cached.status,
+                            &timezone,
+                            cached_timezone,
+                        )
                     })
                     .unwrap_or(false);
                 if keep_previous {
@@ -308,8 +320,13 @@ impl Aggregator {
             if let Ok(mut cache) = Self::antigravity_quota_cache().lock() {
                 let keep_previous = cache
                     .as_ref()
-                    .map(|(_, _, cached)| {
-                        Self::should_keep_previous_quota(&snapshot.status, &cached.status)
+                    .map(|(cached_timezone, _, cached)| {
+                        Self::should_keep_previous_quota(
+                            &snapshot.status,
+                            &cached.status,
+                            &timezone,
+                            cached_timezone,
+                        )
                     })
                     .unwrap_or(false);
                 if keep_previous {
@@ -451,6 +468,29 @@ impl Aggregator {
         )
     }
 
+    /// Restore each provider's own archived daily rows before any cross-channel
+    /// merge. If one provider has pruned a day to zero while the other still
+    /// reports activity for that date, merging first would produce a non-zero
+    /// partial row and incorrectly override the complete `all` archive.
+    fn restore_provider_history(channel: &str, mut data: ProviderData, tz: &Tz) -> ProviderData {
+        let snapshot = DashboardSnapshot {
+            channel: channel.to_string(),
+            quota: QuotaSnapshot::default(),
+            tokens: std::mem::take(&mut data.tokens),
+            daily_activities: std::mem::take(&mut data.daily_activities),
+            models: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            skills_and_tools: Vec::new(),
+            sources_health: Vec::new(),
+            timestamp: String::new(),
+        };
+        let restored = history::reconcile(snapshot, &tz.to_string());
+        data.tokens = restored.tokens;
+        data.daily_activities = restored.daily_activities;
+        data
+    }
+
     pub fn build_snapshot(channel: &str, timezone: Option<String>) -> DashboardSnapshot {
         Self::build_snapshot_with_refresh(channel, timezone, false)
     }
@@ -577,6 +617,8 @@ impl Aggregator {
                 timestamp: now_str,
             },
             "all" => {
+                let c_data = Self::restore_provider_history("codex", c_data, &tz);
+                let a_data = Self::restore_provider_history("antigravity", a_data, &tz);
                 let merged = Self::merge_all(c_data, a_data, &tz);
                 DashboardSnapshot {
                     channel: "all".to_string(),
@@ -653,15 +695,11 @@ impl Aggregator {
                 existing.sessions += m.sessions;
                 existing.turns += m.turns;
                 existing.cost_usd += m.cost_usd;
-                if existing.pricing_status != "exact" || m.pricing_status != "exact" {
-                    existing.pricing_status = if existing.pricing_status == "unpriced"
-                        && m.pricing_status == "unpriced"
-                    {
-                        "unpriced".to_string()
-                    } else {
-                        "partial".to_string()
-                    };
-                }
+                existing.pricing_status = match (existing.pricing_status.as_str(), m.pricing_status.as_str()) {
+                    ("exact", "exact") => "exact".to_string(),
+                    ("unpriced", "unpriced") => "unpriced".to_string(),
+                    _ => "partial".to_string(),
+                };
             } else {
                 model_map.insert(m.model_id.clone(), m);
             }
@@ -689,7 +727,10 @@ impl Aggregator {
                 if existing.last_active_at < p.last_active_at {
                     existing.last_active_at = p.last_active_at.clone();
                 }
-                if incoming_total > existing_total {
+                // When both providers contribute equally, prefer the incoming
+                // model so the merge result is consistent with the per-provider
+                // account_project_model tie-breaking (which uses >=).
+                if incoming_total >= existing_total {
                     existing.primary_model = p.primary_model;
                 }
             } else {
@@ -750,8 +791,35 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::{Aggregator, InFlightGuard};
-    use crate::models::{ProjectRankingItem, ProviderData, TokenBreakdown, TokenPeriods};
+    use crate::models::{
+        DailyActivity, DashboardSnapshot, ProjectRankingItem, ProviderData, QuotaSnapshot,
+        TokenBreakdown, TokenPeriods,
+    };
     use std::time::Duration;
+
+    fn day(date: &str, total: u64) -> DailyActivity {
+        DailyActivity {
+            date: date.to_string(),
+            tokens: TokenBreakdown::new(total, 0, 0),
+            cost_usd: 0.0,
+            sessions: u64::from(total > 0),
+        }
+    }
+
+    fn snapshot(channel: &str, daily_activities: Vec<DailyActivity>) -> DashboardSnapshot {
+        DashboardSnapshot {
+            channel: channel.to_string(),
+            quota: QuotaSnapshot::default(),
+            tokens: TokenPeriods::default(),
+            daily_activities,
+            models: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            skills_and_tools: Vec::new(),
+            sources_health: Vec::new(),
+            timestamp: String::new(),
+        }
+    }
 
     fn project(path: &str, total: u64, model: &str) -> ProjectRankingItem {
         ProjectRankingItem {
@@ -782,6 +850,74 @@ mod tests {
         assert_eq!(merged.projects.len(), 1);
         assert_eq!(merged.projects[0].tokens.total, 50);
         assert_eq!(merged.projects[0].primary_model, "gemini-2.5-pro");
+    }
+
+    #[test]
+    fn forced_quota_failure_only_keeps_success_from_same_timezone() {
+        assert!(Aggregator::should_keep_previous_quota(
+            "unavailable",
+            "available",
+            "Asia/Shanghai",
+            "Asia/Shanghai",
+        ));
+        assert!(!Aggregator::should_keep_previous_quota(
+            "unavailable",
+            "available",
+            "UTC",
+            "Asia/Shanghai",
+        ));
+        assert!(!Aggregator::should_keep_previous_quota(
+            "available",
+            "available",
+            "Asia/Shanghai",
+            "Asia/Shanghai",
+        ));
+    }
+
+    #[test]
+    fn all_history_restores_each_provider_before_same_day_merge() {
+        let _lock = crate::storage::history::test_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "codexuu-aggregator-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create history root");
+        std::env::set_var("CODExUU_HISTORY_DIR", &root);
+        let timezone = "Asia/Shanghai";
+        let tz = chrono_tz::Asia::Shanghai;
+        let date = "2026-08-17";
+
+        // Seed complete per-provider history and the previous all-channel sum.
+        crate::storage::history::reconcile(snapshot("codex", vec![day(date, 10)]), timezone);
+        crate::storage::history::reconcile(snapshot("antigravity", vec![day(date, 5)]), timezone);
+        crate::storage::history::reconcile(snapshot("all", vec![day(date, 15)]), timezone);
+
+        // Codex has since pruned that day (zero-fill), while Antigravity still
+        // observes a real non-zero row for the same date.
+        let codex = ProviderData {
+            daily_activities: vec![day(date, 0)],
+            ..Default::default()
+        };
+        let antigravity = ProviderData {
+            daily_activities: vec![day(date, 5)],
+            ..Default::default()
+        };
+
+        let codex = Aggregator::restore_provider_history("codex", codex, &tz);
+        let antigravity = Aggregator::restore_provider_history("antigravity", antigravity, &tz);
+        let merged = Aggregator::merge_all(codex, antigravity, &tz);
+        let final_snapshot =
+            crate::storage::history::reconcile(snapshot("all", merged.daily_activities), timezone);
+
+        assert_eq!(final_snapshot.tokens.all_time.total, 15);
+        assert_eq!(final_snapshot.daily_activities[0].tokens.total, 15);
+
+        std::env::remove_var("CODExUU_HISTORY_DIR");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -11,6 +11,7 @@ import {
   Layers,
   Maximize2,
   Minimize2,
+  RefreshCw,
 } from 'lucide-react';
 import { startWindowDrag } from '../../api';
 
@@ -39,27 +40,7 @@ function stopWindowDrag(event: React.MouseEvent) {
 }
 
 function BrandMark() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="28" height="28" className="w-7 h-7 rounded-lg shrink-0" aria-hidden="true">
-      <defs>
-        <linearGradient id="codexuu-brand-bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#147a76" />
-          <stop offset="0.55" stopColor="#2c9f9b" />
-          <stop offset="1" stopColor="#4d9fff" />
-        </linearGradient>
-        <linearGradient id="codexuu-brand-shine" x1="18" y1="18" x2="46" y2="48" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#FFFFFF" />
-          <stop offset="1" stopColor="#D7F4F2" />
-        </linearGradient>
-      </defs>
-      <rect x="4" y="4" width="56" height="56" rx="17" fill="url(#codexuu-brand-bg)" />
-      <path d="M17 27.5C20.5 18.2 32.2 14 41.3 18.2c4.4 2 7.6 5.5 9.2 9.6" fill="none" stroke="#CDEDEA" strokeWidth="3.4" strokeLinecap="round" opacity=".88" />
-      <path d="M16.5 34.2C20 44 31.5 49 41.1 45.2c4.3-1.7 7.8-5 9.7-9.2" fill="none" stroke="#9ED7FF" strokeWidth="3.4" strokeLinecap="round" opacity=".74" />
-      <path d="M21 27v8.2C21 42 25.5 46 32 46s11-4 11-10.8V27" fill="none" stroke="url(#codexuu-brand-shine)" strokeWidth="5" strokeLinecap="round" />
-      <circle cx="50" cy="22" r="3.2" fill="#FFFFFF" />
-      <circle cx="14.5" cy="39" r="2.3" fill="#DDF5FF" opacity=".95" />
-    </svg>
-  );
+  return <img src="/logo.svg" width="28" height="28" className="w-7 h-7 rounded-lg shrink-0" alt="" aria-hidden="true" />;
 }
 
 export const TopNav: React.FC<TopNavProps> = ({
@@ -86,7 +67,7 @@ export const TopNav: React.FC<TopNavProps> = ({
 
   return (
     <header
-      className="h-12 border-b border-[var(--border-default)] bg-[var(--bg-elevated)] px-3 flex items-center justify-between gap-3 select-none shrink-0"
+      className="dashboard-topnav h-12 border-b border-[var(--border-default)] bg-[var(--bg-elevated)] px-4 flex items-center justify-between gap-3 select-none shrink-0"
       data-tauri-drag-region
       onMouseDown={startWindowDrag}
       onDoubleClick={(event) => {
@@ -136,24 +117,31 @@ export const TopNav: React.FC<TopNavProps> = ({
       </div>
 
       <div
-        className="flex items-center gap-1.5"
+        className="flex items-center gap-1.5 shrink-0"
         data-no-drag
         data-tauri-drag-region="false"
         onMouseDown={stopWindowDrag}
       >
         {lastUpdated && (
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={isRefreshing}
-            aria-label="重新读取本地数据"
-            aria-busy={isRefreshing}
-            title="重新读取本地数据"
-            className="text-[11px] font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] hidden md:inline-block mr-1 px-1.5 py-1 rounded-md"
+          <span
+            aria-label={`最近更新 ${lastUpdated}`}
+            title={`最近更新：${lastUpdated}`}
+            className="topnav-last-updated text-[11px] font-mono text-[var(--text-muted)] hidden md:inline-block mr-1 px-1.5 py-1"
           >
             {lastUpdated.slice(11, 16)}
-          </button>
+          </span>
         )}
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={isRefreshing}
+          aria-label={isRefreshing ? '正在刷新数据' : '刷新数据'}
+          aria-busy={isRefreshing}
+          title={isRefreshing ? '正在刷新数据' : '刷新数据'}
+          className={iconButtonClass}
+        >
+          <RefreshCw aria-hidden="true" className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+        </button>
 
         <button type="button" onClick={onOpenExport} aria-label="打开项目排行" title="打开项目排行" className={iconButtonClass}>
           <Award aria-hidden="true" className="w-4 h-4" />

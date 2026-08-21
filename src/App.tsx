@@ -50,6 +50,10 @@ function effectiveTheme(theme: string): 'dark' | 'light' {
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
+function firstFrameForChannel(channel: DashboardSnapshot['channel']): DashboardSnapshot {
+  return readCachedSnapshot(channel) ?? { ...EMPTY_SNAPSHOT, channel };
+}
+
 // A stable latest-wins guard shared across all async snapshot fetch paths, so
 // ordering is tracked across renders without resetting on every re-render.
 function useLatestWinsRef(): React.MutableRefObject<LatestWinsGuard> {
@@ -63,7 +67,7 @@ export const App: React.FC = () => {
   const isWidgetWindow = typeof window !== 'undefined' && window.location.hash === '#widget';
 
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(
-    () => readCachedSnapshot('codex') ?? EMPTY_SNAPSHOT,
+    () => firstFrameForChannel('codex'),
   );
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [activeChannel, setActiveChannel] = useState<DashboardSnapshot['channel']>('codex');
@@ -78,6 +82,28 @@ export const App: React.FC = () => {
   // refetch and widget polling, only the newest request may commit its result;
   // slower stale responses are dropped so a snapshot never lands out of order.
   const orderingRef = useLatestWinsRef();
+  const settingsRef = React.useRef<AppSettings>(DEFAULT_SETTINGS);
+  const settingsReadyRef = React.useRef(false);
+  const initialSettingsPromiseRef = React.useRef<Promise<AppSettings> | null>(null);
+
+  const loadInitialSettings = React.useCallback(() => {
+    if (initialSettingsPromiseRef.current === null) {
+      const pending = fetchSettings();
+      initialSettingsPromiseRef.current = pending;
+      void pending.catch(() => {
+        if (initialSettingsPromiseRef.current === pending) {
+          initialSettingsPromiseRef.current = null;
+        }
+      });
+    }
+    return initialSettingsPromiseRef.current;
+  }, []);
+
+  const acceptLoadedSettings = React.useCallback((nextSettings: AppSettings) => {
+    settingsRef.current = nextSettings;
+    settingsReadyRef.current = true;
+    setSettings(nextSettings);
+  }, []);
 
   // Apply theme whenever settings.theme changes, and follow OS changes for system mode.
   useEffect(() => {
@@ -118,24 +144,24 @@ export const App: React.FC = () => {
     const token = orderingRef.current.next();
     async function init() {
       try {
-        const s = await fetchSettings();
+        const s = await loadInitialSettings();
         // Settings are not channel-ordered: they must always land even if the
         // user switched channels while settings were loading (otherwise the
         // app would be stuck on DEFAULT_SETTINGS for the whole session).
-        setSettings(s);
+        acceptLoadedSettings(s);
+        // A channel request started while settings were loading owns the next
+        // snapshot. Do not start a stale default-channel fetch in parallel.
+        if (!token.isCurrent()) return;
         // The default-channel selection and cached first frame are gated by the
         // latest-wins token so a stale init never overrides a user channel
         // switch that happened during startup.
         token.commit(() => {
           const channel = s.default_channel || 'codex';
           setActiveChannel(channel);
-          // First frame: show this channel's own cache (never another channel's),
-          // then the live fetch replaces it.
-          const cached = readCachedSnapshot(channel);
-          if (cached) {
-            setSnapshot(cached);
-            setError(null);
-          }
+          // First frame: show this channel's own cache or a channel-scoped
+          // empty state, never data retained from another channel.
+          setSnapshot(firstFrameForChannel(channel));
+          setError(null);
         });
         const snap = await fetchDashboardSnapshot(s.default_channel || 'codex', s.timezone);
         commitSnapshot(token, snap);
@@ -147,6 +173,8 @@ export const App: React.FC = () => {
       }
     }
     void init();
+    // Stable reference: loadInitialSettings must never change identity across
+    // renders so it can be called safely from channel-switch and init paths.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWidgetWindow]);
 
@@ -165,8 +193,10 @@ export const App: React.FC = () => {
         const currentSettings = await fetchSettings();
         if (disposed || !currentSettings.widget_enabled) return;
         token.commit(() => {
-          setSettings(currentSettings);
-          setActiveChannel(currentSettings.default_channel || 'codex');
+          acceptLoadedSettings(currentSettings);
+          const channel = currentSettings.default_channel || 'codex';
+          setActiveChannel(channel);
+          setSnapshot(firstFrameForChannel(channel));
         });
         const currentSnapshot = await fetchDashboardSnapshot(
           currentSettings.default_channel || 'codex',
@@ -187,6 +217,8 @@ export const App: React.FC = () => {
       disposed = true;
       window.clearInterval(timer);
     };
+    // Stable effect: widget setup runs once per window identity and must not
+    // re-run when orderingRef or commitSnapshot change identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWidgetWindow]);
 
@@ -216,12 +248,19 @@ export const App: React.FC = () => {
     token.commit(() => {
       setActiveChannel(nextChannel);
       setIsRefreshing(true);
-      // First frame uses this channel's own cached data, never another channel's.
-      const cached = readCachedSnapshot(nextChannel);
-      if (cached) setSnapshot(cached);
+      // First frame uses this channel's own cached data or an empty state,
+      // never the previously selected channel's snapshot.
+      setSnapshot(firstFrameForChannel(nextChannel));
     });
     try {
-      const snap = await fetchDashboardSnapshot(nextChannel, settings.timezone);
+      const snapshotSettings = settingsReadyRef.current
+        ? settingsRef.current
+        : await loadInitialSettings();
+      if (!settingsReadyRef.current) {
+        acceptLoadedSettings(snapshotSettings);
+      }
+      if (!token.isCurrent()) return;
+      const snap = await fetchDashboardSnapshot(nextChannel, snapshotSettings.timezone);
       commitSnapshot(token, snap, nextChannel);
     } catch (err) {
       token.commit(() => {
@@ -251,6 +290,7 @@ export const App: React.FC = () => {
     const current = effectiveTheme(settings.theme);
     const next: 'light' | 'dark' = current === 'dark' ? 'light' : 'dark';
     const updated: AppSettings = { ...settings, theme: next };
+    settingsRef.current = updated;
     setSettings(updated);
     applyTheme(next);
     try {
@@ -264,6 +304,7 @@ export const App: React.FC = () => {
   const handleToggleQuotaMode = async () => {
     const nextMode: 'used' | 'remaining' = settings.quota_mode === 'used' ? 'remaining' : 'used';
     const updated: AppSettings = { ...settings, quota_mode: nextMode };
+    settingsRef.current = updated;
     setSettings(updated);
     try {
       await updateSettings(updated);
@@ -344,6 +385,7 @@ export const App: React.FC = () => {
     { id: 'projects', label: '项目排行', icon: Award },
     { id: 'skills', label: 'Skill & 工具', icon: Wrench },
   ];
+  const activeTabLabel = tabs.find((tab) => tab.id === activeTab)?.label ?? '仪表盘内容';
 
   const hasUsageData = snapshot.tokens.all_time.total > 0
     || snapshot.daily_activities.length > 0
@@ -355,7 +397,13 @@ export const App: React.FC = () => {
     && snapshot.sources_health.some((source) => source.status === 'unavailable' || source.status === 'degraded');
 
   return (
-    <div className="h-full w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] flex flex-col">
+    <div className="dashboard-app-shell h-full w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] flex flex-col">
+      <a
+        href="#dashboard-main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded-lg focus:bg-[var(--bg-elevated)] focus:px-3 focus:py-2 focus:text-xs focus:font-semibold focus:text-[var(--accent-brand)] focus:shadow-lg"
+      >
+        跳到主要内容
+      </a>
       <TopNav
         channel={activeChannel}
         onChannelChange={handleChannelChange}
@@ -373,7 +421,8 @@ export const App: React.FC = () => {
         lastUpdated={snapshot.timestamp}
       />
 
-      <main className="dashboard-main flex-1 min-h-0 overflow-hidden px-3 py-1.5 flex flex-col gap-1.5 w-full" data-no-drag>
+      <main id="dashboard-main" className="dashboard-main flex-1 min-h-0 overflow-hidden px-4 py-3 flex flex-col gap-2 w-full" data-no-drag>
+        <h1 className="sr-only">CodexUU 用量控制台</h1>
         {error && (
           <div role="alert" aria-live="assertive" className="px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-xs flex items-center justify-between gap-3">
             <span>{error}</span>
@@ -407,17 +456,20 @@ export const App: React.FC = () => {
         )}
 
         {/* Row 1: Quota Compass + 4 Token Metric Cards */}
-        <div className="dashboard-hero">
+        <section className="dashboard-hero dashboard-overview-shell" aria-labelledby="dashboard-overview-title">
+          <h2 id="dashboard-overview-title" className="sr-only">用量概览</h2>
           <QuotaCompass
             quota={snapshot.quota}
             quotaMode={settings.quota_mode}
             onToggleQuotaMode={handleToggleQuotaMode}
+            channel={activeChannel}
           />
           <TokenMetricCards tokens={snapshot.tokens} unavailable={!snapshotReady} />
-        </div>
+        </section>
 
-        {/* Row 2: In-place Tab Switcher Bar */}
-        <div className="flex items-stretch border-b border-[var(--border-default)] shrink-0">
+        {/* Row 2 + 3: one integrated content surface, matching the Mac dashboard's large panel rhythm. */}
+        <section className="dashboard-content-shell flex flex-col flex-1 min-h-0" aria-label="仪表盘内容区">
+        <div className="dashboard-tabbar flex items-stretch shrink-0">
           <div role="tablist" aria-label="仪表盘内容" className="flex items-stretch w-full">
             {tabs.map((tab) => {
               const Icon = tab.icon;
@@ -435,7 +487,7 @@ export const App: React.FC = () => {
                   {...(isActive ? { 'aria-controls': `dashboard-panel-${tab.id}` } : {})}
                   onClick={() => setActiveTab(tab.id)}
                   onKeyDown={handleDashboardTabKeyDown}
-                  className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-semibold transition-all border-b-2 -mb-px ${
+                  className={`dashboard-tab flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-semibold transition-all border-b-2 -mb-px ${
                     isActive
                       ? 'text-[var(--accent-brand)] border-[var(--accent-brand)]'
                       : 'text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)]'
@@ -460,7 +512,8 @@ export const App: React.FC = () => {
         </div>
 
         {/* Row 3: Tab Content Panels */}
-        <div id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="flex-1 min-h-0 h-full overflow-hidden">
+        <div id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="dashboard-content-panel flex-1 min-h-0 h-full overflow-hidden">
+          <h2 className="sr-only">{activeTabLabel}</h2>
           {activeTab === 'tasks' && <TaskBoardTab tasks={snapshot.tasks} />}
           {activeTab === 'trends' && (
             <UsageTrendsTab
@@ -479,6 +532,7 @@ export const App: React.FC = () => {
             <SkillUsageTab skillsAndTools={snapshot.skills_and_tools} />
           )}
         </div>
+        </section>
       </main>
 
       {/* Settings Modal */}
@@ -489,6 +543,7 @@ export const App: React.FC = () => {
         settings={settings}
         onSaveSettings={async (s) => {
           const timezoneChanged = s.timezone !== settings.timezone;
+          settingsRef.current = s;
           setSettings(s);
           applyTheme(s.theme);
           if (timezoneChanged) {

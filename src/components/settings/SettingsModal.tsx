@@ -24,6 +24,20 @@ interface SettingsModalProps {
   isRefreshing: boolean;
 }
 
+type SettingsTabId = 'general' | 'appearance' | 'widget' | 'privacy' | 'diagnostics';
+
+const SETTINGS_TABS: Array<{
+  id: SettingsTabId;
+  label: string;
+  icon: typeof Sliders;
+}> = [
+  { id: 'general', label: '常规设置', icon: Sliders },
+  { id: 'appearance', label: '外观与口径', icon: Palette },
+  { id: 'widget', label: '托盘与悬浮窗', icon: Layout },
+  { id: 'privacy', label: '隐私与维护', icon: Shield },
+  { id: 'diagnostics', label: '数据源诊断', icon: Activity },
+];
+
 function healthLabel(status: string): string {
   switch (status) {
     case 'healthy':
@@ -67,13 +81,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onRefreshSources,
   isRefreshing,
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'widget' | 'privacy' | 'diagnostics'>('general');
+  const [activeTab, setActiveTab] = useState<SettingsTabId>('general');
   const [draft, setDraft] = useState<AppSettings>({ ...settings });
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const tabRefs = useRef<Partial<Record<SettingsTabId, HTMLButtonElement | null>>>({});
   const saveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -174,17 +189,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const tabs: Array<{
-    id: 'general' | 'appearance' | 'widget' | 'privacy' | 'diagnostics';
-    label: string;
-    icon: typeof Sliders;
-  }> = [
-    { id: 'general', label: '常规设置', icon: Sliders },
-    { id: 'appearance', label: '外观与口径', icon: Palette },
-    { id: 'widget', label: '托盘与悬浮窗', icon: Layout },
-    { id: 'privacy', label: '隐私与维护', icon: Shield },
-    { id: 'diagnostics', label: '数据源诊断', icon: Activity },
-  ];
+  const focusTab = (tabId: SettingsTabId) => {
+    setActiveTab(tabId);
+    window.requestAnimationFrame(() => tabRefs.current[tabId]?.focus());
+  };
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, currentTab: SettingsTabId) => {
+    const currentIndex = SETTINGS_TABS.findIndex((tab) => tab.id === currentTab);
+    if (currentIndex < 0) return;
+
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % SETTINGS_TABS.length;
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = SETTINGS_TABS.length - 1;
+    }
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    focusTab(SETTINGS_TABS[nextIndex].id);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -200,7 +228,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="h-12 border-b border-[var(--border-default)] px-4 flex items-center justify-between shrink-0 bg-[var(--bg-card)]">
           <div className="flex items-center gap-2">
             <Settings aria-hidden="true" className="w-4 h-4 text-[var(--accent-brand)]" />
-            <span id="settings-dialog-title" className="font-bold text-sm text-[var(--text-primary)]">设置中心</span>
+            <h2 id="settings-dialog-title" className="font-bold text-sm text-[var(--text-primary)]">设置中心</h2>
           </div>
           <button
             ref={closeButtonRef}
@@ -217,17 +245,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="flex-1 flex overflow-hidden">
           {/* West Sidebar Tabs */}
           <div role="tablist" aria-label="设置分类" className="w-40 border-r border-[var(--border-default)] bg-[var(--bg-card)] p-2 space-y-1 shrink-0">
-            {tabs.map((tab) => {
+            {SETTINGS_TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
+                  id={`settings-tab-${tab.id}`}
+                  ref={(element) => {
+                    tabRefs.current[tab.id] = element;
+                  }}
                   type="button"
                   role="tab"
                   aria-selected={isActive}
-                  aria-controls={`settings-panel-${tab.id}`}
+                  {...(isActive ? { 'aria-controls': `settings-panel-${tab.id}` } : {})}
+                  tabIndex={isActive ? 0 : -1}
                   onClick={() => setActiveTab(tab.id)}
+                  onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                   className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition ${
                     isActive
                       ? 'ui-selected'
@@ -242,7 +276,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
 
           {/* Tab Content Panel */}
-          <div id={`settings-panel-${activeTab}`} role="tabpanel" aria-label={tabs.find((tab) => tab.id === activeTab)?.label} className="flex-1 p-5 overflow-y-auto bg-[var(--bg-canvas)] space-y-4 text-xs">
+          <div id={`settings-panel-${activeTab}`} role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`} className="flex-1 p-5 overflow-y-auto bg-[var(--bg-canvas)] space-y-4 text-xs">
             {activeTab === 'general' && (
               <div className="space-y-4">
                 <div>
@@ -472,14 +506,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === 'privacy' && (
               <div className="space-y-3">
                 <div className="p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-default)]">
-                  <h5 className="font-bold text-[var(--text-primary)] mb-1">本地优先与隐私保障</h5>
+                  <h3 className="font-bold text-[var(--text-primary)] mb-1">本地优先与隐私保障</h3>
                   <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
                     CodexUU 为 100% 纯本地运行架构，绝不上报代码正文、Transcript 提示词、工具入参或任何敏感凭证。所有统计计算均在 Rust 引擎内完成。
                   </p>
                 </div>
 
                 <div className="p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-default)]">
-                  <h5 className="font-bold text-[var(--text-primary)] mb-1">数据维护</h5>
+                  <h3 className="font-bold text-[var(--text-primary)] mb-1">数据维护</h3>
                   <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
                     当前版本会按本地数据源指纹自动复用快照；数据源暂时不可用时保留上次成功结果，并持续归档每日摘要，无需手动重建索引。
                   </p>
@@ -490,7 +524,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === 'diagnostics' && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3 mb-2">
-                  <h5 className="font-bold text-[var(--text-primary)]">底层数据源健康诊断</h5>
+                  <h3 className="font-bold text-[var(--text-primary)]">底层数据源健康诊断</h3>
                   <button
                     type="button"
                     onClick={() => void onRefreshSources()}

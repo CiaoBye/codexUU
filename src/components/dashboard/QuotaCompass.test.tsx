@@ -79,4 +79,10 @@ describe('QuotaCompass accessibility', () => {
     expect(gemini.getAttribute('aria-controls')).toBe('quota-family-panel');
     expect(claude.getAttribute('aria-controls')).toBeNull();
   });
+
+  it('labels the quota source when viewing the all-channel snapshot', () => {
+    render(<QuotaCompass quota={quotaWithFamilies()} quotaMode="used" onToggleQuotaMode={noop} channel="all" />);
+    expect(screen.getByText('额度 · Codex 数据源')).toBeTruthy();
+    expect(screen.getByText('正常')).toBeTruthy();
+  });
 });

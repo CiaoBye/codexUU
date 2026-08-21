@@ -2,12 +2,32 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub struct TokenBreakdown {
     pub uncached_input: u64,
     pub cached_input: u64,
     pub output: u64,
     pub total: u64,
+}
+
+/// Custom deserializer that always recalculates `total` from the three
+/// component fields, so a corrupted cache file whose `total` does not match
+/// `uncached_input + cached_input + output` is silently repaired on load.
+impl<'de> Deserialize<'de> for TokenBreakdown {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        struct Raw {
+            uncached_input: u64,
+            cached_input: u64,
+            output: u64,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(TokenBreakdown::new(raw.uncached_input, raw.cached_input, raw.output))
+    }
 }
 
 impl TokenBreakdown {

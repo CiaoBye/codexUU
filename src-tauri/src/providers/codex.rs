@@ -7,16 +7,19 @@ use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use chrono_tz::Tz;
 use serde_json::Value;
 
 use crate::engine::pricing::PricingEngine;
 use crate::models::{
-    DailyActivity, ModelUsage, ProjectRankingItem, ProviderData, QuotaSnapshot, SkillAgg,
+    ModelUsage, ProjectRankingItem, ProviderData, QuotaSnapshot, SkillAgg,
     SkillUsageItem, TaskItem, TokenBreakdown, TokenPeriods,
 };
-use crate::providers::{group_tasks_by_project, is_explicit_skill_event, is_real_project_path};
+use crate::providers::{
+    backfill_daily, group_tasks_by_project, is_explicit_skill_event, is_explicit_tool_event,
+    is_real_project_path,
+};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -596,7 +599,9 @@ impl CodexProvider {
 
         let mut total_periods = TokenPeriods::default();
         let mut daily_map: HashMap<String, (TokenBreakdown, f64, u64)> = HashMap::new();
-        let mut model_map: HashMap<String, (TokenBreakdown, u64, u64)> = HashMap::new();
+        // Cost is accumulated per usage event so tiered request pricing is not
+        // incorrectly re-evaluated against the model's aggregate token total.
+        let mut model_map: HashMap<String, (TokenBreakdown, u64, u64, f64)> = HashMap::new();
         let mut project_map: HashMap<String, ProjectAcc> = HashMap::new();
         let mut tool_map: HashMap<String, ToolAcc> = HashMap::new();
         let mut tasks_map: HashMap<String, TaskItem> = HashMap::new();
@@ -765,11 +770,14 @@ impl CodexProvider {
                         session_tokens.add(&delta);
 
                         // Attribution to model
-                        let (model_entry, _sessions_cnt, turns_cnt) = model_map
+                        let (cost, _) =
+                            PricingEngine::calculate_cost(&session_primary_model, &delta);
+                        let (model_entry, _sessions_cnt, turns_cnt, model_cost) = model_map
                             .entry(session_primary_model.clone())
-                            .or_insert((TokenBreakdown::default(), 0, 0));
+                            .or_insert((TokenBreakdown::default(), 0, 0, 0.0));
                         model_entry.add(&delta);
                         *turns_cnt += 1;
+                        *model_cost += cost;
 
                         // Daily aggregation
                         let date_key = event_dt.format("%Y-%m-%d").to_string();
@@ -777,8 +785,6 @@ impl CodexProvider {
                             .entry(date_key.clone())
                             .or_insert((TokenBreakdown::default(), 0.0, 0));
                         daily_tb.add(&delta);
-                        let (cost, _) =
-                            PricingEngine::calculate_cost(&session_primary_model, &delta);
                         *daily_cost += cost;
 
                         // Period checks
@@ -823,17 +829,7 @@ impl CodexProvider {
                     .and_then(|p| p.get("type"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let explicit_tool_event = [event_type, payload_type].iter().any(|kind| {
-                    matches!(
-                        kind.to_ascii_lowercase().as_str(),
-                        "function_call"
-                            | "custom_tool_call"
-                            | "tool_call"
-                            | "tool_calls"
-                            | "tool-use"
-                            | "tool_use"
-                    )
-                });
+                let explicit_tool_event = is_explicit_tool_event(&[event_type, payload_type]);
                 let mut detected_tool = None;
                 if explicit_tool_event {
                     if let Some(p) = payload {
@@ -923,7 +919,7 @@ impl CodexProvider {
                 }
             }
 
-            if let Some((_, sessions_cnt, _)) = model_map.get_mut(&session_primary_model) {
+            if let Some((_, sessions_cnt, _, _)) = model_map.get_mut(&session_primary_model) {
                 *sessions_cnt += 1;
             }
 
@@ -1027,13 +1023,13 @@ impl CodexProvider {
             }
         }
 
-        let daily_activities = Self::backfill_daily(daily_map, now, days_limit);
+        let daily_activities = backfill_daily(daily_map, now, days_limit);
 
         // Model Usage List
         let mut models: Vec<ModelUsage> = model_map
             .into_iter()
-            .map(|(model_id, (tokens, sessions, turns))| {
-                let (cost_usd, status) = PricingEngine::calculate_cost(&model_id, &tokens);
+            .map(|(model_id, (tokens, sessions, turns, cost_usd))| {
+                let (_, status) = PricingEngine::calculate_cost(&model_id, &tokens);
                 ModelUsage {
                     model_id,
                     reasoning_effort: None,
@@ -1179,56 +1175,7 @@ impl CodexProvider {
         }
     }
 
-    fn backfill_daily(
-        map: HashMap<String, (TokenBreakdown, f64, u64)>,
-        now: DateTime<Tz>,
-        days_limit: usize,
-    ) -> Vec<DailyActivity> {
-        let mut items: Vec<DailyActivity> = map
-            .into_iter()
-            .map(|(date, (tokens, cost_usd, sessions))| DailyActivity {
-                date,
-                tokens,
-                cost_usd,
-                sessions,
-            })
-            .collect();
-        items.sort_by(|a, b| a.date.cmp(&b.date));
-
-        let end = now.date_naive();
-        let start = items
-            .first()
-            .and_then(|d| NaiveDate::parse_from_str(&d.date, "%Y-%m-%d").ok())
-            .unwrap_or(end);
-
-        let mut by_date: HashMap<String, DailyActivity> =
-            items.into_iter().map(|d| (d.date.clone(), d)).collect();
-
-        let mut result = Vec::new();
-        let mut cursor = if start > end { end } else { start };
-        while cursor <= end {
-            let key = cursor.format("%Y-%m-%d").to_string();
-            let entry = by_date.remove(&key).unwrap_or_else(|| DailyActivity {
-                date: key.clone(),
-                tokens: TokenBreakdown::default(),
-                cost_usd: 0.0,
-                sessions: 0,
-            });
-            result.push(entry);
-            match cursor.succ_opt() {
-                Some(next) => cursor = next,
-                None => break,
-            }
-        }
-
-        if days_limit > 0 && result.len() > days_limit {
-            let split = result.len() - days_limit;
-            result = result.split_off(split);
-        }
-
-        result
     }
-}
 
 #[cfg(test)]
 mod tests {

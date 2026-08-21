@@ -6,6 +6,7 @@ interface QuotaCompassProps {
   quota: QuotaSnapshot;
   quotaMode: 'used' | 'remaining';
   onToggleQuotaMode: () => void;
+  channel?: 'codex' | 'antigravity' | 'all';
 }
 
 function pickRatio(used: number | null, remaining: number | null, isUsedMode: boolean): number | null {
@@ -39,13 +40,15 @@ function DualRing({
 }) {
   const pct5h = ratio5h == null ? null : Math.round(ratio5h * 100);
   const pct7d = ratio7d == null ? null : Math.round(ratio7d * 100);
-  const size = 156;
+  // Keep enough vertical room for reset labels when the compact dashboard
+  // card also renders the family selector.
+  const size = 136;
   const center = size / 2;
-  const strokeWidth = 10;
-  const rOuter = 64;
+  const strokeWidth = 9;
+  const rOuter = 56;
   const cOuter = 2 * Math.PI * rOuter;
   const offsetOuter = ratio7d == null ? cOuter : cOuter * (1 - ratio7d);
-  const rInner = 48;
+  const rInner = 41;
   const cInner = 2 * Math.PI * rInner;
   const offsetInner = ratio5h == null ? cInner : cInner * (1 - ratio5h);
   const ringDirectionClass = isUsedMode ? 'rotate-90' : 'rotate-90 -scale-x-100';
@@ -57,7 +60,7 @@ function DualRing({
           type="button"
           aria-label={`切换额度口径，当前为${isUsedMode ? '已用' : '剩余'}`}
           aria-pressed={!isUsedMode}
-          className="relative cursor-pointer group flex items-center justify-center min-w-[156px] min-h-[156px] p-0 border-0 bg-transparent"
+          className="relative cursor-pointer group flex items-center justify-center min-w-[136px] min-h-[136px] p-0 border-0 bg-transparent"
           onClick={onToggleQuotaMode}
           title="切换已用 / 剩余"
         >
@@ -88,19 +91,33 @@ function DualRing({
           </div>
         </button>
       </div>
-      <div className="flex items-center justify-center gap-3 pt-1 text-[11px] text-[var(--text-secondary)]">
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 pt-1 text-[10px] leading-tight text-[var(--text-secondary)]">
         {hasFiveHour && (
           <div className="flex items-center gap-1 min-w-0">
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--quota-5h)] shrink-0" />
             <span>5H</span>
-            {reset5h && <span className="font-medium text-[var(--text-primary)] truncate">{reset5h}</span>}
+            {reset5h && (
+              <span
+                className="font-medium text-[var(--text-primary)] break-words"
+                title={`5 小时窗口重置：${reset5h}`}
+              >
+                {reset5h}
+              </span>
+            )}
           </div>
         )}
         {hasSevenDay && (
           <div className="flex items-center gap-1 min-w-0">
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--quota-7d)] shrink-0" />
             <span>7D</span>
-            {reset7d && <span className="font-medium text-[var(--text-primary)] truncate">{reset7d}</span>}
+            {reset7d && (
+              <span
+                className="font-medium text-[var(--text-primary)] break-words"
+                title={`7 天窗口重置：${reset7d}`}
+              >
+                {reset7d}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -112,6 +129,7 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
   quota,
   quotaMode,
   onToggleQuotaMode,
+  channel = 'codex',
 }) => {
   const isUsedMode = quotaMode === 'used';
   const families = useMemo(
@@ -137,12 +155,24 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
     : quota.status === 'degraded' || quota.status === 'stale' || quota.status === 'refreshing'
       ? 'bg-[var(--warning)]'
       : 'bg-[var(--success)] animate-pulse';
+  const healthLabel = quota.status === 'healthy'
+    ? '正常'
+    : quota.status === 'degraded'
+      ? '降级'
+      : quota.status === 'stale'
+        ? '过期'
+        : quota.status === 'refreshing'
+          ? '刷新中'
+          : quota.status === 'unavailable'
+            ? '不可用'
+            : '未知';
+  const quotaTitle = channel === 'all' ? '额度 · Codex 数据源' : '额度';
 
   return (
-    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-lg px-3 py-2 flex flex-col gap-1 min-h-0">
+    <div className="dashboard-quota-card px-3 py-2 flex flex-col gap-1 min-h-0">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-xs font-semibold text-[var(--text-primary)]">额度</span>
+          <span className="text-xs font-semibold text-[var(--text-primary)]">{quotaTitle}</span>
           {/* Non-interactive label: the single quota-mode toggle entry is the
               center ring click (below), which keeps one focus target. */}
           <span
@@ -152,7 +182,15 @@ export const QuotaCompass: React.FC<QuotaCompassProps> = ({
             {isUsedMode ? '已用' : '剩余'}
           </span>
         </div>
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${healthDotClass}`} title={quota.source} />
+        <span
+          role="status"
+          className="flex items-center gap-1 text-[10px] text-[var(--text-secondary)] shrink-0"
+          aria-label={`额度状态：${healthLabel}；数据源：${quota.source}`}
+          title={`额度状态：${healthLabel}；数据源：${quota.source}`}
+        >
+          <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full ${healthDotClass}`} />
+          <span>{healthLabel}</span>
+        </span>
       </div>
 
       {hasFamilies && families.length > 1 && (

@@ -5,6 +5,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+fn history_transaction_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
 
 /// Version 2 history document. The `daily` and `all_time` maps are keyed by
 /// statistic timezone first, then channel, because date bucketing for
@@ -155,6 +167,12 @@ fn merge_row(current: &DailyActivity, archived: &DailyActivity) -> DailyActivity
 /// provider zero-fill rows never overwrite a real archived row, and the
 /// today/week/month/all_time buckets are recomputed from the final daily rows.
 pub fn reconcile(mut snapshot: DashboardSnapshot, timezone: &str) -> DashboardSnapshot {
+    // The whole load-modify-save sequence is one transaction. Locking only
+    // write_atomic would allow two windows to load the same document and have
+    // the later save silently discard the other window's channel update.
+    let _transaction = history_transaction_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut document = load();
     let tz: Tz = timezone
         .parse()
@@ -207,15 +225,9 @@ pub fn reconcile(mut snapshot: DashboardSnapshot, timezone: &str) -> DashboardSn
 #[cfg(test)]
 mod tests {
     use super::{is_zero_fill, recompute_periods};
-    use crate::models::{DailyActivity, TokenBreakdown, TokenPeriods};
-    use std::sync::{Mutex, OnceLock};
-
-    /// Serializes tests that mutate the process-global history directory
-    /// (`CODExUU_HISTORY_DIR`), which parallel tests would otherwise race on.
-    fn history_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::models::{
+        DailyActivity, DashboardSnapshot, QuotaSnapshot, TokenBreakdown, TokenPeriods,
+    };
 
     fn day(date: &str, uncached: u64, cached: u64, output: u64, sessions: u64) -> DailyActivity {
         DailyActivity {
@@ -232,6 +244,21 @@ mod tests {
             tokens: TokenBreakdown::default(),
             cost_usd: 0.0,
             sessions: 0,
+        }
+    }
+
+    fn snapshot(channel: String, total: u64) -> DashboardSnapshot {
+        DashboardSnapshot {
+            channel,
+            quota: QuotaSnapshot::default(),
+            tokens: TokenPeriods::default(),
+            daily_activities: vec![day("2026-08-20", total, 0, 0, 1)],
+            models: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            skills_and_tools: Vec::new(),
+            sources_health: Vec::new(),
+            timestamp: String::new(),
         }
     }
 
@@ -323,8 +350,51 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_reconcile_keeps_every_channel_update() {
+        let _environment = super::test_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "codexuu-history-concurrent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create history root");
+        std::env::set_var("CODExUU_HISTORY_DIR", &root);
+
+        let worker_count = 16;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(worker_count));
+        let workers: Vec<_> = (0..worker_count)
+            .map(|index| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    super::reconcile(
+                        snapshot(format!("channel-{index}"), index as u64 + 1),
+                        "Asia/Shanghai",
+                    );
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("history worker");
+        }
+
+        let document = super::load();
+        assert_eq!(
+            document.daily["Asia/Shanghai"].len(),
+            worker_count,
+            "a concurrent transaction must not discard another channel"
+        );
+
+        std::env::remove_var("CODExUU_HISTORY_DIR");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn v1_history_migrates_under_the_legacy_timezone() {
-        let _lock = history_lock().lock().unwrap();
+        let _lock = super::test_lock().lock().unwrap();
         use serde_json::json;
 
         let dir = std::env::temp_dir().join(format!(
@@ -380,7 +450,7 @@ mod tests {
 
     #[test]
     fn reconcile_fills_pruned_dates_and_recomputes_all_time() {
-        let _lock = history_lock().lock().unwrap();
+        let _lock = super::test_lock().lock().unwrap();
         use crate::models::DashboardSnapshot;
         use crate::storage::settings;
         use chrono_tz::Tz;

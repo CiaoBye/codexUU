@@ -1,5 +1,107 @@
 # CodexUU 更新日志
 
+## 2026-08-20 · 1.3.20 · 悬浮窗尺寸与 Token 构成显示修复
+
+- 修复桌面悬浮窗原生尺寸与内容不匹配的问题；缩放时只缩放内容，保留固定透明边距，避免偏小、裁切和多余留白。
+- Token 指标卡补回未缓存、缓存、输出三类的实际数值，颜色条与图例现在使用同一份 TokenBreakdown。
+- 版本源同步至 `1.3.20`，完成本次桌面 Release 重建。
+
+### 验证
+
+- `pnpm test --run`：41/41 passed。
+- `pnpm run typecheck`：通过。
+- `cargo test --all-targets`：63/63 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm tauri build --no-bundle`：通过；产物为 `src-tauri/target-ui-1.3.20/release/codexuu.exe`。
+
+## 2026-08-20 · 1.3.19 · 启动项错误提示与额度罗盘布局修复
+
+- 修复 Windows 登录启动设置失败时直接展示系统代码页乱码的问题；无法可靠解码时改为稳定的中文提示并保留退出码。
+- 压缩额度罗盘环形图并允许 5H / 7D 重置时间换行，避免在启用 Gemini / Claude 家族选择器时被卡片底部裁切。
+- 版本源同步至 `1.3.19`，完成本次桌面 Release 重建。
+
+### 验证
+
+- `pnpm test --run`：40/40 passed。
+- `pnpm run typecheck`：通过。
+- `cargo test --all-targets`：61/61 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `pnpm tauri build --no-bundle`：通过；产物为 `src-tauri/target-ui-1.3.19/release/codexuu.exe`。
+
+## 2026-08-20 · 1.3.18 · 品牌资产统一与 Skill 榜单重构
+
+- 统一使用 `public/logo.svg` 作为窗口品牌源，Tauri 窗口、任务栏、托盘与顶部导航不再各自使用不同图标。
+- Skill 与工具页改为 Skill TOP20 / 工具 TOP20 双榜单轨道，显示调用次数、活跃天数、项目数、最近使用时间和相对进度条，更接近 codexU Mac 版的信息结构。
+- 继续保持版本源同步，并在本次修改后重建桌面 Release。
+
+### 验证
+
+- `pnpm test --run`：40/40 passed。
+- `pnpm run typecheck`：通过。
+- `pnpm tauri build --no-bundle`：通过；产物为 `src-tauri/target-ui-1.3.18/release/codexuu.exe`。
+
+## 2026-08-20 · 1.3.17 · 最终视觉收口与 Windows 原子写入
+
+- 将本次后续修复单独发布为 `1.3.17`，同步所有版本源与 UI 徽章。
+- 进一步增强概览与内容壳层的渐变玻璃、阴影和层级对比，保持 2×2 指标比例与任务空态轨道。
+- Windows 原子写入使用 `ReplaceFileW`，不再先删除旧配置/历史后再提交新文件。
+
+### 验证
+
+- `pnpm test --run`：40/40 passed。
+- `pnpm run typecheck`：通过。
+- `pnpm tauri build --no-bundle`：通过；产物为 `src-tauri/target-ui-1.3.17/release/codexuu.exe`。
+- `cargo test --all-targets`：60/60 passed；Clippy `-D warnings` 通过。
+
+## 2026-08-20 · 1.3.16 · Mac 版视觉对齐与仪表盘首屏重构
+
+- 统一升级版本源至 `1.3.16`，同步 `VERSION`、前端、Tauri、Cargo、README 与 UI 徽章。
+- 参考 codexU Mac 版的液态玻璃层级、强首屏焦点与大面板信息架构，重构 Windows 仪表盘的概览壳层、指标区、Tab 导航和任务看板。
+- 指标卡保持 2×2 等高布局，补齐右侧视觉重量；任务列统一为可识别的内容轨道，空列显示明确空状态，不再留下无意义的白色大块。
+- Windows 配置、缓存与历史写入改用 `ReplaceFileW` 原子替换，避免中断发生在删除旧文件与提交新文件之间时造成数据丢失。
+- 完成前端测试、类型检查、生产构建，并使用独立目标目录重建 Tauri Release，避免占用当前运行窗口。
+
+### 验证
+
+- `pnpm test --run`：40/40 passed。
+- `pnpm run typecheck`：通过。
+- `pnpm run build`：通过。
+- `pnpm tauri build --no-bundle`：通过；产物为 `src-tauri/target-ui-1.3.16/release/codexuu.exe`。
+- `cargo test --all-targets`：60/60 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+
+## 2026-08-20 · 1.3.15 · v1.3.14 全量审计修复：快照一致性、历史并发、精准计价、统计口径、热力图与动态托盘
+
+- 修复渠道切换与初始化竞态：目标渠道无缓存或请求失败时立即展示该渠道空态，不再残留上一渠道快照；慢设置初始化期间的用户切换会等待持久化设置，并使用正确统计时区发起唯一请求。
+- 历史归档把互斥范围提升为完整“读取—合并—保存”事务，避免主窗口、悬浮窗与导出并发请求互相覆盖；`all` 合并前分别恢复 Codex 与 Antigravity 历史，防止一侧数据裁剪后用部分总量覆盖完整归档。
+- 配额强制刷新失败只保留同统计时区的成功缓存，跨时区失败不再显示旧口径的重置时间与更新时间。
+- 工具统计抽取共享判定，仅接受显式 `function_call` / `custom_tool_call`；任务卡片的标题、时间与渠道统一取最新线程，不再把跨渠道项目错误标为 `all`。
+- 更新精准计价：Gemini 2.5 Pro 支持单请求 200K 阶梯，Gemini 2.5 Flash 使用 Standard 文本价；GPT-5.6 Sol/Terra/Luna 支持单请求 272K 长上下文阶梯；逐 usage 事件累计成本，避免多笔短请求因汇总误触发阶梯；未确认网关别名统一标为未计价。
+- 补齐连续自然日热力图，提供缺失日补零、0–4 数值强度、单一 Tab 入口与方向键逐格浏览、明细表及最近 365 天上限；深浅主题沿用语义色令牌。
+- 完成 UI 审计收口：趋势图优先进入首屏，热力图显示完整日期范围并在键盘聚焦时提供详情；额度卡明确聚合页使用的 Codex 数据源、显示健康状态与完整重置时间；Token 分段增加可见图例。
+- 改善信息可读性：任务列、项目排行与 Skill/工具补充空状态和完整文本提示，任务摘要支持两行展示；设置分类 Tab 支持方向键/Home/End，顶部刷新改为独立可见按钮。
+- 调整任务、趋势、项目与 Skill 的辅助信息字号和间距，降低 1200×760 及系统缩放下的阅读压力。
+- 完成二次 UI 可访问性与层级收口：趋势范围 Tab 增加 roving tabindex、方向键/Home/End，热力图补充月份刻度；页面补充 h1/h2 结构与跳到主要内容入口，设置标题和面板标题层级统一，Skill/工具筛选组补充语义标签。
+- 强化仪表盘主次层级：额度罗盘增加品牌强调线，Token 指标卡降为次级表面；统一仪表盘正文行高，并为窄窗口顶部操作保留稳定布局。
+- 修正首屏比例：指标卡由单行四列改为与额度罗盘对齐的 2×2 网格，避免右侧数据下方出现无意义的大块空白；卡片内容改为上下分布，保留数字、构成条与图例的层级。
+- 系统托盘图标随最新快照绘制额度余量状态环，tooltip 同步渠道、今日 Token 与额度百分比；动态图标失败只记录警告，不影响快照返回。
+- 消除前端测试中的 React `act(...)` 与 JSDOM 下载导航警告，并为上述问题补充回归覆盖。
+
+### 影响范围
+
+- 涉及仪表盘初始化与渠道切换、统计时区、配额缓存、历史归档、双渠道聚合、工具与任务统计、模型计价、趋势页、项目导出测试及 Windows 系统托盘。不改变现有配置格式，不新增第三方依赖。
+
+### 验证
+
+- `pnpm test`：40/40 passed，0 warning。
+- `pnpm run typecheck`：通过（0 错误）。
+- `pnpm run build`：通过。
+- `cargo test --all-targets`：60/60 passed。
+- `cargo clippy --all-targets -- -D warnings`：通过。
+- `cargo fmt --all -- --check` 与 `git diff --check`：通过。
+- `pnpm audit --prod`：0 个已知漏洞；`cargo audit`：0 个漏洞（17 个允许警告，其中唯一 unsound 项 `glib` 不在 Windows 目标依赖图中）。
+- 1200×760 深色/浅色实测：热力图对齐、无障碍标签与控制台输出正常；`pnpm tauri build --no-bundle` 成功，并通过 `scripts/restart.ps1` 单实例重启 Release（PID 796）。
+
 ## 2026-08-19 · 1.3.14 · 审计修复：跨日/时区缓存与历史归档、请求乱序与渠道缓存、配额失败保留、刷新范围、原子写入、时间戳与启动项错误处理、测试门禁
 
 - 用量卡不再被拉高去填罗盘高度，标题、数字、色条贴在一起。

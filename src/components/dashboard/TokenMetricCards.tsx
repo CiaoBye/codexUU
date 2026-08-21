@@ -42,7 +42,7 @@ const SingleCard: React.FC<SingleCardProps> = ({
   const displayTotal = unavailable ? '--' : formatTokens(breakdown.total);
 
   return (
-    <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-lg px-3 py-2.5 flex flex-col gap-2 min-h-0">
+    <div className="dashboard-metric-card px-3 py-2.5 flex flex-col justify-between gap-2 min-h-0">
       <div className="flex items-center gap-1.5">
         <Icon aria-hidden="true" className={`w-3.5 h-3.5 ${colorClass}`} />
         <h3 className="text-xs font-semibold text-[var(--text-secondary)]">{title}</h3>
@@ -53,7 +53,9 @@ const SingleCard: React.FC<SingleCardProps> = ({
       </div>
 
       <div
+        role="img"
         className="h-1.5 w-full bg-[var(--bg-subtle)] rounded-full overflow-hidden flex"
+        aria-label={`Token 构成：未缓存 ${formatTokens(breakdown.uncached_input)}，缓存 ${formatTokens(breakdown.cached_input)}，输出 ${formatTokens(breakdown.output)}`}
         title={`未缓存 ${formatTokens(breakdown.uncached_input)} · 缓存 ${formatTokens(breakdown.cached_input)} · 输出 ${formatTokens(breakdown.output)}`}
       >
         <div
@@ -68,6 +70,23 @@ const SingleCard: React.FC<SingleCardProps> = ({
           style={{ width: `${pctOutput}%` }}
           className="h-full bg-[var(--token-output)]"
         />
+      </div>
+      <div className="grid grid-cols-3 gap-1 text-[10px] leading-none text-[var(--text-muted)]" aria-label="Token 构成图例">
+        <span className="flex items-center gap-1 min-w-0" title={`未缓存 ${formatTokens(breakdown.uncached_input)}`}>
+          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--token-uncached)] shrink-0" />
+          <span className="truncate">未缓存</span>
+          <span className="font-mono text-[9px] text-[var(--text-secondary)] shrink-0">{formatTokens(breakdown.uncached_input)}</span>
+        </span>
+        <span className="flex items-center gap-1 min-w-0" title={`缓存 ${formatTokens(breakdown.cached_input)}`}>
+          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--token-cached)] shrink-0" />
+          <span className="truncate">缓存</span>
+          <span className="font-mono text-[9px] text-[var(--text-secondary)] shrink-0">{formatTokens(breakdown.cached_input)}</span>
+        </span>
+        <span className="flex items-center gap-1 min-w-0" title={`输出 ${formatTokens(breakdown.output)}`}>
+          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--token-output)] shrink-0" />
+          <span className="truncate">输出</span>
+          <span className="font-mono text-[9px] text-[var(--text-secondary)] shrink-0">{formatTokens(breakdown.output)}</span>
+        </span>
       </div>
     </div>
   );

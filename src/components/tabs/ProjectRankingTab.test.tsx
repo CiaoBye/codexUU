@@ -41,11 +41,13 @@ describe('ProjectRankingTab export robustness', () => {
     originalRevokeObjectURL = URL.revokeObjectURL;
     URL.createObjectURL = vi.fn(() => 'blob:mock');
     URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     URL.createObjectURL = originalCreateObjectURL;
     URL.revokeObjectURL = originalRevokeObjectURL;
+    vi.restoreAllMocks();
     // Clean up an anchor that handleExport may leave mounted.
     document.querySelectorAll('a[download]').forEach((a) => a.remove());
   });

@@ -6,7 +6,64 @@ pub mod codex;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::models::TaskItem;
+use chrono::{DateTime, NaiveDate};
+use chrono_tz::Tz;
+
+use crate::models::{DailyActivity, TaskItem, TokenBreakdown};
+
+/// Fill consecutive natural days between the earliest and latest observed date,
+/// inserting zero rows for dates with no data. Providers must call this so
+/// charts render unbroken date ranges and missing days are never disguised as
+/// active days.
+pub fn backfill_daily(
+    map: HashMap<String, (TokenBreakdown, f64, u64)>,
+    now: DateTime<Tz>,
+    days_limit: usize,
+) -> Vec<DailyActivity> {
+    let mut items: Vec<DailyActivity> = map
+        .into_iter()
+        .map(|(date, (tokens, cost_usd, sessions))| DailyActivity {
+            date,
+            tokens,
+            cost_usd,
+            sessions,
+        })
+        .collect();
+    items.sort_by(|a, b| a.date.cmp(&b.date));
+
+    let end = now.date_naive();
+    let start = items
+        .first()
+        .and_then(|d| NaiveDate::parse_from_str(&d.date, "%Y-%m-%d").ok())
+        .unwrap_or(end);
+
+    let mut by_date: HashMap<String, DailyActivity> =
+        items.into_iter().map(|d| (d.date.clone(), d)).collect();
+
+    let mut result = Vec::new();
+    let mut cursor = if start > end { end } else { start };
+    while cursor <= end {
+        let key = cursor.format("%Y-%m-%d").to_string();
+        let entry = by_date.remove(&key).unwrap_or_else(|| DailyActivity {
+            date: key.clone(),
+            tokens: TokenBreakdown::default(),
+            cost_usd: 0.0,
+            sessions: 0,
+        });
+        result.push(entry);
+        match cursor.succ_opt() {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+
+    if days_limit > 0 && result.len() > days_limit {
+        let split = result.len() - days_limit;
+        result = result.split_off(split);
+    }
+
+    result
+}
 
 /// Normalize workspace paths so Windows drive-letter and slash variants merge.
 pub fn normalize_project_path(raw: &str) -> String {
@@ -73,6 +130,18 @@ pub fn is_explicit_skill_event(kinds: &[&str]) -> bool {
     })
 }
 
+/// Tool usage is counted only for the two explicit event kinds emitted by the
+/// supported providers. Names such as `tool_call` are not part of the product
+/// metric contract and may also occur as incidental metadata.
+pub fn is_explicit_tool_event(kinds: &[&str]) -> bool {
+    kinds.iter().any(|kind| {
+        matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "function_call" | "custom_tool_call"
+        )
+    })
+}
+
 /// Aggregate task cards by project and status. The latest thread supplies the
 /// title/time while the count retains the number of underlying threads.
 pub fn group_tasks_by_project(tasks: Vec<TaskItem>) -> Vec<TaskItem> {
@@ -88,9 +157,7 @@ pub fn group_tasks_by_project(tasks: Vec<TaskItem>) -> Vec<TaskItem> {
             if task.updated_at > existing.updated_at {
                 existing.title = task.title;
                 existing.updated_at = task.updated_at;
-            }
-            if existing.channel != task.channel {
-                existing.channel = "all".to_string();
+                existing.channel = task.channel;
             }
             if existing.project_name == "未知项目" && task.project_name != "未知项目" {
                 existing.project_name = task.project_name;
@@ -107,9 +174,10 @@ pub fn group_tasks_by_project(tasks: Vec<TaskItem>) -> Vec<TaskItem> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_cache_or_tool_home, is_explicit_skill_event, is_real_project_path,
-        normalize_project_path,
+        group_tasks_by_project, is_cache_or_tool_home, is_explicit_skill_event,
+        is_explicit_tool_event, is_real_project_path, normalize_project_path,
     };
+    use crate::models::TaskItem;
     use std::path::PathBuf;
 
     #[test]
@@ -141,5 +209,45 @@ mod tests {
     fn skill_event_requires_explicit_load_type() {
         assert!(is_explicit_skill_event(&["skill_loaded"]));
         assert!(!is_explicit_skill_event(&["message"]));
+    }
+
+    #[test]
+    fn tool_event_requires_supported_explicit_type() {
+        assert!(is_explicit_tool_event(&["FUNCTION_CALL"]));
+        assert!(is_explicit_tool_event(&["custom_tool_call"]));
+        for incidental_kind in ["tool_call", "tool_calls", "tool-use", "tool_use", "message"] {
+            assert!(!is_explicit_tool_event(&[incidental_kind]));
+        }
+    }
+
+    fn task(title: &str, updated_at: &str, channel: &str) -> TaskItem {
+        TaskItem {
+            id: format!("{title}-{channel}"),
+            project_name: "App".to_string(),
+            project_path: "C:/Work/App".to_string(),
+            title: title.to_string(),
+            status: "running".to_string(),
+            updated_at: updated_at.to_string(),
+            thread_count: 1,
+            channel: channel.to_string(),
+        }
+    }
+
+    #[test]
+    fn grouped_task_uses_the_latest_threads_title_time_and_channel() {
+        let older = task("Codex older", "2026-08-20 09:00", "Codex");
+        let newer = task("Antigravity latest", "2026-08-20 10:00", "Antigravity");
+
+        for input in [
+            vec![older.clone(), newer.clone()],
+            vec![newer.clone(), older.clone()],
+        ] {
+            let grouped = group_tasks_by_project(input);
+            assert_eq!(grouped.len(), 1);
+            assert_eq!(grouped[0].title, "Antigravity latest");
+            assert_eq!(grouped[0].updated_at, "2026-08-20 10:00");
+            assert_eq!(grouped[0].channel, "antigravity");
+            assert_eq!(grouped[0].thread_count, 2);
+        }
     }
 }

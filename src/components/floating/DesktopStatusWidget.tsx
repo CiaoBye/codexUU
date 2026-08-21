@@ -164,6 +164,17 @@ export const DesktopStatusWidget: React.FC<DesktopStatusWidgetProps> = ({
               </>
             )}
           </div>
+          <div data-tauri-drag-region className="grid grid-cols-3 gap-1 pt-0.5 text-[8px] leading-none text-[var(--text-muted)]">
+            <span data-tauri-drag-region className="truncate" title={`未缓存 ${formatTokens(tokens.today.uncached_input)}`}>
+              未缓存 {formatTokens(tokens.today.uncached_input)}
+            </span>
+            <span data-tauri-drag-region className="truncate" title={`缓存 ${formatTokens(tokens.today.cached_input)}`}>
+              缓存 {formatTokens(tokens.today.cached_input)}
+            </span>
+            <span data-tauri-drag-region className="truncate" title={`输出 ${formatTokens(tokens.today.output)}`}>
+              输出 {formatTokens(tokens.today.output)}
+            </span>
+          </div>
         </button>
       )}
 

@@ -1,6 +1,6 @@
 # CodexUU
 
-当前版本：`1.3.20`。
+当前版本：`1.3.21`。
 
 CodexUU 是一个面向 Windows 的高性能、本地优先 AI 编程控制台，采用 **Tauri 2 + Rust + React 19 + TypeScript + Tailwind CSS** 架构构建。
 
@@ -71,7 +71,7 @@ CodexUU (Windows x64)
 
 ## 本地开发与测试
 
-开发期间请双击仓库根目录的 **`启动开发版.bat`**（或 `pnpm start`）。它会先关掉所有 CodexUU（含托盘里的旧窗口），再通过 Vite 热更新启动当前源码。顶栏徽章为 `v1.3.20-dev` 即表示看的是这份代码。
+开发期间请双击仓库根目录的 **`启动开发版.bat`**（或 `pnpm start`）。它会先关掉所有 CodexUU（含托盘里的旧窗口），再通过 Vite 热更新启动当前源码。顶栏徽章为 `v1.3.21-dev` 即表示看的是这份代码。
 
 ```powershell
 # 推荐：一键启动开发版

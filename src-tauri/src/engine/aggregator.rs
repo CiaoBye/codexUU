@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -6,29 +6,18 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
+use crate::engine::refresh::RefreshCoordinator;
 use crate::models::{
     DailyActivity, DashboardSnapshot, ModelUsage, ProjectRankingItem, ProviderData, QuotaSnapshot,
     SkillAgg, SkillUsageItem, SourceHealthStatus, TokenBreakdown,
 };
-use crate::providers::antigravity::AntigravityProvider;
-use crate::providers::antigravity_quota;
-use crate::providers::codex::CodexProvider;
+use crate::providers::registry::ProviderRegistry;
 use crate::providers::{group_tasks_by_project, normalize_project_path};
 use crate::storage::{cache, history};
 
 pub struct Aggregator;
 
 impl Aggregator {
-    fn refreshes_in_flight() -> &'static Mutex<HashSet<String>> {
-        static REFRESHES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-        REFRESHES.get_or_init(|| Mutex::new(HashSet::new()))
-    }
-
-    fn last_refreshes() -> &'static Mutex<HashMap<String, Instant>> {
-        static REFRESHES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-        REFRESHES.get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
     fn quota_cache() -> &'static Mutex<Option<(String, Instant, QuotaSnapshot)>> {
         static CACHE: OnceLock<Mutex<Option<(String, Instant, QuotaSnapshot)>>> = OnceLock::new();
         CACHE.get_or_init(|| Mutex::new(None))
@@ -72,10 +61,10 @@ impl Aggregator {
         if !Self::should_persist(parsed) {
             return;
         }
-        let roots = match provider {
-            "antigravity" => AntigravityProvider::source_roots(),
-            _ => CodexProvider::source_roots(),
+        let Some(spec) = ProviderRegistry::get(provider) else {
+            return;
         };
+        let roots = (spec.source_roots)();
         let fingerprint = cache::source_fingerprint(&roots);
         let period = cache::stat_period(tz);
         let _ = cache::save(
@@ -89,100 +78,58 @@ impl Aggregator {
     }
 
     fn start_refresh(key: &str, min_interval: Duration) -> bool {
-        let Ok(mut refreshes) = Self::refreshes_in_flight().lock() else {
-            return false;
-        };
-        if refreshes.contains(key) {
-            return false;
-        }
-        if let Ok(last_refreshes) = Self::last_refreshes().lock() {
-            if last_refreshes
-                .get(key)
-                .is_some_and(|last| last.elapsed() < min_interval)
-            {
-                return false;
-            }
-        }
-        refreshes.insert(key.to_string())
+        RefreshCoordinator::try_start(key, min_interval)
     }
 
     fn refresh_in_flight(key: &str) -> bool {
-        Self::refreshes_in_flight()
-            .lock()
-            .map(|refreshes| refreshes.contains(key))
-            .unwrap_or(false)
+        RefreshCoordinator::is_in_flight(key)
     }
 
     fn finish_refresh(key: &str) {
-        if let Ok(mut refreshes) = Self::refreshes_in_flight().lock() {
-            refreshes.remove(key);
-        }
-        if let Ok(mut last_refreshes) = Self::last_refreshes().lock() {
-            last_refreshes.insert(key.to_string(), Instant::now());
-        }
+        RefreshCoordinator::finish(key);
     }
 
-    fn schedule_codex_refresh(timezone: String, tz: Tz) -> bool {
-        let key = format!("codex|{timezone}");
+    fn schedule_usage_refresh(provider: &str, timezone: String, tz: Tz) -> bool {
+        let key = format!("{provider}|{timezone}");
         if !Self::start_refresh(&key, Duration::from_secs(120)) {
             return false;
         }
+        let Some(spec) = ProviderRegistry::get(provider).copied() else {
+            Self::finish_refresh(&key);
+            return false;
+        };
+        let provider_id = spec.id;
 
         thread::spawn(move || {
             let _guard = InFlightGuard { key };
-            let parsed = CodexProvider::parse_all_sessions(0, &tz);
-            Self::persist_provider("codex", &timezone, &tz, &parsed);
+            let parsed = (spec.collect_usage)(0, &tz);
+            Self::persist_provider(provider_id, &timezone, &tz, &parsed);
         });
         true
     }
 
-    fn schedule_antigravity_refresh(timezone: String, tz: Tz) -> bool {
-        let key = format!("antigravity|{timezone}");
-        if !Self::start_refresh(&key, Duration::from_secs(120)) {
-            return false;
+    fn quota_cache_for(provider: &str) -> &'static Mutex<Option<(String, Instant, QuotaSnapshot)>> {
+        match provider {
+            "antigravity" => Self::antigravity_quota_cache(),
+            _ => Self::quota_cache(),
         }
-
-        thread::spawn(move || {
-            let _guard = InFlightGuard { key };
-            let parsed = AntigravityProvider::parse_all(0, &tz);
-            Self::persist_provider("antigravity", &timezone, &tz, &parsed);
-        });
-        true
     }
 
-    fn schedule_quota_refresh(timezone: String, tz: Tz) {
-        let key = format!("quota|{timezone}");
+    fn schedule_quota_refresh(provider: &str, timezone: String, tz: Tz) {
+        let key = format!("{provider}-quota|{timezone}");
         if !Self::start_refresh(&key, Duration::from_secs(30)) {
             return;
         }
-
-        thread::spawn(move || {
-            let _guard = InFlightGuard { key };
-            let snapshot = CodexProvider::fetch_quota(&tz);
-            if let Ok(mut cache) = Self::quota_cache().lock() {
-                let replace_cache = cache
-                    .as_ref()
-                    .map(|(_, _, cached)| {
-                        snapshot.status == "available" || cached.status != "available"
-                    })
-                    .unwrap_or(true);
-                if replace_cache {
-                    *cache = Some((timezone, Instant::now(), snapshot));
-                }
-            }
-        });
-    }
-
-    fn schedule_antigravity_quota_refresh(timezone: String, tz: Tz) {
-        let key = format!("ag-quota|{timezone}");
-        if !Self::start_refresh(&key, Duration::from_secs(30)) {
+        let Some(spec) = ProviderRegistry::get(provider).copied() else {
+            Self::finish_refresh(&key);
             return;
-        }
+        };
+        let provider_id = spec.id;
 
         thread::spawn(move || {
             let _guard = InFlightGuard { key };
-            let snapshot = antigravity_quota::fetch_quota(&tz);
-            if let Ok(mut cache) = Self::antigravity_quota_cache().lock() {
+            let snapshot = (spec.collect_quota)(&tz);
+            if let Ok(mut cache) = Self::quota_cache_for(provider_id).lock() {
                 let replace_cache = cache
                     .as_ref()
                     .map(|(_, _, cached)| {
@@ -264,11 +211,20 @@ impl Aggregator {
             && cached_status == "available"
     }
 
-    fn load_quota(tz: &Tz, force: bool) -> QuotaSnapshot {
+    fn load_quota(provider: &str, tz: &Tz, force: bool) -> QuotaSnapshot {
         let timezone = tz.to_string();
+        let Some(spec) = ProviderRegistry::get(provider).copied() else {
+            return QuotaSnapshot {
+                status: "unavailable".to_string(),
+                source: format!("未知 Provider：{provider}"),
+                last_updated: Self::cache_timestamp(tz),
+                ..Default::default()
+            };
+        };
+        let quota_cache = Self::quota_cache_for(provider);
         if force {
-            let snapshot = CodexProvider::fetch_quota(tz);
-            if let Ok(mut cache) = Self::quota_cache().lock() {
+            let snapshot = (spec.collect_quota)(tz);
+            if let Ok(mut cache) = quota_cache.lock() {
                 let keep_previous = cache
                     .as_ref()
                     .map(|(cached_timezone, _, cached)| {
@@ -290,7 +246,7 @@ impl Aggregator {
             return snapshot;
         }
 
-        if let Ok(cache) = Self::quota_cache().lock() {
+        if let Ok(cache) = quota_cache.lock() {
             if let Some((cached_timezone, cached_at, snapshot)) = cache.as_ref() {
                 if cached_timezone == &timezone && cached_at.elapsed() < Duration::from_secs(30) {
                     return snapshot.clone();
@@ -298,174 +254,91 @@ impl Aggregator {
                 if cached_timezone == &timezone {
                     let stale_snapshot = snapshot.clone();
                     drop(cache);
-                    Self::schedule_quota_refresh(timezone, *tz);
+                    Self::schedule_quota_refresh(provider, timezone, *tz);
                     return stale_snapshot;
                 }
             }
         }
 
-        Self::schedule_quota_refresh(timezone, *tz);
+        Self::schedule_quota_refresh(provider, timezone, *tz);
         QuotaSnapshot {
             status: "refreshing".to_string(),
-            source: "Codex 额度后台查询中".to_string(),
+            source: format!("{} 额度后台查询中", spec.name),
             last_updated: Self::cache_timestamp(tz),
             ..Default::default()
         }
     }
 
-    fn load_antigravity_quota(tz: &Tz, force: bool) -> QuotaSnapshot {
+    fn load_provider_data(provider: &str, tz: &Tz, force: bool) -> ProviderData {
         let timezone = tz.to_string();
+        let Some(spec) = ProviderRegistry::get(provider).copied() else {
+            return Self::loading_provider_data(
+                provider,
+                provider,
+                "unknown",
+                Vec::new(),
+                "Provider 未注册",
+                tz,
+            );
+        };
+        let roots = (spec.source_roots)();
         if force {
-            let snapshot = antigravity_quota::fetch_quota(tz);
-            if let Ok(mut cache) = Self::antigravity_quota_cache().lock() {
-                let keep_previous = cache
-                    .as_ref()
-                    .map(|(cached_timezone, _, cached)| {
-                        Self::should_keep_previous_quota(
-                            &snapshot.status,
-                            &cached.status,
-                            &timezone,
-                            cached_timezone,
-                        )
-                    })
-                    .unwrap_or(false);
-                if keep_previous {
-                    if let Some((_, _, cached)) = cache.as_ref().cloned() {
-                        return cached;
-                    }
-                }
-                *cache = Some((timezone, Instant::now(), snapshot.clone()));
-            }
-            return snapshot;
+            let parsed = (spec.collect_usage)(0, tz);
+            Self::persist_provider(provider, &timezone, tz, &parsed);
+            return parsed;
         }
 
-        if let Ok(cache) = Self::antigravity_quota_cache().lock() {
-            if let Some((cached_timezone, cached_at, snapshot)) = cache.as_ref() {
-                if cached_timezone == &timezone && cached_at.elapsed() < Duration::from_secs(30) {
-                    return snapshot.clone();
-                }
-                if cached_timezone == &timezone {
-                    let stale_snapshot = snapshot.clone();
-                    drop(cache);
-                    Self::schedule_antigravity_quota_refresh(timezone, *tz);
-                    return stale_snapshot;
-                }
+        let fingerprint = cache::source_fingerprint(&roots);
+        let period = cache::stat_period(tz);
+        if let Some(mut cached) =
+            cache::load_exact::<ProviderData>(provider, &timezone, &period, &fingerprint)
+        {
+            cached.source_health.message = format!("缓存命中：{}", cached.source_health.message);
+            cached.source_health.last_attempt_at = Some(Self::cache_timestamp(tz));
+            if !cached
+                .source_health
+                .capabilities
+                .iter()
+                .any(|capability| capability == "snapshot_cache")
+            {
+                cached
+                    .source_health
+                    .capabilities
+                    .push("snapshot_cache".to_string());
             }
+            return cached;
         }
 
-        Self::schedule_antigravity_quota_refresh(timezone, *tz);
-        QuotaSnapshot {
-            status: "refreshing".to_string(),
-            source: "Antigravity 额度后台查询中".to_string(),
-            last_updated: Self::cache_timestamp(tz),
-            ..Default::default()
+        if let Some(cached) = cache::load_latest::<ProviderData>(provider, &timezone) {
+            let key = format!("{provider}|{timezone}");
+            let scheduled = Self::schedule_usage_refresh(provider, timezone, *tz);
+            return if scheduled || Self::refresh_in_flight(&key) {
+                Self::mark_refreshing(cached, tz, spec.name)
+            } else {
+                Self::mark_stale(cached, tz, spec.name)
+            };
         }
+
+        Self::schedule_usage_refresh(provider, timezone, *tz);
+        Self::loading_provider_data(
+            &format!("{provider}_sessions"),
+            &format!("{} 会话", spec.name),
+            spec.source_schema,
+            roots
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            "首次扫描正在后台进行，完成后点击刷新即可看到完整数据",
+            tz,
+        )
     }
 
     fn load_codex_data(tz: &Tz, force: bool) -> ProviderData {
-        let timezone = tz.to_string();
-        if force {
-            let parsed = CodexProvider::parse_all_sessions(0, tz);
-            Self::persist_provider("codex", &timezone, tz, &parsed);
-            return parsed;
-        }
-
-        let fingerprint = cache::source_fingerprint(&CodexProvider::source_roots());
-        let period = cache::stat_period(tz);
-        if let Some(mut cached) =
-            cache::load_exact::<ProviderData>("codex", &timezone, &period, &fingerprint)
-        {
-            cached.source_health.message = format!("缓存命中：{}", cached.source_health.message);
-            cached.source_health.last_attempt_at = Some(Self::cache_timestamp(tz));
-            if !cached
-                .source_health
-                .capabilities
-                .iter()
-                .any(|capability| capability == "snapshot_cache")
-            {
-                cached
-                    .source_health
-                    .capabilities
-                    .push("snapshot_cache".to_string());
-            }
-            return cached;
-        }
-
-        if let Some(cached) = cache::load_latest::<ProviderData>("codex", &timezone) {
-            let key = format!("codex|{timezone}");
-            let scheduled = Self::schedule_codex_refresh(timezone, *tz);
-            return if scheduled || Self::refresh_in_flight(&key) {
-                Self::mark_refreshing(cached, tz, "Codex")
-            } else {
-                Self::mark_stale(cached, tz, "Codex")
-            };
-        }
-
-        Self::schedule_codex_refresh(timezone, *tz);
-        Self::loading_provider_data(
-            "codex_sessions",
-            "Codex 会话",
-            "Codex rollout JSONL",
-            CodexProvider::source_roots()
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            "首次扫描正在后台进行，完成后点击刷新即可看到完整数据",
-            tz,
-        )
+        Self::load_provider_data("codex", tz, force)
     }
 
     fn load_antigravity_data(tz: &Tz, force: bool) -> ProviderData {
-        let timezone = tz.to_string();
-        if force {
-            let parsed = AntigravityProvider::parse_all(0, tz);
-            Self::persist_provider("antigravity", &timezone, tz, &parsed);
-            return parsed;
-        }
-
-        let fingerprint = cache::source_fingerprint(&AntigravityProvider::source_roots());
-        let period = cache::stat_period(tz);
-        if let Some(mut cached) =
-            cache::load_exact::<ProviderData>("antigravity", &timezone, &period, &fingerprint)
-        {
-            cached.source_health.message = format!("缓存命中：{}", cached.source_health.message);
-            cached.source_health.last_attempt_at = Some(Self::cache_timestamp(tz));
-            if !cached
-                .source_health
-                .capabilities
-                .iter()
-                .any(|capability| capability == "snapshot_cache")
-            {
-                cached
-                    .source_health
-                    .capabilities
-                    .push("snapshot_cache".to_string());
-            }
-            return cached;
-        }
-
-        if let Some(cached) = cache::load_latest::<ProviderData>("antigravity", &timezone) {
-            let key = format!("antigravity|{timezone}");
-            let scheduled = Self::schedule_antigravity_refresh(timezone, *tz);
-            return if scheduled || Self::refresh_in_flight(&key) {
-                Self::mark_refreshing(cached, tz, "Antigravity")
-            } else {
-                Self::mark_stale(cached, tz, "Antigravity")
-            };
-        }
-
-        Self::schedule_antigravity_refresh(timezone, *tz);
-        Self::loading_provider_data(
-            "antigravity_conversations",
-            "Antigravity 会话",
-            "Antigravity conversations / brain",
-            AntigravityProvider::source_roots()
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            "首次扫描正在后台进行，完成后点击刷新即可看到完整数据",
-            tz,
-        )
+        Self::load_provider_data("antigravity", tz, force)
     }
 
     /// Restore each provider's own archived daily rows before any cross-channel
@@ -476,6 +349,7 @@ impl Aggregator {
         let snapshot = DashboardSnapshot {
             channel: channel.to_string(),
             quota: QuotaSnapshot::default(),
+            quotas: HashMap::new(),
             tokens: std::mem::take(&mut data.tokens),
             daily_activities: std::mem::take(&mut data.daily_activities),
             models: Vec::new(),
@@ -516,8 +390,8 @@ impl Aggregator {
         // provider keeps its cached snapshot instead of forcing a full rescan.
         let codex_force = Self::refresh_force_for(channel, "codex", force);
         let antigravity_force = Self::refresh_force_for(channel, "antigravity", force);
-        let codex_quota = Self::load_quota(&tz, codex_force);
-        let antigravity_quota = Self::load_antigravity_quota(&tz, antigravity_force);
+        let codex_quota = Self::load_quota("codex", &tz, codex_force);
+        let antigravity_quota = Self::load_quota("antigravity", &tz, antigravity_force);
         let c_data = Self::load_codex_data(&tz, codex_force);
         let a_data = Self::load_antigravity_data(&tz, antigravity_force);
 
@@ -606,7 +480,8 @@ impl Aggregator {
         let snapshot = match channel {
             "antigravity" => DashboardSnapshot {
                 channel: "antigravity".to_string(),
-                quota: antigravity_quota,
+                quota: antigravity_quota.clone(),
+                quotas: HashMap::from([("antigravity".to_string(), antigravity_quota)]),
                 tokens: a_data.tokens,
                 daily_activities: a_data.daily_activities,
                 models: a_data.models,
@@ -622,7 +497,11 @@ impl Aggregator {
                 let merged = Self::merge_all(c_data, a_data, &tz);
                 DashboardSnapshot {
                     channel: "all".to_string(),
-                    quota: codex_quota,
+                    quota: codex_quota.clone(),
+                    quotas: HashMap::from([
+                        ("codex".to_string(), codex_quota),
+                        ("antigravity".to_string(), antigravity_quota),
+                    ]),
                     tokens: merged.tokens,
                     daily_activities: merged.daily_activities,
                     models: merged.models,
@@ -635,7 +514,8 @@ impl Aggregator {
             }
             _ => DashboardSnapshot {
                 channel: "codex".to_string(),
-                quota: codex_quota,
+                quota: codex_quota.clone(),
+                quotas: HashMap::from([("codex".to_string(), codex_quota)]),
                 tokens: c_data.tokens,
                 daily_activities: c_data.daily_activities,
                 models: c_data.models,
@@ -795,6 +675,7 @@ mod tests {
         DailyActivity, DashboardSnapshot, ProjectRankingItem, ProviderData, QuotaSnapshot,
         TokenBreakdown, TokenPeriods,
     };
+    use std::collections::HashMap;
     use std::time::Duration;
 
     fn day(date: &str, total: u64) -> DailyActivity {
@@ -810,6 +691,7 @@ mod tests {
         DashboardSnapshot {
             channel: channel.to_string(),
             quota: QuotaSnapshot::default(),
+            quotas: HashMap::new(),
             tokens: TokenPeriods::default(),
             daily_activities,
             models: Vec::new(),

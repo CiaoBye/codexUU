@@ -1,5 +1,23 @@
 # CodexUU 更新日志
 
+## 2026-08-21 · 1.3.21 · Provider 边界、刷新协调与控制台视觉收口
+
+- 新增静态 Provider Registry，把 Codex / Antigravity 的用量、额度与数据源路径统一接入点；聚合器不再维护两套重复的 Provider 调度分支。
+- 新增进程级 RefreshCoordinator，按 Provider 与时区去重后台任务并施加冷却窗口，避免定时轮询、手动刷新和窗口切换重复扫描。
+- 快照增加 `quotas` 多 Provider 额度映射，同时保留 `quota` 兼容字段；历史快照和旧前端调用不需要迁移即可继续工作。
+- 主窗口改为更扁平的数据控制台层级：四张 Token 指标卡在宽窗口横排，API 等效价值单独作为底部信息条，减少渐变、毛玻璃和过度圆角。
+- 增加 Token / API 价值数字缓动、Tab 面板过渡、刷新态边界反馈，并遵循系统 reduced-motion 设置。
+- Release 采用体积优化 profile，并默认只生成 NSIS 安装包，减少无必要的 MSI 重复产物；如需企业分发可将 `tauri.conf.json` 的 targets 恢复为 `msi` 与 `nsis`。
+
+### 验证
+
+- `pnpm test -- --run`：43/43 passed。
+- `pnpm run typecheck`：通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：65/65 passed。
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`：通过。
+- `pnpm tauri build --no-bundle`：通过；`codexuu.exe` 约 6.74 MB。
+- `pnpm tauri build`：通过；只生成 1 个 NSIS 安装包，约 2.02 MB。
+
 ## 2026-08-20 · 1.3.20 · 悬浮窗尺寸与 Token 构成显示修复
 
 - 修复桌面悬浮窗原生尺寸与内容不匹配的问题；缩放时只缩放内容，保留固定透明边距，避免偏小、裁切和多余留白。

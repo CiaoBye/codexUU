@@ -2,6 +2,7 @@ pub mod antigravity;
 pub mod antigravity_db;
 pub mod antigravity_quota;
 pub mod codex;
+pub mod registry;
 
 use std::collections::HashMap;
 use std::path::Path;

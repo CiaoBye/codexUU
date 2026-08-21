@@ -228,6 +228,7 @@ mod tests {
     use crate::models::{
         DailyActivity, DashboardSnapshot, QuotaSnapshot, TokenBreakdown, TokenPeriods,
     };
+    use std::collections::HashMap;
 
     fn day(date: &str, uncached: u64, cached: u64, output: u64, sessions: u64) -> DailyActivity {
         DailyActivity {
@@ -251,6 +252,7 @@ mod tests {
         DashboardSnapshot {
             channel,
             quota: QuotaSnapshot::default(),
+            quotas: HashMap::new(),
             tokens: TokenPeriods::default(),
             daily_activities: vec![day("2026-08-20", total, 0, 0, 1)],
             models: Vec::new(),
@@ -471,6 +473,7 @@ mod tests {
         let first = DashboardSnapshot {
             channel: "codex".to_string(),
             quota: crate::models::QuotaSnapshot::default(),
+            quotas: HashMap::new(),
             tokens: TokenPeriods::default(),
             daily_activities: vec![zero_fill("2026-08-16"), day("2026-08-17", 0, 0, 0, 0)],
             models: Vec::new(),

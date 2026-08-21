@@ -106,6 +106,7 @@ export interface SourceHealthStatus {
 export interface DashboardSnapshot {
   channel: 'codex' | 'antigravity' | 'all';
   quota: QuotaSnapshot;
+  quotas: Record<string, QuotaSnapshot>;
   tokens: TokenPeriods;
   daily_activities: DailyActivity[];
   models: ModelUsage[];

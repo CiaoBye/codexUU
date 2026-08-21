@@ -21,4 +21,40 @@ describe('TokenMetricCards', () => {
     expect(screen.getByText('3.0k')).toBeTruthy();
     expect(screen.getByTitle('缓存 2.00M')).toBeTruthy();
   });
+
+  it('shows API equivalent value and pricing coverage from model usage', () => {
+    render(
+      <TokenMetricCards
+        tokens={{
+          today: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },
+          week: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },
+          month: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },
+          all_time: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },
+        }}
+        models={[
+          {
+            model_id: 'priced-model',
+            reasoning_effort: null,
+            tokens: { uncached_input: 100, cached_input: 0, output: 0, total: 100 },
+            sessions: 1,
+            turns: 1,
+            cost_usd: 1.5,
+            pricing_status: 'exact',
+          },
+          {
+            model_id: 'unknown-model',
+            reasoning_effort: null,
+            tokens: { uncached_input: 100, cached_input: 0, output: 0, total: 100 },
+            sessions: 1,
+            turns: 1,
+            cost_usd: 0,
+            pricing_status: 'unpriced',
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('$1.50')).toBeTruthy();
+    expect(screen.getByText('计价覆盖 50%')).toBeTruthy();
+  });
 });

@@ -31,6 +31,7 @@ export const EMPTY_SNAPSHOT: DashboardSnapshot = {
     last_updated: '',
     families: [],
   },
+  quotas: {},
   tokens: {
     today: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },
     week: { uncached_input: 0, cached_input: 0, output: 0, total: 0 },

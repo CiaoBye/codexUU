@@ -1,9 +1,11 @@
 import React from 'react';
-import { TokenPeriods, TokenBreakdown } from '../../types';
+import { ModelUsage, TokenPeriods, TokenBreakdown } from '../../types';
 import { Zap, Calendar, TrendingUp, Archive } from 'lucide-react';
+import { useAnimatedNumber } from '../../lib/motion';
 
 interface TokenMetricCardsProps {
   tokens: TokenPeriods;
+  models?: ModelUsage[];
   unavailable?: boolean;
 }
 
@@ -39,7 +41,7 @@ const SingleCard: React.FC<SingleCardProps> = ({
   const pctUncached = (breakdown.uncached_input / total) * 100;
   const pctCached = (breakdown.cached_input / total) * 100;
   const pctOutput = (breakdown.output / total) * 100;
-  const displayTotal = unavailable ? '--' : formatTokens(breakdown.total);
+  const animatedTotal = useAnimatedNumber(unavailable ? 0 : breakdown.total);
 
   return (
     <div className="dashboard-metric-card px-3 py-2.5 flex flex-col justify-between gap-2 min-h-0">
@@ -49,7 +51,7 @@ const SingleCard: React.FC<SingleCardProps> = ({
       </div>
 
       <div className="text-2xl font-extrabold font-mono tracking-tight text-[var(--text-primary)] leading-none">
-        {displayTotal}
+        {unavailable ? '--' : formatTokens(Math.round(animatedTotal))}
       </div>
 
       <div
@@ -92,37 +94,42 @@ const SingleCard: React.FC<SingleCardProps> = ({
   );
 };
 
-export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens, unavailable = false }) => {
+function ApiValueCard({ models = [], unavailable = false }: { models?: ModelUsage[]; unavailable?: boolean }) {
+  const estimatedValue = models.reduce((sum, model) => sum + (Number.isFinite(model.cost_usd) ? model.cost_usd : 0), 0);
+  const pricedTokens = models
+    .filter((model) => model.pricing_status === 'exact')
+    .reduce((sum, model) => sum + model.tokens.total, 0);
+  const totalTokens = models.reduce((sum, model) => sum + model.tokens.total, 0);
+  const coverage = totalTokens > 0 ? Math.round((pricedTokens / totalTokens) * 100) : 0;
+  const animatedValue = useAnimatedNumber(unavailable ? 0 : estimatedValue, 520);
+
   return (
-    <div className="dashboard-token-grid">
-      <SingleCard
-        title="今日用量"
-        icon={Zap}
-        breakdown={tokens.today}
-        colorClass="text-[var(--token-output)]"
-        unavailable={unavailable}
-      />
-      <SingleCard
-        title="本周用量"
-        icon={Calendar}
-        breakdown={tokens.week}
-        colorClass="text-[var(--quota-5h)]"
-        unavailable={unavailable}
-      />
-      <SingleCard
-        title="本月用量"
-        icon={TrendingUp}
-        breakdown={tokens.month}
-        colorClass="text-[var(--quota-7d)]"
-        unavailable={unavailable}
-      />
-      <SingleCard
-        title="累计记录"
-        icon={Archive}
-        breakdown={tokens.all_time}
-        colorClass="text-[var(--accent-brand)]"
-        unavailable={unavailable}
-      />
+    <div className="dashboard-value-strip" aria-label="API 等效价值">
+      <div>
+        <div className="dashboard-value-label">API 等效价值</div>
+        <div className="dashboard-value-caption">按已识别模型公开价格估算</div>
+      </div>
+      <div className="dashboard-value-number">
+        {unavailable ? '--' : `$${animatedValue.toFixed(2)}`}
+      </div>
+      <div className="dashboard-value-meta">
+        <span>计价覆盖 {unavailable ? '--' : `${coverage}%`}</span>
+        <span>{models.length} 个模型</span>
+      </div>
+    </div>
+  );
+}
+
+export const TokenMetricCards: React.FC<TokenMetricCardsProps> = ({ tokens, models = [], unavailable = false }) => {
+  return (
+    <div className="dashboard-token-stack">
+      <div className="dashboard-token-grid">
+        <SingleCard title="今日用量" icon={Zap} breakdown={tokens.today} colorClass="text-[var(--token-output)]" unavailable={unavailable} />
+        <SingleCard title="本周用量" icon={Calendar} breakdown={tokens.week} colorClass="text-[var(--quota-5h)]" unavailable={unavailable} />
+        <SingleCard title="本月用量" icon={TrendingUp} breakdown={tokens.month} colorClass="text-[var(--quota-7d)]" unavailable={unavailable} />
+        <SingleCard title="累计记录" icon={Archive} breakdown={tokens.all_time} colorClass="text-[var(--accent-brand)]" unavailable={unavailable} />
+      </div>
+      <ApiValueCard models={models} unavailable={unavailable} />
     </div>
   );
 };

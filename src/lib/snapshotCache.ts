@@ -18,6 +18,17 @@ function isSnapshot(value: unknown): value is DashboardSnapshot {
   );
 }
 
+function normalizeSnapshot(snapshot: DashboardSnapshot): DashboardSnapshot {
+  // Snapshots written before the per-provider quota map was introduced are
+  // still valid. Rehydrate the compatibility map at the cache boundary so
+  // every consumer can rely on the current shape.
+  if (snapshot.quotas && typeof snapshot.quotas === 'object' && !Array.isArray(snapshot.quotas)) return snapshot;
+  return {
+    ...snapshot,
+    quotas: { [snapshot.channel]: snapshot.quota },
+  };
+}
+
 /**
  * Read the cached snapshot for one channel.
  *
@@ -32,7 +43,7 @@ export function readCachedSnapshot(
     const raw = sessionStorage.getItem(keyFor(channel));
     if (raw) {
       const parsed: unknown = JSON.parse(raw);
-      if (isSnapshot(parsed) && parsed.channel === channel) return parsed;
+      if (isSnapshot(parsed) && parsed.channel === channel) return normalizeSnapshot(parsed);
     }
   } catch {
     // Fall through to legacy migration below.
@@ -48,13 +59,14 @@ export function readCachedSnapshot(
       return null;
     }
     const legacyChannel = parsed.channel;
+    const normalized = normalizeSnapshot(parsed);
     if (legacyChannel === channel) {
       sessionStorage.removeItem(LEGACY_STORAGE_KEY);
-      return parsed;
+      return normalized;
     }
     // The legacy snapshot belongs to a different channel — keep it there, do
     // not leak it into the requested channel's first frame.
-    sessionStorage.setItem(keyFor(legacyChannel), JSON.stringify(parsed));
+    sessionStorage.setItem(keyFor(legacyChannel), JSON.stringify(normalized));
     sessionStorage.removeItem(LEGACY_STORAGE_KEY);
     return null;
   } catch {

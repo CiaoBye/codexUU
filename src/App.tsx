@@ -85,6 +85,8 @@ export const App: React.FC = () => {
   const settingsRef = React.useRef<AppSettings>(DEFAULT_SETTINGS);
   const settingsReadyRef = React.useRef(false);
   const initialSettingsPromiseRef = React.useRef<Promise<AppSettings> | null>(null);
+  const activeChannelRef = React.useRef<DashboardSnapshot['channel']>('codex');
+  const isRefreshingRef = React.useRef(false);
 
   const loadInitialSettings = React.useCallback(() => {
     if (initialSettingsPromiseRef.current === null) {
@@ -129,8 +131,10 @@ export const App: React.FC = () => {
     (token: RequestToken, snap: DashboardSnapshot, nextChannel?: DashboardSnapshot['channel']) => {
       token.commit(() => {
         const channel = snap.channel ?? nextChannel;
+        activeChannelRef.current = channel;
         setActiveChannel(channel);
         setSnapshot(snap);
+        isRefreshingRef.current = false;
         setIsRefreshing(false);
         setError(null);
       });
@@ -157,6 +161,7 @@ export const App: React.FC = () => {
         // switch that happened during startup.
         token.commit(() => {
           const channel = s.default_channel || 'codex';
+          activeChannelRef.current = channel;
           setActiveChannel(channel);
           // First frame: show this channel's own cache or a channel-scoped
           // empty state, never data retained from another channel.
@@ -168,6 +173,7 @@ export const App: React.FC = () => {
       } catch (err) {
         token.commit(() => {
           setError(`初始化失败：${err instanceof Error ? err.message : String(err)}`);
+          isRefreshingRef.current = false;
           setIsRefreshing(false);
         });
       }
@@ -175,6 +181,45 @@ export const App: React.FC = () => {
     void init();
     // Stable reference: loadInitialSettings must never change identity across
     // renders so it can be called safely from channel-switch and init paths.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWidgetWindow]);
+
+  // Keep the main dashboard live without making every render re-create a timer.
+  // Rust still owns the expensive scan and cache policy; this lightweight tick
+  // only asks for the current snapshot and lets the backend decide whether a
+  // background refresh is needed.
+  useEffect(() => {
+    if (isWidgetWindow) return;
+    let disposed = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (disposed || inFlight || document.hidden || isRefreshingRef.current) return;
+      inFlight = true;
+      const token = orderingRef.current.next();
+      const channel = activeChannelRef.current;
+      try {
+        const snap = await fetchDashboardSnapshot(channel, settingsRef.current.timezone);
+        if (!disposed) commitSnapshot(token, snap, channel);
+      } catch (err) {
+        if (!disposed) {
+          token.commit(() => setError(`后台刷新失败：${err instanceof Error ? err.message : String(err)}`));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void tick(), 30_000);
+    const onVisibilityChange = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+    // The coordinator refs intentionally keep this effect stable for the
+    // lifetime of the main window.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWidgetWindow]);
 
@@ -195,6 +240,7 @@ export const App: React.FC = () => {
         token.commit(() => {
           acceptLoadedSettings(currentSettings);
           const channel = currentSettings.default_channel || 'codex';
+          activeChannelRef.current = channel;
           setActiveChannel(channel);
           setSnapshot(firstFrameForChannel(channel));
         });
@@ -246,6 +292,8 @@ export const App: React.FC = () => {
     // Optimistically switch the selected channel so the UI reflects intent
     // immediately; only the latest switch may commit the fetched snapshot.
     token.commit(() => {
+      activeChannelRef.current = nextChannel;
+      isRefreshingRef.current = true;
       setActiveChannel(nextChannel);
       setIsRefreshing(true);
       // First frame uses this channel's own cached data or an empty state,
@@ -265,6 +313,7 @@ export const App: React.FC = () => {
     } catch (err) {
       token.commit(() => {
         setError(`切换渠道失败：${err instanceof Error ? err.message : String(err)}`);
+        isRefreshingRef.current = false;
         setIsRefreshing(false);
       });
     }
@@ -273,6 +322,7 @@ export const App: React.FC = () => {
   // Handle Refresh
   const handleRefresh = async () => {
     const token = orderingRef.current.next();
+    isRefreshingRef.current = true;
     token.commit(() => setIsRefreshing(true));
     try {
       const snap = await triggerRefresh(activeChannel);
@@ -280,6 +330,7 @@ export const App: React.FC = () => {
     } catch (err) {
       token.commit(() => {
         setError(`刷新失败：${err instanceof Error ? err.message : String(err)}`);
+        isRefreshingRef.current = false;
         setIsRefreshing(false);
       });
     }
@@ -397,7 +448,7 @@ export const App: React.FC = () => {
     && snapshot.sources_health.some((source) => source.status === 'unavailable' || source.status === 'degraded');
 
   return (
-    <div className="dashboard-app-shell h-full w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] flex flex-col">
+    <div className={`dashboard-app-shell h-full w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] flex flex-col${isRefreshing ? ' dashboard-refreshing' : ''}`}>
       <a
         href="#dashboard-main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded-lg focus:bg-[var(--bg-elevated)] focus:px-3 focus:py-2 focus:text-xs focus:font-semibold focus:text-[var(--accent-brand)] focus:shadow-lg"
@@ -464,7 +515,7 @@ export const App: React.FC = () => {
             onToggleQuotaMode={handleToggleQuotaMode}
             channel={activeChannel}
           />
-          <TokenMetricCards tokens={snapshot.tokens} unavailable={!snapshotReady} />
+          <TokenMetricCards tokens={snapshot.tokens} models={snapshot.models} unavailable={!snapshotReady} />
         </section>
 
         {/* Row 2 + 3: one integrated content surface, matching the Mac dashboard's large panel rhythm. */}
@@ -512,7 +563,7 @@ export const App: React.FC = () => {
         </div>
 
         {/* Row 3: Tab Content Panels */}
-        <div id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="dashboard-content-panel flex-1 min-h-0 h-full overflow-hidden">
+        <div key={activeTab} id={`dashboard-panel-${activeTab}`} role="tabpanel" aria-labelledby={`dashboard-tab-${activeTab}`} className="dashboard-content-panel flex-1 min-h-0 h-full overflow-hidden">
           <h2 className="sr-only">{activeTabLabel}</h2>
           {activeTab === 'tasks' && <TaskBoardTab tasks={snapshot.tasks} />}
           {activeTab === 'trends' && (
@@ -548,13 +599,17 @@ export const App: React.FC = () => {
           applyTheme(s.theme);
           if (timezoneChanged) {
             const token = orderingRef.current.next();
-            token.commit(() => setIsRefreshing(true));
+            token.commit(() => {
+              isRefreshingRef.current = true;
+              setIsRefreshing(true);
+            });
             try {
               const snap = await fetchDashboardSnapshot(activeChannel, s.timezone);
               commitSnapshot(token, snap, activeChannel);
             } catch (err) {
               token.commit(() => {
                 setError(`时区切换后刷新失败：${err instanceof Error ? err.message : String(err)}`);
+                isRefreshingRef.current = false;
                 setIsRefreshing(false);
               });
             }

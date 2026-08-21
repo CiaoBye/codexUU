@@ -255,6 +255,7 @@ mod tests {
         let mut snapshot = DashboardSnapshot {
             channel: "antigravity".to_string(),
             quota: QuotaSnapshot::default(),
+            quotas: std::collections::HashMap::new(),
             tokens: TokenPeriods::default(),
             daily_activities: Vec::new(),
             models: Vec::new(),

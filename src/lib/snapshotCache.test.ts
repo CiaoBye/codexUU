@@ -45,6 +45,12 @@ describe('snapshotCache (channel-scoped)', () => {
     expect(sessionStorage.getItem(legacyKeyName())).toBeNull();
   });
 
+  it('rehydrates the quota map for snapshots written by older versions', () => {
+    const { quotas: _legacyQuotas, ...legacy } = snapshotFor('codex', 42);
+    sessionStorage.setItem(legacyKeyName(), JSON.stringify(legacy));
+    expect(readCachedSnapshot('codex')?.quotas.codex.status).toBe('unavailable');
+  });
+
   it('ignores empty snapshots without a timestamp', () => {
     writeCachedSnapshot(EMPTY_SNAPSHOT);
     expect(readCachedSnapshot('codex')).toBeNull();

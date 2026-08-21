@@ -179,6 +179,10 @@ impl Default for SourceHealthStatus {
 pub struct DashboardSnapshot {
     pub channel: String, // "codex", "antigravity", "all"
     pub quota: QuotaSnapshot,
+    /// Per-provider quota snapshots. `quota` remains as the active display
+    /// value for compatibility with the current frontend contract.
+    #[serde(default)]
+    pub quotas: HashMap<String, QuotaSnapshot>,
     pub tokens: TokenPeriods,
     pub daily_activities: Vec<DailyActivity>,
     pub models: Vec<ModelUsage>,
